@@ -2,12 +2,19 @@ import { Hono } from 'hono'
 import { Bindings } from '../index'
 import { SquareClient, SquareEnvironment } from 'square'
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
 export const checkoutRouter = new Hono<{ Bindings: Bindings }>()
 
 checkoutRouter.post('/', async (c) => {
+  let slotLocked = false
+  let paymentConfirmed = false
+  let slotId: number | undefined
+
   try {
     const body = await c.req.json()
-    const { sourceId, slotId, serviceId, clientName, clientEmail, locationId, idempotencyKey } = body
+    const { sourceId, serviceId, clientName, clientEmail, locationId, idempotencyKey } = body
+    slotId = body.slotId
 
     const errors = []
     if (!sourceId) errors.push({ field: 'sourceId', message: 'Payment source token is required.', code: 'REQUIRED_FIELD' })
@@ -15,6 +22,7 @@ checkoutRouter.post('/', async (c) => {
     if (!serviceId) errors.push({ field: 'serviceId', message: 'A service must be selected.', code: 'REQUIRED_FIELD' })
     if (!clientName) errors.push({ field: 'clientName', message: 'Client name is required.', code: 'REQUIRED_FIELD' })
     if (!clientEmail) errors.push({ field: 'clientEmail', message: 'Client email is required.', code: 'REQUIRED_FIELD' })
+    if (clientEmail && !EMAIL_REGEX.test(clientEmail)) errors.push({ field: 'clientEmail', message: 'Please enter a valid email address.', code: 'INVALID_FORMAT' })
     if (!idempotencyKey) errors.push({ field: 'idempotencyKey', message: 'Idempotency key is required to prevent double charges.', code: 'REQUIRED_FIELD' })
 
     if (errors.length > 0) {
@@ -29,7 +37,6 @@ checkoutRouter.post('/', async (c) => {
     }
 
     // 1. Atomic Slot Lock
-    // Attempt to claim the slot before talking to Square
     const lockResult = await c.env.DB.prepare(
       'UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ? AND is_booked = 0'
     ).bind(slotId).run()
@@ -44,12 +51,13 @@ checkoutRouter.post('/', async (c) => {
         }
       }, 409)
     }
+    slotLocked = true
 
     // Fetch Service from DB
     const service: any = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ? AND is_active = 1').bind(serviceId).first()
     if (!service) {
-      // Revert the slot lock if service is invalid
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
+      slotLocked = false
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
@@ -66,14 +74,18 @@ checkoutRouter.post('/', async (c) => {
       throw new Error('Square Access Token not configured')
     }
 
-    const squareLocationId = c.env.SQUARE_LOCATION_ID || locationId || 'main'
+    // Fail loudly if no location ID — 'main' is not a valid Square location
+    const squareLocationId = c.env.SQUARE_LOCATION_ID || locationId
+    if (!squareLocationId) {
+      throw new Error('SQUARE_LOCATION_ID is not configured. Cannot process payment.')
+    }
 
     const client = new SquareClient({
       token: c.env.SQUARE_ACCESS_TOKEN,
       environment: c.env.SQUARE_ENVIRONMENT === 'production' ? SquareEnvironment.Production : SquareEnvironment.Sandbox,
     })
     
-    // 2. Create Ad-Hoc Order (use idempotencyKey + '_order')
+    // 2. Create Ad-Hoc Order
     const orderResponse = await client.orders.create({
       order: {
         locationId: squareLocationId,
@@ -94,8 +106,6 @@ checkoutRouter.post('/', async (c) => {
     const orderId = orderResponse.order?.id
 
     if (!orderId) {
-      // Revert lock
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
       throw new Error('Failed to generate Square Order')
     }
 
@@ -114,9 +124,6 @@ checkoutRouter.post('/', async (c) => {
     const paymentId = payment?.id
 
     if (payment?.status !== 'COMPLETED' && payment?.status !== 'APPROVED') {
-      // Payment failed or is pending. We might need to revert the lock, or keep it if we want to manually review.
-      // For a typical flow, if it's not successful, we release it.
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
       return c.json({
         error: {
           code: 'PAYMENT_FAILED',
@@ -125,6 +132,7 @@ checkoutRouter.post('/', async (c) => {
         }
       }, 402)
     }
+    paymentConfirmed = true
 
     // 4. Record successful booking
     await c.env.DB.prepare(
@@ -134,11 +142,16 @@ checkoutRouter.post('/', async (c) => {
     return c.json({ success: true, paymentId, orderId })
   } catch (e: any) {
     console.error('Checkout error:', e)
-    // If the error happens during Square communication, we might have already locked the slot.
-    // In a robust production environment, we should probably release the slot here if we haven't successfully recorded the booking,
-    // though if the payment actually went through but the script crashed, releasing it would be bad.
-    // Given the simplicity of this MVP, we will assume generic errors mean payment failed, but leave the lock intact to be safe,
-    // or we could release it. Let's release it if we hit a try/catch error unless we know payment succeeded.
+
+    // Release the slot lock ONLY if payment was not confirmed
+    if (slotLocked && !paymentConfirmed && slotId) {
+      try {
+        await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
+      } catch (releaseErr) {
+        console.error('CRITICAL: Failed to release slot lock after error:', releaseErr)
+      }
+    }
+
     return c.json({
       error: {
         code: 'PAYMENT_FAILED',

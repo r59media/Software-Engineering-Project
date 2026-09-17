@@ -1,16 +1,20 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
+import { adminAuth } from '../middleware/auth'
 
 export const portfolioRouter = new Hono<{ Bindings: Bindings }>()
 
-// GET: Fetch the public gallery
+// GET: Fetch the public gallery (with optional pagination)
 portfolioRouter.get('/', async (c) => {
   try {
+    const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100)
+    const offset = parseInt(c.req.query('offset') || '0', 10)
+
     const { results } = await c.env.DB.prepare(
-      'SELECT id, r2_object_key, category, alt_text, display_order FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC'
-    ).all()
+      'SELECT id, r2_object_key, category, alt_text, display_order FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC LIMIT ? OFFSET ?'
+    ).bind(limit, offset).all()
     
-    return c.json({ images: results })
+    return c.json({ images: results, limit, offset })
   } catch (e: any) {
     return c.json({
       error: {
@@ -22,14 +26,9 @@ portfolioRouter.get('/', async (c) => {
   }
 })
 
-// POST: Save a new image record
-portfolioRouter.post('/', async (c) => {
+// POST: Save a new image record (admin only)
+portfolioRouter.post('/', adminAuth, async (c) => {
   try {
-    const auth = c.req.header('Authorization')
-    if (!auth || auth !== `Bearer ${c.env.ADMIN_SECRET}`) {
-      return c.json({ error: 'Unauthorized. Admin access required.' }, 401)
-    }
-
     const body = await c.req.json()
     const { r2_object_key, category = 'All', alt_text = null, display_order = 0 } = body
 

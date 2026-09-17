@@ -5,9 +5,15 @@ export const scheduleRouter = new Hono<{ Bindings: Bindings }>()
 
 scheduleRouter.get('/', async (c) => {
   try {
+    // Read timezone from Admin_Settings, fallback to America/New_York
+    const tzSetting: any = await c.env.DB.prepare(
+      "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'timezone'"
+    ).first()
+    const tz = tzSetting?.setting_value || 'America/New_York'
+
     const now = new Date()
     const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
+      timeZone: tz,
       year: 'numeric', month: '2-digit', day: '2-digit',
       hour: '2-digit', minute: '2-digit',
       hour12: false
@@ -22,14 +28,18 @@ scheduleRouter.get('/', async (c) => {
     if (currentHour === '24') currentHour = '00'
     const currentTime = `${currentHour}:${hash.minute}`
 
+    const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100)
+    const offset = parseInt(c.req.query('offset') || '0', 10)
+
     const { results } = await c.env.DB.prepare(
       `SELECT id, date, start_time, end_time FROM Schedule_Slots 
        WHERE is_booked = 0 
        AND (date > ? OR (date = ? AND start_time > ?))
-       ORDER BY date ASC, start_time ASC`
-    ).bind(currentDate, currentDate, currentTime).all()
+       ORDER BY date ASC, start_time ASC
+       LIMIT ? OFFSET ?`
+    ).bind(currentDate, currentDate, currentTime, limit, offset).all()
     
-    return c.json({ slots: results })
+    return c.json({ slots: results, limit, offset })
   } catch (e: any) {
     return c.json({
       error: {

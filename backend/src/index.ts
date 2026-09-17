@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
+import { logger } from 'hono/logger'
 
 // Import routes
 import { contactRouter } from './routes/contact'
@@ -8,6 +9,7 @@ import { uploadRouter } from './routes/upload'
 import { checkoutRouter } from './routes/checkout'
 import { portfolioRouter } from './routes/portfolio'
 import { servicesRouter } from './routes/services'
+import { adminRouter } from './routes/admin'
 
 export type Bindings = {
   DB: D1Database
@@ -19,30 +21,37 @@ export type Bindings = {
   R2_SECRET_ACCESS_KEY?: string
   CLOUDFLARE_ACCOUNT_ID?: string
   ADMIN_SECRET?: string
+  ALLOWED_ORIGINS?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-// Enable CORS for the frontend
-app.use('*', cors())
+// Request logging
+app.use('*', logger())
+
+// CORS — restrict to known frontend origins
+app.use('*', async (c, next) => {
+  const allowedRaw = c.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:8787'
+  const allowedOrigins = allowedRaw.split(',').map(o => o.trim())
+  const corsMiddleware = cors({
+    origin: allowedOrigins,
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization'],
+  })
+  return corsMiddleware(c, next)
+})
 
 app.get('/', (c) => {
   return c.text('R59 Media API is running!')
 })
 
-// Quick healthcheck for the database
+// Healthcheck — returns only status, never data
 app.get('/api/health', async (c) => {
   try {
-    const { results } = await c.env.DB.prepare('SELECT * FROM Admin_Settings').all()
-    return c.json({ status: 'ok', settings: results })
-  } catch (e: any) {
-    return c.json({ 
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'An unexpected error occurred while checking health.',
-        details: []
-      }
-    }, 500)
+    await c.env.DB.prepare('SELECT 1').first()
+    return c.json({ status: 'ok' })
+  } catch {
+    return c.json({ status: 'error' }, 503)
   }
 })
 
@@ -53,5 +62,6 @@ app.route('/api/upload-url', uploadRouter)
 app.route('/api/checkout', checkoutRouter)
 app.route('/api/portfolio', portfolioRouter)
 app.route('/api/services', servicesRouter)
+app.route('/api/admin', adminRouter)
 
 export default app

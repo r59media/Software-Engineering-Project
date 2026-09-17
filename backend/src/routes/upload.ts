@@ -2,16 +2,17 @@ import { Hono } from 'hono'
 import { Bindings } from '../index'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { adminAuth } from '../middleware/auth'
+
+const ALLOWED_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic']
 
 export const uploadRouter = new Hono<{ Bindings: Bindings }>()
 
+// All upload routes require admin auth
+uploadRouter.use('*', adminAuth)
+
 uploadRouter.get('/', async (c) => {
   try {
-    const auth = c.req.header('Authorization')
-    if (!auth || auth !== `Bearer ${c.env.ADMIN_SECRET}`) {
-      return c.json({ error: 'Unauthorized. Admin access required.' }, 401)
-    }
-
     const filename = c.req.query('filename')
     const contentType = c.req.query('contentType') || 'image/jpeg'
 
@@ -22,6 +23,18 @@ uploadRouter.get('/', async (c) => {
           message: 'Could not generate upload URL. Please provide a filename.',
           target: 'upload',
           details: [{ field: 'filename', message: 'Filename is required.', code: 'REQUIRED_FIELD' }]
+        }
+      }, 400)
+    }
+
+    // File-type whitelist
+    if (!ALLOWED_CONTENT_TYPES.includes(contentType)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Only image files (JPEG, PNG, WebP, HEIC) are allowed.',
+          target: 'upload',
+          details: [{ field: 'contentType', message: `Type '${contentType}' is not permitted.`, code: 'INVALID_TYPE' }]
         }
       }, 400)
     }
@@ -51,15 +64,12 @@ uploadRouter.get('/', async (c) => {
     const signedUrl = await getSignedUrl(
       S3,
       new PutObjectCommand({
-        Bucket: 'r59-portfolio-images', // Match wrangler.toml bucket_name
+        Bucket: 'r59-portfolio-images',
         Key: uniqueKey,
         ContentType: contentType
       }),
       { expiresIn: 3600 }
     )
-
-    // Using Option 2: the frontend will upload to `signedUrl`, and it will be accessible via ImageKit
-    // Example: https://ik.imagekit.io/YOUR_ID/uniqueKey
     
     return c.json({ 
       uploadUrl: signedUrl,
