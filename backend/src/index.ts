@@ -18,6 +18,7 @@ export type Bindings = {
   R2_ACCESS_KEY_ID?: string
   R2_SECRET_ACCESS_KEY?: string
   CLOUDFLARE_ACCOUNT_ID?: string
+  ADMIN_SECRET?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()

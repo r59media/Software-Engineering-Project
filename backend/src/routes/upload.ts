@@ -7,6 +7,11 @@ export const uploadRouter = new Hono<{ Bindings: Bindings }>()
 
 uploadRouter.get('/', async (c) => {
   try {
+    const auth = c.req.header('Authorization')
+    if (!auth || auth !== `Bearer ${c.env.ADMIN_SECRET}`) {
+      return c.json({ error: 'Unauthorized. Admin access required.' }, 401)
+    }
+
     const filename = c.req.query('filename')
     const contentType = c.req.query('contentType') || 'image/jpeg'
 

@@ -21,6 +21,8 @@ CREATE TABLE Leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     email TEXT NOT NULL,
+    phone TEXT,
+    session_type TEXT,
     message TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -55,6 +57,8 @@ CREATE TABLE Admin_Settings (
 CREATE TABLE Portfolio_Images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     r2_object_key TEXT NOT NULL,
+    category TEXT DEFAULT 'All',
+    alt_text TEXT,
     display_order INTEGER DEFAULT 0,
     is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

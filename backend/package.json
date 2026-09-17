@@ -3,11 +3,15 @@
   "version": "1.0.0",
   "description": "Backend for Photographer Portfolio",
   "main": "src/index.ts",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
     "db:init": "wrangler d1 create r59_db",
-    "db:execute": "wrangler d1 execute r59_db --local --file=./schema.sql"
+    "db:execute": "wrangler d1 execute r59_db --local --file=./schema.sql",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1132.0",
@@ -19,12 +23,5 @@
     "@cloudflare/workers-types": "^4.20240222.0",
     "typescript": "^5.0.0",
     "wrangler": "^4.0.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "sharp",
-      "workerd"
-    ]
   }
 }

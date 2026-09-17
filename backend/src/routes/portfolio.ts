@@ -7,7 +7,7 @@ export const portfolioRouter = new Hono<{ Bindings: Bindings }>()
 portfolioRouter.get('/', async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
-      'SELECT id, r2_object_key, display_order FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC'
+      'SELECT id, r2_object_key, category, alt_text, display_order FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC'
     ).all()
     
     return c.json({ images: results })
@@ -22,11 +22,16 @@ portfolioRouter.get('/', async (c) => {
   }
 })
 
-// POST: Save a new image record (Admin only in production)
+// POST: Save a new image record
 portfolioRouter.post('/', async (c) => {
   try {
+    const auth = c.req.header('Authorization')
+    if (!auth || auth !== `Bearer ${c.env.ADMIN_SECRET}`) {
+      return c.json({ error: 'Unauthorized. Admin access required.' }, 401)
+    }
+
     const body = await c.req.json()
-    const { r2_object_key, display_order = 0 } = body
+    const { r2_object_key, category = 'All', alt_text = null, display_order = 0 } = body
 
     if (!r2_object_key) {
       return c.json({
@@ -40,8 +45,8 @@ portfolioRouter.post('/', async (c) => {
     }
 
     await c.env.DB.prepare(
-      'INSERT INTO Portfolio_Images (r2_object_key, display_order) VALUES (?, ?)'
-    ).bind(r2_object_key, display_order).run()
+      'INSERT INTO Portfolio_Images (r2_object_key, category, alt_text, display_order) VALUES (?, ?, ?, ?)'
+    ).bind(r2_object_key, category, alt_text, display_order).run()
 
     return c.json({ success: true })
   } catch (e: any) {

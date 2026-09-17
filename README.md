@@ -22,7 +22,7 @@ A modern, single-page photography portfolio for R59 Media, featuring integrated 
 The backend is a lightweight Cloudflare Worker that provides the core API for the portfolio.
 
 ### Prerequisites
-* Node.js (v18+)
+* Node.js (v22+)
 * pnpm
 
 ### Setup
