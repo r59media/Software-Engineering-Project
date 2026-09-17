@@ -61,6 +61,7 @@ CREATE TABLE Portfolio_Images (
     alt_text TEXT,
     display_order INTEGER DEFAULT 0,
     is_active BOOLEAN DEFAULT 1,
+    is_featured BOOLEAN DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

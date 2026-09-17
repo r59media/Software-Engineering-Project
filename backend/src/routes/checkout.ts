@@ -36,6 +36,20 @@ checkoutRouter.post('/', async (c) => {
       }, 400)
     }
 
+    // 0. Check if bookings are enabled globally
+    const bookingSetting: any = await c.env.DB.prepare(
+      "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'booking_enabled'"
+    ).first()
+    if (bookingSetting?.setting_value === 'false') {
+      return c.json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Online bookings are currently disabled. Please contact us directly.',
+          details: []
+        }
+      }, 403)
+    }
+
     // 1. Atomic Slot Lock
     const lockResult = await c.env.DB.prepare(
       'UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ? AND is_booked = 0'
@@ -114,6 +128,7 @@ checkoutRouter.post('/', async (c) => {
       sourceId,
       idempotencyKey: idempotencyKey,
       orderId: orderId,
+      locationId: squareLocationId,
       amountMoney: {
         amount: BigInt(priceCents),
         currency: 'USD'

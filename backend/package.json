@@ -10,7 +10,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
     "db:init": "wrangler d1 create r59_db",
-    "db:execute": "wrangler d1 execute r59_db --local --file=./schema.sql",
+    "db:reset": "wrangler d1 execute r59_db --local --file=./schema.sql",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

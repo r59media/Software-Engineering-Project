@@ -11,7 +11,7 @@ portfolioRouter.get('/', async (c) => {
     const offset = parseInt(c.req.query('offset') || '0', 10)
 
     const { results } = await c.env.DB.prepare(
-      'SELECT id, r2_object_key, category, alt_text, display_order FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC LIMIT ? OFFSET ?'
+      'SELECT id, r2_object_key, category, alt_text, display_order, is_featured FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC LIMIT ? OFFSET ?'
     ).bind(limit, offset).all()
     
     return c.json({ images: results, limit, offset })
@@ -30,7 +30,7 @@ portfolioRouter.get('/', async (c) => {
 portfolioRouter.post('/', adminAuth, async (c) => {
   try {
     const body = await c.req.json()
-    const { r2_object_key, category = 'All', alt_text = null, display_order = 0 } = body
+    const { r2_object_key, category = 'All', alt_text = null, display_order = 0, is_featured = false } = body
 
     if (!r2_object_key) {
       return c.json({
@@ -44,8 +44,8 @@ portfolioRouter.post('/', adminAuth, async (c) => {
     }
 
     await c.env.DB.prepare(
-      'INSERT INTO Portfolio_Images (r2_object_key, category, alt_text, display_order) VALUES (?, ?, ?, ?)'
-    ).bind(r2_object_key, category, alt_text, display_order).run()
+      'INSERT INTO Portfolio_Images (r2_object_key, category, alt_text, display_order, is_featured) VALUES (?, ?, ?, ?, ?)'
+    ).bind(r2_object_key, category, alt_text, display_order, is_featured ? 1 : 0).run()
 
     return c.json({ success: true })
   } catch (e: any) {

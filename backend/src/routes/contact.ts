@@ -4,6 +4,7 @@ import { Bindings } from '../index'
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MAX_MESSAGE_LENGTH = 5000
 const MAX_NAME_LENGTH = 200
+const VALID_SESSION_TYPES = ['Portrait', 'Brand', 'Creative', 'Event', 'Other']
 
 export const contactRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -22,6 +23,9 @@ contactRouter.post('/', async (c) => {
       errors.push({ field: 'email', message: 'Email is required.', code: 'REQUIRED_FIELD' })
     } else if (!EMAIL_REGEX.test(email)) {
       errors.push({ field: 'email', message: 'Please enter a valid email address.', code: 'INVALID_FORMAT' })
+    }
+    if (session_type && !VALID_SESSION_TYPES.includes(session_type)) {
+      errors.push({ field: 'session_type', message: `Invalid session type. Must be one of: ${VALID_SESSION_TYPES.join(', ')}`, code: 'INVALID_VALUE' })
     }
     if (!message) {
       errors.push({ field: 'message', message: 'Message is required.', code: 'REQUIRED_FIELD' })
