@@ -7,12 +7,14 @@ import { scheduleRouter } from './routes/schedule'
 import { uploadRouter } from './routes/upload'
 import { checkoutRouter } from './routes/checkout'
 import { portfolioRouter } from './routes/portfolio'
+import { servicesRouter } from './routes/services'
 
 export type Bindings = {
   DB: D1Database
   BUCKET: R2Bucket
   SQUARE_ACCESS_TOKEN?: string
   SQUARE_ENVIRONMENT?: string
+  SQUARE_LOCATION_ID?: string
   R2_ACCESS_KEY_ID?: string
   R2_SECRET_ACCESS_KEY?: string
   CLOUDFLARE_ACCOUNT_ID?: string
@@ -49,5 +51,6 @@ app.route('/api/schedule', scheduleRouter)
 app.route('/api/upload-url', uploadRouter)
 app.route('/api/checkout', checkoutRouter)
 app.route('/api/portfolio', portfolioRouter)
+app.route('/api/services', servicesRouter)
 
 export default app
