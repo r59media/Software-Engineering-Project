@@ -4,6 +4,18 @@ DROP TABLE IF EXISTS Bookings;
 DROP TABLE IF EXISTS Leads;
 DROP TABLE IF EXISTS Schedule_Slots;
 DROP TABLE IF EXISTS Admin_Settings;
+DROP TABLE IF EXISTS Portfolio_Images;
+DROP TABLE IF EXISTS Services;
+
+CREATE TABLE Services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    price INTEGER NOT NULL, -- Stored in cents
+    duration_minutes INTEGER NOT NULL,
+    is_active BOOLEAN DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE Leads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,14 +35,15 @@ CREATE TABLE Schedule_Slots (
 
 CREATE TABLE Bookings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NOT NULL,
+    slot_id INTEGER NOT NULL,
     client_name TEXT NOT NULL,
     client_email TEXT NOT NULL,
-    slot_id INTEGER NOT NULL,
-    service_type TEXT NOT NULL,
-    price INTEGER NOT NULL, -- Stored in cents
-    status TEXT DEFAULT 'pending', -- pending, confirmed, cancelled
+    price_at_booking INTEGER NOT NULL, -- Stored in cents
     square_payment_id TEXT,
+    status TEXT DEFAULT 'pending', -- pending, confirmed, cancelled
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (service_id) REFERENCES Services(id),
     FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)
 );
 
@@ -47,5 +60,8 @@ CREATE TABLE Portfolio_Images (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Default settings
-INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('base_price', '15000'); -- $150
+-- Seed Data
+INSERT INTO Services (name, description, price, duration_minutes) VALUES ('Portrait Session', 'A standard 1-hour portrait session.', 25000, 60);
+INSERT INTO Services (name, description, price, duration_minutes) VALUES ('Wedding Package', 'Full day wedding coverage.', 150000, 480);
+
+INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('booking_enabled', 'true');
