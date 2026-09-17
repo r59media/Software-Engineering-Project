@@ -37,11 +37,11 @@ The backend is a lightweight Cloudflare Worker that provides the core API for th
 
 ### Local Development
 
-1. **Initialize the local D1 Database:**
+1. **Initialize / Reset the local D1 Database:**
    ```bash
-   pnpm run db:execute
+   pnpm run db:reset
    ```
-   *(Note: `db:init` is only needed if creating the D1 database in the Cloudflare dashboard for the first time).*
+   *(Note: `db:reset` is destructive and will wipe local data. `db:init` is only needed if creating the remote D1 database for the first time).*
 
 2. **Start the development server:**
    ```bash
