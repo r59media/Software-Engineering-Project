@@ -49,17 +49,25 @@ app.use('*', async (c, next) => {
   return corsMiddleware(c, next)
 })
 
-// Serve admin dashboard at root via ASSETS or redirect
-app.get('/', async (c) => {
-  if (c.env.ASSETS) {
-    return await c.env.ASSETS.fetch(c.req.raw)
-  }
+// Root route (public facing)
+app.get('/', (c) => {
   return c.text('R59 Media API is running!')
 })
 
-// Convenience redirect for /admin to /
+// Route /admin and /admin/* to Admin Dashboard static assets
 app.get('/admin', (c) => {
-  return c.redirect('/')
+  return c.redirect('/admin/')
+})
+
+app.all('/admin/*', async (c) => {
+  if (c.env.ASSETS) {
+    const url = new URL(c.req.url)
+    const assetPath = url.pathname.replace(/^\/admin\/?$/, '/index.html').replace(/^\/admin/, '') || '/index.html'
+    const assetUrl = new URL(assetPath + url.search, url.origin)
+    const assetReq = new Request(assetUrl.toString(), c.req.raw)
+    return await c.env.ASSETS.fetch(assetReq)
+  }
+  return c.text('Admin assets binding not found.', 500)
 })
 
 // API status endpoint
