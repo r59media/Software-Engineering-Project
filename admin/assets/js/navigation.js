@@ -31,6 +31,9 @@
   }
 
   function go(view, { anchor, tab } = {}) {
+    if (!document.body.classList.contains('authenticated')) {
+      return;
+    }
     $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
 
     if (tab && window.R59.photography?.setTab) {

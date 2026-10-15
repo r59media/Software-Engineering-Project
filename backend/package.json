@@ -10,6 +10,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
+    "sync-admin": "node -e \"const fs=require('fs'); fs.mkdirSync('public/admin', {recursive:true}); fs.cpSync('../admin', 'public/admin', {recursive:true});\"",
+    "build": "node -e \"const fs=require('fs'); fs.mkdirSync('public/admin', {recursive:true}); fs.cpSync('../admin', 'public/admin', {recursive:true});\"",
     "db:init": "wrangler d1 create r59_db",
     "db:reset": "wrangler d1 execute r59_db --local --file=./schema.sql",
     "typecheck": "tsc --noEmit"

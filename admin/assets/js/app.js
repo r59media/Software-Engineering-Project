@@ -117,29 +117,89 @@
 
       window.R59.confirmation.confirmLogout(window.R59.state.isDirty(), () => {
         window.R59.apiClient?.setAuthToken(null);
+        document.body.classList.remove('authenticated');
+        $('#login')?.classList.add('open');
+        const errEl = $('#loginError');
+        if (errEl) {
+          errEl.textContent = '';
+          errEl.style.display = 'none';
+        }
+        if ($('#lp')) $('#lp').value = '';
         const savedState = window.R59.state.getSaved();
         window.R59.state.setState(window.R59.state.clone(savedState));
         window.R59.state.setDirty(false);
         window.R59.state.syncStatus();
-        renderAll();
-        $('#login')?.classList.add('open');
+        window.toast('Logged out');
         $('#lu')?.focus();
       });
     }
+
+    window.addEventListener('r59:unauthorized', (e) => {
+      window.R59.apiClient?.setAuthToken(null);
+      document.body.classList.remove('authenticated');
+      $('#login')?.classList.add('open');
+      const errEl = $('#loginError');
+      if (errEl) {
+        errEl.textContent = (e.detail && e.detail.message) || 'Session expired. Please sign in again.';
+        errEl.style.display = 'block';
+      }
+      if ($('#lp')) $('#lp').value = '';
+      $('#lu')?.focus();
+    });
 
     $('#logoutTop')?.addEventListener('click', logout);
     $('#logoutDrawer')?.addEventListener('click', logout);
 
     $('#loginForm')?.addEventListener('submit', async e => {
       e.preventDefault();
-      const pass = $('#lp')?.value || '';
-      if (pass && window.R59.apiClient) {
-        window.R59.apiClient.setAuthToken(pass);
+      const email = $('#lu')?.value.trim() || '';
+      const password = $('#lp')?.value || '';
+      const errEl = $('#loginError');
+      const submitBtn = $('#loginBtn');
+
+      if (errEl) {
+        errEl.textContent = '';
+        errEl.style.display = 'none';
       }
-      $('#login')?.classList.remove('open');
-      window.R59.navigation.go('overview');
-      window.toast('Signed in');
-      await loadInitialBackendData();
+
+      if (!email || !password) {
+        if (errEl) {
+          errEl.textContent = 'Please enter both email and password.';
+          errEl.style.display = 'block';
+        }
+        return;
+      }
+
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Signing in...';
+      }
+
+      try {
+        const res = await window.R59.apiClient.post('/admin/login', { email, password });
+        if (!res || !res.token) {
+          throw new Error('Authentication failed: No session token received.');
+        }
+        window.R59.apiClient.setAuthToken(res.token);
+        document.body.classList.add('authenticated');
+        $('#login')?.classList.remove('open');
+        if ($('#lp')) $('#lp').value = '';
+        renderAll();
+        window.R59.navigation.go('overview');
+        window.toast('Signed in');
+        await loadInitialBackendData();
+      } catch (err) {
+        if (errEl) {
+          errEl.textContent = err.message || 'Invalid email address or password.';
+          errEl.style.display = 'block';
+        }
+        $('#lp')?.focus();
+      } finally {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Sign in';
+        }
+      }
     });
   }
 
@@ -257,7 +317,7 @@
   }
 
   // App initialization
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     // 1. Initialize component listeners
     window.R59.modal.initModalListeners();
     window.R59.navigation.initNavigation();
@@ -269,17 +329,24 @@
     initSaveBar();
     initAuth();
 
-    // 2. Render initial view with clean state
-    renderAll();
-    window.R59.navigation.go('overview');
+    // 2. Asynchronously verify session with backend
+    const hasToken = !!window.R59.apiClient?.getAuthToken();
+    let isAuthenticated = false;
 
-    // Prompt login modal if not yet authenticated
-    if (!window.R59.apiClient?.getAuthToken()) {
+    if (hasToken) {
+      isAuthenticated = await window.R59.apiClient.verifySession();
+    }
+
+    if (isAuthenticated) {
+      document.body.classList.add('authenticated');
+      $('#login')?.classList.remove('open');
+      renderAll();
+      window.R59.navigation.go('overview');
+      loadInitialBackendData();
+    } else {
+      document.body.classList.remove('authenticated');
       $('#login')?.classList.add('open');
       $('#lu')?.focus();
-    } else {
-      // 3. Gracefully query backend if authenticated
-      loadInitialBackendData();
     }
   });
 

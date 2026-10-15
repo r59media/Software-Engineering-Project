@@ -22,6 +22,7 @@ export type Bindings = {
   R2_SECRET_ACCESS_KEY?: string
   CLOUDFLARE_ACCOUNT_ID?: string
   ADMIN_SECRET?: string
+  ADMIN_EMAIL?: string
   ALLOWED_ORIGINS?: string
 }
 
@@ -62,10 +63,13 @@ app.get('/admin', (c) => {
 app.all('/admin/*', async (c) => {
   if (c.env.ASSETS) {
     const url = new URL(c.req.url)
-    const assetPath = url.pathname.replace(/^\/admin\/?$/, '/index.html').replace(/^\/admin/, '') || '/index.html'
-    const assetUrl = new URL(assetPath + url.search, url.origin)
-    const assetReq = new Request(assetUrl.toString(), c.req.raw)
-    return await c.env.ASSETS.fetch(assetReq)
+    // If requesting a static file with an extension, fetch directly
+    if (url.pathname.includes('.')) {
+      return await c.env.ASSETS.fetch(c.req.raw)
+    }
+    // Otherwise serve /admin/index.html
+    const adminIndexUrl = new URL('/admin/index.html', url.origin)
+    return await c.env.ASSETS.fetch(new Request(adminIndexUrl.toString(), c.req.raw))
   }
   return c.text('Admin assets binding not found.', 500)
 })
