@@ -1,0 +1,27 @@
+.site-header { padding: 0.625rem clamp(1rem, 2.664vw, 2.75rem) 2.5625rem; }
+.site-header__bar { display: flex; align-items: center; gap: 2.0625rem; min-height: 4.875rem; padding: 0.625rem 1.875rem 0.625rem 1rem; background: var(--color-brand-yellow); color: var(--color-brand-black); border-radius: var(--radius-control); position: relative; z-index: 2; }
+.site-header__brand { display: flex; align-items: center; flex: 0 0 7.375rem; }
+.site-header__brand img { display: block; }
+.site-header__divider { flex: 1; height: 1px; background: currentColor; min-width: 1rem; }
+.site-header__desktop { display: flex; align-items: center; gap: 2.0625rem; }
+.site-header__link { padding: 0; border: 0; background: transparent; color: inherit; font-size: var(--text-base); white-space: nowrap; line-height: 1.5; }
+.site-header__booking { width: 15.25rem; min-height: 3.625rem; font-size: var(--text-base); }
+.site-header__mobile { display: none; }
+@media (max-width: 1100px) {
+  .site-header__bar, .site-header__desktop { gap: 1.25rem; }
+  .site-header__brand { flex-basis: 5.5rem; }
+  .site-header__booking { width: auto; padding-inline: 1.25rem; }
+}
+@media (max-width: 850px) {
+  .site-header { padding-bottom: 1.5rem; }
+  .site-header__bar { padding: 0.625rem 1rem; gap: 1.5rem; }
+  .site-header__desktop { display: none; }
+  .site-header__mobile { display: block; }
+  .site-header__mobile summary { display: flex; align-items: center; gap: 0.75rem; min-height: 2.75rem; cursor: pointer; list-style: none; }
+  .site-header__mobile summary::-webkit-details-marker { display: none; }
+  .site-header__menu-icon { display: grid; gap: 4px; width: 21px; }
+  .site-header__menu-icon span { height: 2px; background: currentColor; }
+  .site-header__mobile-links { position: absolute; top: calc(100% + 0.5rem); left: 0; right: 0; display: flex; flex-direction: column; align-items: stretch; padding: 1rem; background: var(--color-brand-yellow); border-radius: var(--radius-control); box-shadow: 0 0.5rem 1rem var(--color-black-30); }
+  .site-header__mobile-links .site-header__link { min-height: 2.75rem; display: grid; place-items: center; }
+  .site-header__booking { margin-top: 0.5rem; }
+}
