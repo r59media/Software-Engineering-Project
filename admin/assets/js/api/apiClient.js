@@ -21,6 +21,9 @@
     if (stored) {
       return stored.replace(/\/+$/, '');
     }
+    if (window.location && window.location.hostname && !window.location.hostname.includes('localhost') && !window.location.hostname.includes('127.0.0.1') && !window.location.protocol.startsWith('file')) {
+      return `${window.location.origin}/api`;
+    }
     return DEFAULT_BASE_URL;
   }
 

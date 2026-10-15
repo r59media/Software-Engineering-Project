@@ -63,6 +63,31 @@
       window.R59.payments?.renderPricing();
       window.R59.state.syncStatus();
       if (window.R59.dashboard?.refreshOverview) window.R59.dashboard.refreshOverview();
+
+      // Persist changes to backend if available
+      (async () => {
+        try {
+          if (window.R59.paymentsApi) {
+            await window.R59.paymentsApi.updatePricingSettings(currentState.pricing);
+          }
+          if (window.R59.scheduleApi) {
+            await window.R59.scheduleApi.saveWeeklyAvailability(window.R59.state.getAvailability());
+          }
+          if (window.R59.photographyApi) {
+            await window.R59.photographyApi.saveProfile({
+              bio: currentState.bio || '',
+              email: currentState.email || '',
+              phone: currentState.phone || '',
+              location: currentState.location || '',
+              travel: currentState.travel || '',
+              social: currentState.social || []
+            });
+          }
+        } catch (err) {
+          console.warn('[app] Could not persist changes to backend:', err);
+        }
+      })();
+
       window.toast('Changes saved');
     });
 
@@ -91,6 +116,7 @@
       }
 
       window.R59.confirmation.confirmLogout(window.R59.state.isDirty(), () => {
+        window.R59.apiClient?.setAuthToken(null);
         const savedState = window.R59.state.getSaved();
         window.R59.state.setState(window.R59.state.clone(savedState));
         window.R59.state.setDirty(false);
@@ -104,11 +130,16 @@
     $('#logoutTop')?.addEventListener('click', logout);
     $('#logoutDrawer')?.addEventListener('click', logout);
 
-    $('#loginForm')?.addEventListener('submit', e => {
+    $('#loginForm')?.addEventListener('submit', async e => {
       e.preventDefault();
+      const pass = $('#lp')?.value || '';
+      if (pass && window.R59.apiClient) {
+        window.R59.apiClient.setAuthToken(pass);
+      }
       $('#login')?.classList.remove('open');
       window.R59.navigation.go('overview');
       window.toast('Signed in');
+      await loadInitialBackendData();
     });
   }
 
@@ -118,6 +149,7 @@
    * frontend remains functional with empty state.
    */
   async function loadInitialBackendData() {
+    // 1. Packages / Services
     try {
       if (window.R59.packagesApi) {
         const services = await window.R59.packagesApi.getPackages();
@@ -133,15 +165,13 @@
           window.R59.payments?.renderPackages();
         }
       }
-    } catch {
-      // Backend not running, remain on clean initial state
-    }
+    } catch {}
 
+    // 2. Bookings
     try {
       if (window.R59.bookingsApi) {
         const res = await window.R59.bookingsApi.getBookings();
         if (res && Array.isArray(res.bookings) && res.bookings.length > 0) {
-          // Backend bookings mapping
           const bookings = res.bookings.map(b => ({
             id: b.id,
             date: b.date || '',
@@ -160,9 +190,70 @@
           window.R59.dashboard?.renderOverview();
         }
       }
-    } catch {
-      // Backend not running, remain on clean initial state
-    }
+    } catch {}
+
+    // 3. Pricing Configuration
+    try {
+      if (window.R59.paymentsApi) {
+        const pricing = await window.R59.paymentsApi.getPricingSettings();
+        if (pricing && typeof pricing === 'object') {
+          const currentState = window.R59.state.getState();
+          currentState.pricing = { ...currentState.pricing, ...pricing };
+          window.R59.payments?.renderPricing();
+        }
+      }
+    } catch {}
+
+    // 4. Coupons
+    try {
+      if (window.R59.paymentsApi) {
+        const coupons = await window.R59.paymentsApi.getCoupons();
+        if (Array.isArray(coupons)) {
+          const currentState = window.R59.state.getState();
+          currentState.coupons = coupons;
+          window.R59.payments?.renderCoupons();
+        }
+      }
+    } catch {}
+
+    // 5. Weekly Availability
+    try {
+      if (window.R59.scheduleApi) {
+        const avail = await window.R59.scheduleApi.getWeeklyAvailability();
+        if (Array.isArray(avail) && avail.length > 0) {
+          window.R59.state.setAvailability(avail);
+          window.R59.schedule?.renderAvailability();
+        }
+      }
+    } catch {}
+
+    // 6. Blocked Dates
+    try {
+      if (window.R59.scheduleApi) {
+        const blocked = await window.R59.scheduleApi.getBlockedDates();
+        if (Array.isArray(blocked)) {
+          window.R59.state.setBlockedDates(blocked);
+          window.R59.schedule?.renderBlockedDates();
+        }
+      }
+    } catch {}
+
+    // 7. Profile Information
+    try {
+      if (window.R59.photographyApi) {
+        const profile = await window.R59.photographyApi.getProfile();
+        if (profile && typeof profile === 'object') {
+          const currentState = window.R59.state.getState();
+          if (profile.bio !== undefined) currentState.bio = profile.bio;
+          if (profile.email !== undefined) currentState.email = profile.email;
+          if (profile.phone !== undefined) currentState.phone = profile.phone;
+          if (profile.location !== undefined) currentState.location = profile.location;
+          if (profile.travel !== undefined) currentState.travel = profile.travel;
+          if (Array.isArray(profile.social)) currentState.social = profile.social;
+          renderAll();
+        }
+      }
+    } catch {}
   }
 
   // App initialization
