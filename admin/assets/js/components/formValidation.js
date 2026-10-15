@@ -46,12 +46,24 @@
       return /^[A-Z0-9_-]+$/.test(String(code || '').trim().toUpperCase());
     },
 
+    isValidUrl(url) {
+      if (!url) return false;
+      try {
+        const parsed = new URL(url);
+        return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    },
+
     escapeHtml(str) {
-      return String(str || '').replace(/[&<>"]/g, c => ({
+      return String(str || '').replace(/[&<>'"`]/g, c => ({
         '&': '&amp;',
         '<': '&lt;',
         '>': '&gt;',
-        '"': '&quot;'
+        '"': '&quot;',
+        "'": '&#39;',
+        '`': '&#96;'
       }[c]));
     }
   };

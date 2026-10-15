@@ -103,7 +103,7 @@
     }
 
     container.innerHTML = packages.map(pkg => `
-      <div class="card package-card" id="card-pkg-${pkg.id}" data-pkg-id="${pkg.id}">
+      <div class="card package-card" id="card-pkg-${esc(pkg.id)}" data-pkg-id="${esc(pkg.id)}">
         <div class="card-head">
           <h2>${esc(pkg.name || 'New Package')}</h2>
           <label class="toggle">
@@ -111,17 +111,17 @@
             <span>Available</span>
           </label>
         </div>
-        <label class="f" for="pkg-${pkg.id}-name">Package name</label>
-        <input class="input package-name" id="pkg-${pkg.id}-name" type="text" value="${esc(pkg.name || '')}">
+        <label class="f" for="pkg-${esc(pkg.id)}-name">Package name</label>
+        <input class="input package-name" id="pkg-${esc(pkg.id)}-name" type="text" value="${esc(pkg.name || '')}">
 
         <div class="price-field-row">
-          <label class="f" for="pkg-${pkg.id}-price">Price ($)</label>
+          <label class="f" for="pkg-${esc(pkg.id)}-price">Price ($)</label>
           <button type="button" class="btn btn-sm package-price-edit">Edit price</button>
         </div>
-        <input class="input package-price price-locked" id="pkg-${pkg.id}-price" type="number" min="0" step="10" value="${pkg.price || 0}" readonly>
+        <input class="input package-price price-locked" id="pkg-${esc(pkg.id)}-price" type="number" min="0" step="10" value="${pkg.price || 0}" readonly>
 
-        <label class="f" for="pkg-${pkg.id}-desc">Short description</label>
-        <textarea class="input desc-input" id="pkg-${pkg.id}-desc" rows="3" placeholder="Describe this photography package">${esc(pkg.description || '')}</textarea>
+        <label class="f" for="pkg-${esc(pkg.id)}-desc">Short description</label>
+        <textarea class="input desc-input" id="pkg-${esc(pkg.id)}-desc" rows="3" placeholder="Describe this photography package">${esc(pkg.description || '')}</textarea>
 
         <div class="row" style="margin-top:16px;">
           <button type="button" class="btn btn-danger btn-sm pkg-remove-btn">Remove package</button>
@@ -175,11 +175,11 @@
         </div>
         <div class="coupon-actions">
           <label class="toggle">
-            <input type="checkbox" data-coupon-active="${c.id}" ${c.active ? 'checked' : ''}>
+            <input type="checkbox" data-coupon-active="${esc(c.id)}" ${c.active ? 'checked' : ''}>
             <span>Active</span>
           </label>
-          <button type="button" class="btn btn-sm" data-coupon-edit="${c.id}">Edit</button>
-          <button type="button" class="btn btn-danger btn-sm" data-coupon-remove="${c.id}">Remove</button>
+          <button type="button" class="btn btn-sm" data-coupon-edit="${esc(c.id)}">Edit</button>
+          <button type="button" class="btn btn-danger btn-sm" data-coupon-remove="${esc(c.id)}">Remove</button>
         </div>
       </div>`).join('');
   }

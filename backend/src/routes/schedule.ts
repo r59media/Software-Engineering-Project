@@ -28,8 +28,8 @@ scheduleRouter.get('/', async (c) => {
     if (currentHour === '24') currentHour = '00'
     const currentTime = `${currentHour}:${hash.minute}`
 
-    const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100)
-    const offset = parseInt(c.req.query('offset') || '0', 10)
+    const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100))
+    const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
 
     const { results } = await c.env.DB.prepare(
       `SELECT id, date, start_time, end_time FROM Schedule_Slots 

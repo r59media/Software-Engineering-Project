@@ -39,7 +39,7 @@ async function handleUploadUrlRequest(c: any, filename?: string, contentType: st
      return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
-        message: 'R2 credentials are not configured on the server.',
+        message: 'Storage service is not configured on the server.',
         details: []
       }
     }, 500)
@@ -54,8 +54,10 @@ async function handleUploadUrlRequest(c: any, filename?: string, contentType: st
     },
   })
 
-  // Create unique key for the file
-  const uniqueKey = `${Date.now()}-${filename}`
+  // Sanitize filename to prevent directory traversal and overwrite attacks
+  const cleanBaseName = filename.replace(/[^a-zA-Z0-9._-]/g, '').replace(/^\.+/, '')
+  const safeFilename = cleanBaseName.length > 0 ? cleanBaseName : 'upload.jpg'
+  const uniqueKey = `portfolio/${Date.now()}-${crypto.randomUUID()}-${safeFilename}`
 
   const signedUrl = await getSignedUrl(
     S3,

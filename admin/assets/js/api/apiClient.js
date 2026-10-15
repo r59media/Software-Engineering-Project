@@ -17,14 +17,15 @@
     if (window.APP_CONFIG && window.APP_CONFIG.apiBaseUrl) {
       return window.APP_CONFIG.apiBaseUrl.replace(/\/+$/, '');
     }
-    const stored = localStorage.getItem('r59_api_url');
-    if (stored) {
-      return stored.replace(/\/+$/, '');
+    const isLocal = window.location && (window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1') || window.location.protocol.startsWith('file'));
+    if (isLocal) {
+      const stored = localStorage.getItem('r59_api_url');
+      if (stored && /^https?:\/\//i.test(stored)) {
+        return stored.replace(/\/+$/, '');
+      }
+      return DEFAULT_BASE_URL;
     }
-    if (window.location && window.location.hostname && !window.location.hostname.includes('localhost') && !window.location.hostname.includes('127.0.0.1') && !window.location.protocol.startsWith('file')) {
-      return `${window.location.origin}/api`;
-    }
-    return DEFAULT_BASE_URL;
+    return `${window.location.origin}/api`;
   }
 
   function getAuthToken() {

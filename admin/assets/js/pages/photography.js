@@ -94,7 +94,7 @@
     const cardsHtml = shown.map(({ it, i }) => `
       <div class="img-card" data-idx="${i}">
         <div class="thumb">
-          <img src="${it.src}" alt="${esc(it.alt || it.label)}">
+          <img src="${esc(it.src)}" alt="${esc(it.alt || it.label)}">
           ${it.slot ? `<span class="slot">${esc(it.slot)}</span>` : ''}
           <div class="actions">
             <button class="icon-btn" data-act="replace" aria-label="Replace ${esc(it.label || 'image')}">

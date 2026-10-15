@@ -166,14 +166,17 @@
       const isToday = dateStr === todayStr;
       const cellClick = opts.cellClick ? ` onclick="${opts.cellClick(dateStr)}"` : '';
 
-      const chipsHtml = dayBookings.map(b => `
-        <div class="cal-event-chip ${b.status === 'Cancelled' ? 'cancelled' : ''}" onclick="${opts.chipClick(b)}" title="${esc(b.customer)} (${esc(b.package)})">
-          <span class="cal-event-time">${esc(b.time)}</span>
-          <strong class="cal-event-name">${esc(b.customer)}</strong>
-          <span class="cal-event-pkg">${esc(b.package)}</span>
-          <span class="status-badge status-${(b.status || 'pending').toLowerCase()}" style="font-size: 9px; padding: 1px 5px;">${esc(b.status)}</span>
-        </div>
-      `).join('');
+      const chipsHtml = dayBookings.map(b => {
+        const safeStatus = ['confirmed', 'cancelled', 'pending'].includes(String(b.status || '').toLowerCase()) ? String(b.status).toLowerCase() : 'pending';
+        return `
+          <div class="cal-event-chip ${safeStatus === 'cancelled' ? 'cancelled' : ''}" onclick="${opts.chipClick(b)}" title="${esc(b.customer)} (${esc(b.package)})">
+            <span class="cal-event-time">${esc(b.time)}</span>
+            <strong class="cal-event-name">${esc(b.customer)}</strong>
+            <span class="cal-event-pkg">${esc(b.package)}</span>
+            <span class="status-badge status-${safeStatus}" style="font-size: 9px; padding: 1px 5px;">${esc(b.status || 'Pending')}</span>
+          </div>
+        `;
+      }).join('');
 
       const blockedHtml = blocked ? `
         <div class="cal-blocked-tag">Blocked: ${esc(blocked.reason || 'Unavailable')}</div>
@@ -199,8 +202,8 @@
     const selectedDate = fromISODate(selectedDayDate);
     container.innerHTML = buildMonthGridHTML(selectedDate.getFullYear(), selectedDate.getMonth(), {
       selectedStr: selectedDayDate,
-      cellClick: ds => `window.R59.schedule.selectCalendarDate('${ds}')`,
-      chipClick: b => `window.R59.schedule.selectDayView('${b.date}')`
+      cellClick: ds => `window.R59.schedule.selectCalendarDate('${esc(ds)}')`,
+      chipClick: b => `window.R59.schedule.selectDayView('${esc(b.date)}')`
     });
   }
 
@@ -227,22 +230,25 @@
       const isSelected = selectedDayDate === wd.dateStr;
 
       const eventsHtml = dayBookings.length > 0
-        ? dayBookings.map(b => `
-          <div class="cal-event-chip ${b.status === 'Cancelled' ? 'cancelled' : ''}" onclick="window.R59.schedule.selectDayView('${b.date}')" style="padding: 8px;">
-            <span class="cal-event-time">${esc(b.timeRange || b.time)}</span>
-            <strong class="cal-event-name" style="font-size: 13px;">${esc(b.customer)}</strong>
-            <span class="cal-event-pkg" style="font-size: 11px;">${esc(b.package)}</span>
-            <div style="margin-top: 4px;">
-              <span class="status-badge status-${(b.status || 'pending').toLowerCase()}">${esc(b.status)}</span>
+        ? dayBookings.map(b => {
+          const safeStatus = ['confirmed', 'cancelled', 'pending'].includes(String(b.status || '').toLowerCase()) ? String(b.status).toLowerCase() : 'pending';
+          return `
+            <div class="cal-event-chip ${safeStatus === 'cancelled' ? 'cancelled' : ''}" data-date="${esc(b.date)}" onclick="window.R59.schedule.selectDayView(this.dataset.date)" style="padding: 8px;">
+              <span class="cal-event-time">${esc(b.timeRange || b.time)}</span>
+              <strong class="cal-event-name" style="font-size: 13px;">${esc(b.customer)}</strong>
+              <span class="cal-event-pkg" style="font-size: 11px;">${esc(b.package)}</span>
+              <div style="margin-top: 4px;">
+                <span class="status-badge status-${safeStatus}">${esc(b.status || 'Pending')}</span>
+              </div>
             </div>
-          </div>
-        `).join('')
+          `;
+        }).join('')
         : blocked
           ? `<div class="cal-blocked-tag" style="margin-top: 10px; text-align: center;">Blocked: ${esc(blocked.reason || 'Unavailable')}</div>`
           : '<span class="hint" style="font-size: 12px; text-align: center; margin-top: 20px;">No bookings</span>';
 
       html += `
-        <div class="cal-week-col ${blocked ? 'cal-blocked' : ''} ${isSelected ? 'cal-selected' : ''}" onclick="window.R59.schedule.selectCalendarDate('${wd.dateStr}')">
+        <div class="cal-week-col ${blocked ? 'cal-blocked' : ''} ${isSelected ? 'cal-selected' : ''}" data-date="${esc(wd.dateStr)}" onclick="window.R59.schedule.selectCalendarDate(this.dataset.date)">
           <div class="cal-week-col-head">
             <div class="cal-week-col-name">${wd.name}</div>
             <div class="cal-week-col-date">${wd.dateNum}</div>
@@ -266,8 +272,8 @@
           const b = bookings.find(item => item.date === d);
           const isSelected = selectedDayDate === d;
           return `
-            <button type="button" class="btn btn-sm ${isSelected ? 'btn-primary' : ''}" onclick="window.R59.schedule.selectDayView('${d}')">
-              ${b ? esc(b.dateLabel || d) : d}
+            <button type="button" class="btn btn-sm ${isSelected ? 'btn-primary' : ''}" data-date="${esc(d)}" onclick="window.R59.schedule.selectDayView(this.dataset.date)">
+              ${b ? esc(b.dateLabel || d) : esc(d)}
             </button>
           `;
         }).join('')}
@@ -375,8 +381,8 @@
                   </span>
                 </div>
                 <div class="avail-slot-actions">
-                  <button type="button" class="btn btn-sm" onclick="window.R59.schedule.editTimeframe('${item.day}', ${tf.id})" style="padding: 3px 8px; font-size: 11px;">Edit</button>
-                  <button type="button" class="btn btn-danger btn-sm" onclick="window.R59.schedule.removeTimeframe('${item.day}', ${tf.id})" style="padding: 3px 8px; font-size: 11px;">Remove</button>
+                  <button type="button" class="btn btn-sm" data-day="${esc(item.day)}" data-id="${Number(tf.id)}" onclick="window.R59.schedule.editTimeframe(this.dataset.day, Number(this.dataset.id))" style="padding: 3px 8px; font-size: 11px;">Edit</button>
+                  <button type="button" class="btn btn-danger btn-sm" data-day="${esc(item.day)}" data-id="${Number(tf.id)}" onclick="window.R59.schedule.removeTimeframe(this.dataset.day, Number(this.dataset.id))" style="padding: 3px 8px; font-size: 11px;">Remove</button>
                 </div>
               </div>
             `).join('')}
@@ -400,7 +406,7 @@
       const formHtml = isEditingThisDay ? `
         <div class="timeframe-form">
           <div style="font-weight: 700; font-size: 13px; color: var(--accent-text);">
-            ${editingTimeframeId ? 'Edit Timeframe' : 'Add Timeframe'} for ${item.day}
+            ${editingTimeframeId ? 'Edit Timeframe' : 'Add Timeframe'} for ${esc(item.day)}
           </div>
           <div class="row" style="gap: 10px; flex-wrap: wrap;">
             <div>
@@ -426,7 +432,7 @@
             </div>
           </div>
           <div class="row" style="gap: 8px;">
-            <button type="button" class="btn btn-primary btn-sm" onclick="window.R59.schedule.saveTimeframe('${item.day}')">Save Timeframe</button>
+            <button type="button" class="btn btn-primary btn-sm" data-day="${esc(item.day)}" onclick="window.R59.schedule.saveTimeframe(this.dataset.day)">Save Timeframe</button>
             <button type="button" class="btn btn-sm" onclick="window.R59.schedule.cancelTimeframe()">Cancel</button>
           </div>
         </div>
@@ -436,12 +442,12 @@
         <div class="avail-day-card">
           <div class="avail-day-head">
             <div class="avail-day-title">
-              <strong>${item.day}</strong>
+              <strong>${esc(item.day)}</strong>
               <span class="status-badge ${item.available && item.timeframes?.length > 0 ? 'status-available' : 'status-unavailable'}">
                 ${item.available && item.timeframes?.length > 0 ? 'Available' : 'Unavailable'}
               </span>
             </div>
-            <button type="button" class="btn btn-sm" onclick="window.R59.schedule.showAddTimeframe('${item.day}')">+ Add Timeframe</button>
+            <button type="button" class="btn btn-sm" data-day="${esc(item.day)}" onclick="window.R59.schedule.showAddTimeframe(this.dataset.day)">+ Add Timeframe</button>
           </div>
           ${slotsHtml}
           ${formHtml}
@@ -541,7 +547,7 @@
           <div style="font-family: var(--display); font-size: 15px; font-weight: 700; color: var(--text);">${esc(item.dateFormatted)}</div>
           <div class="hint" style="color: var(--muted);">${esc(item.reason || 'Blocked date')}</div>
         </div>
-        <button type="button" class="btn btn-danger btn-sm" onclick="window.R59.schedule.removeBlockedDate(${item.id})">Remove</button>
+        <button type="button" class="btn btn-danger btn-sm" data-id="${Number(item.id)}" onclick="window.R59.schedule.removeBlockedDate(Number(this.dataset.id))">Remove</button>
       </div>
     `).join('');
   }
@@ -611,7 +617,7 @@
             ${b.notes ? `<div class="booking-notes">Notes: ${esc(b.notes)}</div>` : ''}
           </div>
           <div>
-            <span class="status-badge status-${(b.status || 'pending').toLowerCase()}">${esc(b.status || 'Pending')}</span>
+            <span class="status-badge status-${['confirmed', 'cancelled', 'pending'].includes(String(b.status || '').toLowerCase()) ? String(b.status).toLowerCase() : 'pending'}">${esc(b.status || 'Pending')}</span>
           </div>
         </div>
 
@@ -631,10 +637,10 @@
         </div>
 
         <div class="booking-foot">
-          <button type="button" class="btn btn-sm" onclick="window.R59.schedule.openBookingEditor(${b.id})">Edit</button>
+          <button type="button" class="btn btn-sm" data-id="${Number(b.id)}" onclick="window.R59.schedule.openBookingEditor(Number(this.dataset.id))">Edit</button>
           ${isCancelled
-            ? `<button type="button" class="btn btn-danger btn-sm" onclick="window.R59.schedule.promptRemoveBooking(${b.id})">Remove</button>`
-            : `<button type="button" class="btn btn-danger btn-sm" onclick="window.R59.schedule.promptCancelBooking(${b.id})">Cancel Booking</button>`}
+            ? `<button type="button" class="btn btn-danger btn-sm" data-id="${Number(b.id)}" onclick="window.R59.schedule.promptRemoveBooking(Number(this.dataset.id))">Remove</button>`
+            : `<button type="button" class="btn btn-danger btn-sm" data-id="${Number(b.id)}" onclick="window.R59.schedule.promptCancelBooking(Number(this.dataset.id))">Cancel Booking</button>`}
         </div>
       </div>`;
   }

@@ -88,10 +88,10 @@ checkoutRouter.post('/', async (c) => {
       throw new Error('Square Access Token not configured')
     }
 
-    // Fail loudly if no location ID — 'main' is not a valid Square location
-    const squareLocationId = c.env.SQUARE_LOCATION_ID || locationId
+    // Fail loudly if no location ID — only accept from verified server environment
+    const squareLocationId = c.env.SQUARE_LOCATION_ID
     if (!squareLocationId) {
-      throw new Error('SQUARE_LOCATION_ID is not configured. Cannot process payment.')
+      throw new Error('SQUARE_LOCATION_ID is not configured on the server. Cannot process payment.')
     }
 
     const client = new SquareClient({
@@ -139,6 +139,13 @@ checkoutRouter.post('/', async (c) => {
     const paymentId = payment?.id
 
     if (payment?.status !== 'COMPLETED' && payment?.status !== 'APPROVED') {
+      // Explicitly release slot lock before returning 402 payment error
+      try {
+        await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
+      } catch (releaseErr) {
+        console.error('Failed to release slot lock after payment failure:', releaseErr)
+      }
+
       return c.json({
         error: {
           code: 'PAYMENT_FAILED',

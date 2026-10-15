@@ -4,6 +4,23 @@ import { adminAuth, timingSafeEqual, createSessionToken } from '../middleware/au
 
 export const adminRouter = new Hono<{ Bindings: Bindings }>()
 
+// In-memory sliding window rate limiter for admin login: IP -> { attempts, resetAt }
+const loginAttempts = new Map<string, { attempts: number; resetAt: number }>()
+
+function checkLoginRateLimit(ip: string): boolean {
+  const now = Date.now()
+  const entry = loginAttempts.get(ip)
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(ip, { attempts: 1, resetAt: now + 60 * 1000 })
+    return true
+  }
+  if (entry.attempts >= 5) {
+    return false
+  }
+  entry.attempts++
+  return true
+}
+
 // Public login endpoint for admin credentials
 adminRouter.post('/login', async (c) => {
   try {
@@ -18,11 +35,31 @@ adminRouter.post('/login', async (c) => {
       }, 500)
     }
 
+    const expectedEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
+    if (!expectedEmail) {
+      return c.json({
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Server authentication is not configured.',
+          details: []
+        }
+      }, 500)
+    }
+
+    const clientIp = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'default'
+    if (!checkLoginRateLimit(clientIp)) {
+      return c.json({
+        error: {
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Too many login attempts. Please wait 1 minute before trying again.',
+          details: []
+        }
+      }, 429)
+    }
+
     const body = await c.req.json().catch(() => ({}))
     const email = (body.email || '').trim().toLowerCase()
-    const password = (body.password || '').trim()
-
-    const expectedEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
+    const password = typeof body.password === 'string' ? body.password : ''
 
     // Both email and password must be non-empty
     if (!email || !password) {
@@ -40,6 +77,8 @@ adminRouter.post('/login', async (c) => {
     const passwordMatches = timingSafeEqual(password, expectedSecret)
 
     if (!emailMatches || !passwordMatches) {
+      // Intentional delay to mitigate rapid automated brute-force attacks
+      await new Promise(r => setTimeout(r, 800))
       return c.json({
         error: {
           code: 'UNAUTHORIZED',
@@ -49,8 +88,12 @@ adminRouter.post('/login', async (c) => {
       }, 401)
     }
 
-    // Generate secure HMAC-signed session token
-    const token = await createSessionToken(expectedSecret, email)
+    // Clear failed attempts on successful login
+    loginAttempts.delete(clientIp)
+
+    // Generate secure HMAC-signed session token with decoupled SESSION_SECRET
+    const signingSecret = c.env.SESSION_SECRET || expectedSecret
+    const token = await createSessionToken(signingSecret, email)
 
     return c.json({
       success: true,
@@ -73,7 +116,7 @@ adminRouter.use('*', adminAuth)
 
 // Session verification endpoint for frontend startup and route guards
 adminRouter.get('/verify', async (c) => {
-  const expectedEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
+  const expectedEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
   return c.json({
     authenticated: true,
     email: expectedEmail
@@ -158,14 +201,33 @@ adminRouter.get('/availability', async (c) => {
 adminRouter.put('/availability', async (c) => {
   try {
     const body = await c.req.json()
-    const availability = body.availability !== undefined ? body.availability : body
-    const val = JSON.stringify(availability)
+    const rawAvailability = body.availability !== undefined ? body.availability : body
+    if (!Array.isArray(rawAvailability)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Availability must be an array.', details: [] } }, 400)
+    }
 
+    const ALLOWED_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    const cleanAvailability = rawAvailability.map((item: any) => {
+      const day = ALLOWED_DAYS.includes(item.day) ? item.day : 'Monday'
+      const available = Boolean(item.available)
+      const timeframes = Array.isArray(item.timeframes)
+        ? item.timeframes.map((tf: any) => ({
+            id: Number(tf.id) || Date.now(),
+            start: String(tf.start || '09:00').slice(0, 5),
+            end: String(tf.end || '17:00').slice(0, 5),
+            label: String(tf.label || `${tf.start} - ${tf.end}`).slice(0, 50),
+            repeat: tf.repeat === 'none' ? 'none' : 'weekly'
+          }))
+        : []
+      return { day, available, timeframes }
+    })
+
+    const val = JSON.stringify(cleanAvailability)
     await c.env.DB.prepare(
       "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('weekly_availability', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
     ).bind(val).run()
 
-    return c.json({ success: true })
+    return c.json({ success: true, availability: cleanAvailability })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not save availability.', details: [] } }, 500)
   }
@@ -227,8 +289,8 @@ adminRouter.delete('/blocked-dates/:id', async (c) => {
 // GET: View all bookings
 adminRouter.get('/bookings', async (c) => {
   try {
-    const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100)
-    const offset = parseInt(c.req.query('offset') || '0', 10)
+    const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100))
+    const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
 
     const { results } = await c.env.DB.prepare(
       `SELECT b.id, b.client_name, b.client_email, b.price_at_booking, b.square_payment_id, b.status, b.created_at,
@@ -387,13 +449,18 @@ adminRouter.get('/pricing', async (c) => {
 adminRouter.put('/pricing', async (c) => {
   try {
     const body = await c.req.json()
-    const val = JSON.stringify(body)
+    const cleanPricing = {
+      baseFee: Math.max(0, parseInt(body.baseFee, 10) || 0),
+      perPerson: Math.max(0, parseInt(body.perPerson, 10) || 0),
+      depositPercent: Math.min(100, Math.max(0, parseInt(body.depositPercent, 10) || 50))
+    }
+    const val = JSON.stringify(cleanPricing)
 
     await c.env.DB.prepare(
       "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('pricing', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
     ).bind(val).run()
 
-    return c.json({ success: true })
+    return c.json({ success: true, pricing: cleanPricing })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not save pricing settings.', details: [] } }, 500)
   }
@@ -508,13 +575,26 @@ adminRouter.get('/profile', async (c) => {
 adminRouter.put('/profile', async (c) => {
   try {
     const body = await c.req.json()
-    const val = JSON.stringify(body)
+    const cleanProfile = {
+      bio: String(body.bio || '').slice(0, 2000),
+      email: String(body.email || '').slice(0, 100),
+      phone: String(body.phone || '').slice(0, 30),
+      location: String(body.location || '').slice(0, 100),
+      travel: String(body.travel || '').slice(0, 200),
+      social: Array.isArray(body.social)
+        ? body.social.map((s: any) => ({
+            platform: String(s.platform || '').slice(0, 50),
+            url: /^https?:\/\//i.test(String(s.url || '')) ? String(s.url).slice(0, 300) : ''
+          }))
+        : []
+    }
+    const val = JSON.stringify(cleanProfile)
 
     await c.env.DB.prepare(
       "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('profile', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
     ).bind(val).run()
 
-    return c.json({ success: true })
+    return c.json({ success: true, profile: cleanProfile })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not save profile.', details: [] } }, 500)
   }
@@ -525,8 +605,8 @@ adminRouter.put('/profile', async (c) => {
 // GET: View all contact submissions
 adminRouter.get('/leads', async (c) => {
   try {
-    const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100)
-    const offset = parseInt(c.req.query('offset') || '0', 10)
+    const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100))
+    const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
 
     const { results } = await c.env.DB.prepare(
       'SELECT id, name, email, phone, session_type, message, created_at FROM Leads ORDER BY created_at DESC LIMIT ? OFFSET ?'

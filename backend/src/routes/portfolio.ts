@@ -7,8 +7,8 @@ export const portfolioRouter = new Hono<{ Bindings: Bindings }>()
 // GET: Fetch the public gallery (with optional pagination)
 portfolioRouter.get('/', async (c) => {
   try {
-    const limit = Math.min(parseInt(c.req.query('limit') || '50', 10), 100)
-    const offset = parseInt(c.req.query('offset') || '0', 10)
+    const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100))
+    const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
 
     const { results } = await c.env.DB.prepare(
       'SELECT id, r2_object_key, category, alt_text, display_order, is_featured FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC LIMIT ? OFFSET ?'

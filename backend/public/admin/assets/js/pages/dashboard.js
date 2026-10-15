@@ -78,7 +78,7 @@
     const calDisplay = $('#ovCalendarDisplay');
     if (calDisplay && window.R59.schedule?.buildMonthGridHTML) {
       calDisplay.innerHTML = window.R59.schedule.buildMonthGridHTML(ovYear, ovMonth, {
-        chipClick: b => `window.R59.schedule.openBookingEditor(${b.id})`
+        chipClick: b => `window.R59.schedule.openBookingEditor(${Number(b.id)})`
       });
     }
 

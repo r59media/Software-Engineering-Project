@@ -1,13 +1,30 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth } from '../middleware/auth'
+import { adminAuth, verifySessionToken, timingSafeEqual } from '../middleware/auth'
 
 export const servicesRouter = new Hono<{ Bindings: Bindings }>()
 
-// GET: List services (active only by default, or all if requested with auth)
+// GET: List services (active only by default, or all if requested with valid admin auth)
 servicesRouter.get('/', async (c) => {
   try {
-    const includeAll = c.req.query('all') === 'true'
+    const includeAllRequested = c.req.query('all') === 'true'
+    let includeAll = false
+
+    if (includeAllRequested) {
+      const auth = c.req.header('Authorization')
+      if (auth && auth.startsWith('Bearer ')) {
+        const token = auth.substring(7).trim()
+        const secret = c.env.ADMIN_SECRET
+        if (secret) {
+          const signingSecret = c.env.SESSION_SECRET || secret
+          const session = await verifySessionToken(token, signingSecret)
+          if (session.valid || timingSafeEqual(token, secret)) {
+            includeAll = true
+          }
+        }
+      }
+    }
+
     const query = includeAll
       ? 'SELECT id, name, description, price, duration_minutes, is_active FROM Services ORDER BY id ASC'
       : 'SELECT id, name, description, price, duration_minutes, is_active FROM Services WHERE is_active = 1 ORDER BY id ASC'

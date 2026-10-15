@@ -24,6 +24,7 @@ export type Bindings = {
   ADMIN_SECRET?: string
   ADMIN_EMAIL?: string
   ALLOWED_ORIGINS?: string
+  SESSION_SECRET?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -31,17 +32,39 @@ const app = new Hono<{ Bindings: Bindings }>()
 // Request logging
 app.use('*', logger())
 
-// CORS — restrict to known frontend origins
+// Global Security Headers
+app.use('*', async (c, next) => {
+  await next()
+  c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' https://*.workers.dev;")
+  c.header('X-Frame-Options', 'DENY')
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
+  c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+})
+
+// CORS — restrict to known frontend origins and same-origin requests
 app.use('*', async (c, next) => {
   const defaultOrigins = 'http://localhost:5173,http://localhost:8787,http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000,http://127.0.0.1:5500'
   const allowedRaw = c.env.ALLOWED_ORIGINS || defaultOrigins
-  const allowedOrigins = allowedRaw.split(',').map(o => o.trim())
+  const allowedOrigins = allowedRaw.split(',').map(o => o.trim()).filter(Boolean)
 
   const requestOrigin = c.req.header('Origin') || ''
-  const isAllowed = allowedOrigins.includes(requestOrigin) || requestOrigin === 'null' || allowedOrigins.includes('*')
+  const currentUrl = new URL(c.req.url)
+
+  // Explicitly disallow 'null' and verify origin is in allowed list or same-origin
+  const isAllowed = Boolean(
+    requestOrigin &&
+    requestOrigin !== 'null' &&
+    (allowedOrigins.includes(requestOrigin) || requestOrigin === currentUrl.origin)
+  )
+
+  if (!isAllowed) {
+    // For non-allowed origins, proceed without reflecting Access-Control-Allow-Origin
+    return await next()
+  }
 
   const corsMiddleware = cors({
-    origin: isAllowed ? requestOrigin : allowedOrigins[0],
+    origin: requestOrigin,
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
     exposeHeaders: ['Content-Length', 'X-Requested-With'],
@@ -60,18 +83,20 @@ app.get('/admin', (c) => {
   return c.redirect('/admin/')
 })
 
-app.all('/admin/*', async (c) => {
+const STATIC_EXT_REGEX = /\.(css|js|html|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json)$/i
+
+app.get('/admin/*', async (c) => {
   if (c.env.ASSETS) {
     const url = new URL(c.req.url)
-    // If requesting a static file with an extension, fetch directly
-    if (url.pathname.includes('.')) {
+    // If requesting a static web asset with a legitimate extension, fetch directly
+    if (STATIC_EXT_REGEX.test(url.pathname)) {
       return await c.env.ASSETS.fetch(c.req.raw)
     }
-    // Otherwise serve /admin/index.html
+    // Otherwise fallback to /admin/index.html for client-side routing
     const adminIndexUrl = new URL('/admin/index.html', url.origin)
     return await c.env.ASSETS.fetch(new Request(adminIndexUrl.toString(), c.req.raw))
   }
-  return c.text('Admin assets binding not found.', 500)
+  return c.text('Internal server error.', 500)
 })
 
 // API status endpoint

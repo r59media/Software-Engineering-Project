@@ -2,18 +2,23 @@ import { Context, Next } from 'hono'
 import { Bindings } from '../index'
 
 /**
- * Constant-time string comparison to prevent timing attacks.
+ * Constant-time string comparison to prevent timing attacks without length leaks.
  */
 export function timingSafeEqual(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
   const encoder = new TextEncoder()
   const aBytes = encoder.encode(a)
   const bBytes = encoder.encode(b)
-  if (aBytes.byteLength !== bBytes.byteLength) {
-    // Compare identical buffer to normalize computation time
-    crypto.subtle.timingSafeEqual(aBytes, aBytes)
-    return false
+
+  // Compare all bytes without early return on length mismatch to prevent length-leak timing branches
+  let mismatch = aBytes.byteLength === bBytes.byteLength ? 0 : 1
+  const maxLen = Math.max(aBytes.byteLength, bBytes.byteLength)
+  for (let i = 0; i < maxLen; i++) {
+    const aByte = i < aBytes.byteLength ? aBytes[i] : 0
+    const bByte = i < bBytes.byteLength ? bBytes[i] : 0
+    mismatch |= aByte ^ bByte
   }
-  return crypto.subtle.timingSafeEqual(aBytes, bBytes)
+  return mismatch === 0
 }
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
@@ -80,9 +85,7 @@ export async function verifySessionToken(token: string, secret: string): Promise
 /**
  * Middleware that strictly checks for a valid Authorization header.
  * Fails closed if ADMIN_SECRET is not configured.
- * Accepts either:
- * 1. A valid HMAC-signed session token.
- * 2. The direct ADMIN_SECRET (via constant-time comparison) for API / CLI usage.
+ * Decouples session signing secret (SESSION_SECRET) from ADMIN_SECRET.
  */
 export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) => {
   const secret = c.env.ADMIN_SECRET
@@ -95,6 +98,8 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
       }
     }, 500)
   }
+
+  const signingSecret = c.env.SESSION_SECRET || secret
 
   const auth = c.req.header('Authorization')
   if (!auth || !auth.startsWith('Bearer ')) {
@@ -118,14 +123,14 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }, 401)
   }
 
-  // 1. Direct secret check (constant-time)
-  if (timingSafeEqual(token, secret)) {
+  // 1. Signed session token check
+  const session = await verifySessionToken(token, signingSecret)
+  if (session.valid) {
     return await next()
   }
 
-  // 2. Signed session token check
-  const session = await verifySessionToken(token, secret)
-  if (session.valid) {
+  // 2. Direct secret check (fallback for administrative CLI scripts, timing-safe)
+  if (timingSafeEqual(token, secret)) {
     return await next()
   }
 
