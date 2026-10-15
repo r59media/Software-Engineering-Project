@@ -22,6 +22,7 @@ export type Bindings = {
   R2_SECRET_ACCESS_KEY?: string
   CLOUDFLARE_ACCOUNT_ID?: string
   ADMIN_SECRET?: string
+  ADMIN_EMAIL?: string
   ALLOWED_ORIGINS?: string
 }
 

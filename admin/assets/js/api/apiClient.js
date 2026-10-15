@@ -28,9 +28,6 @@
   }
 
   function getAuthToken() {
-    if (window.APP_CONFIG && window.APP_CONFIG.adminSecret) {
-      return window.APP_CONFIG.adminSecret;
-    }
     return localStorage.getItem('r59_admin_token') || '';
   }
 
@@ -115,6 +112,15 @@
       }
 
       if (!response.ok) {
+        if (response.status === 401 && !url.includes('/admin/login')) {
+          setAuthToken(null);
+          window.dispatchEvent(new CustomEvent('r59:unauthorized', {
+            detail: {
+              message: (responseData && responseData.error && responseData.error.message) || 'Session expired. Please sign in again.'
+            }
+          }));
+        }
+
         const error = new Error(
           (responseData && responseData.error && responseData.error.message) ||
           (responseData && responseData.message) ||
@@ -141,11 +147,24 @@
     }
   }
 
+  async function verifySession() {
+    const token = getAuthToken();
+    if (!token) return false;
+    try {
+      const res = await request('/admin/verify');
+      return !!(res && res.authenticated);
+    } catch {
+      setAuthToken(null);
+      return false;
+    }
+  }
+
   // HTTP method convenience helpers
   const apiClient = {
     getBaseUrl,
     getAuthToken,
     setAuthToken,
+    verifySession,
     request,
     get: (endpoint, params = null, headers = {}) => request(endpoint, { method: 'GET', params, headers }),
     post: (endpoint, body = null, headers = {}) => request(endpoint, { method: 'POST', body, headers }),

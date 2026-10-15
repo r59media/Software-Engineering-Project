@@ -149,6 +149,16 @@
     }
 
 
+    /* ---------- Authentication Guard ---------- */
+    body:not(.authenticated) .topbar,
+    body:not(.authenticated) .drawer,
+    body:not(.authenticated) .scrim,
+    body:not(.authenticated) main,
+    body:not(.authenticated) .save-bar,
+    body:not(.authenticated) #modal {
+      display: none !important;
+    }
+
     /* ---------- Login ---------- */
     .login {
       position: fixed;
@@ -160,8 +170,13 @@
       padding: 16px
     }
 
+    body:not(.authenticated) .login,
     .login.open {
-      display: grid
+      display: grid !important;
+    }
+
+    body.authenticated .login:not(.open) {
+      display: none !important;
     }
 
     .login form {

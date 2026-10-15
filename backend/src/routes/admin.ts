@@ -1,43 +1,84 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth } from '../middleware/auth'
+import { adminAuth, timingSafeEqual, createSessionToken } from '../middleware/auth'
 
 export const adminRouter = new Hono<{ Bindings: Bindings }>()
 
-// Public login/verification endpoint for admin credentials
+// Public login endpoint for admin credentials
 adminRouter.post('/login', async (c) => {
   try {
+    const expectedSecret = c.env.ADMIN_SECRET
+    if (!expectedSecret) {
+      return c.json({
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Server authentication is not configured.',
+          details: []
+        }
+      }, 500)
+    }
+
     const body = await c.req.json().catch(() => ({}))
     const email = (body.email || '').trim().toLowerCase()
-    const password = body.password || body.token || body.secret || ''
-    const expectedSecret = c.env.ADMIN_SECRET
-    const allowedEmail = 'r59mediatesting@gmail.com'
+    const password = (body.password || '').trim()
 
-    // Verify email matches the authorized admin email
-    if (email && email !== allowedEmail) {
-      return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid email address or password.', details: [] } }, 401)
+    const expectedEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
+
+    // Both email and password must be non-empty
+    if (!email || !password) {
+      return c.json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Invalid email address or password.',
+          details: []
+        }
+      }, 401)
     }
 
-    // Verify password matches ADMIN_SECRET
-    if (expectedSecret) {
-      if (password !== expectedSecret) {
-        return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid email address or password.', details: [] } }, 401)
-      }
-      return c.json({ success: true, token: expectedSecret })
+    // Timing-safe constant-time credential comparison
+    const emailMatches = timingSafeEqual(email, expectedEmail)
+    const passwordMatches = timingSafeEqual(password, expectedSecret)
+
+    if (!emailMatches || !passwordMatches) {
+      return c.json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Invalid email address or password.',
+          details: []
+        }
+      }, 401)
     }
 
-    // Local development fallback if ADMIN_SECRET is not yet configured in local environment
+    // Generate secure HMAC-signed session token
+    const token = await createSessionToken(expectedSecret, email)
+
     return c.json({
       success: true,
-      token: 'dev-admin-token'
+      token,
+      email: expectedEmail
     })
   } catch (e: any) {
-    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Authentication error.', details: [] } }, 500)
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Authentication error.',
+        details: []
+      }
+    }, 500)
   }
 })
 
-// All other admin routes require auth
+// All subsequent admin routes require valid admin authentication
 adminRouter.use('*', adminAuth)
+
+// Session verification endpoint for frontend startup and route guards
+adminRouter.get('/verify', async (c) => {
+  const expectedEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
+  return c.json({
+    authenticated: true,
+    email: expectedEmail
+  })
+})
 
 // ── Schedule Management ──────────────────────────────────────────
 

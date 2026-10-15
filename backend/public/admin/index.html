@@ -676,14 +676,14 @@
   </div>
 
   <!-- Login -->
-  <div class="login" id="login">
+  <div class="login" id="login" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
     <form id="loginForm">
       <div class="logo" style="margin-bottom:18px"><span class="logo-mark">R59</span>MEDIA <small>Admin</small></div>
-      <h2 style="margin-bottom:4px">Sign in</h2>
+      <h2 id="loginTitle" style="margin-bottom:4px">Sign in</h2>
       <p class="hint" id="loginHint" style="margin:0 0 16px">Enter your administrator credentials to sign in.</p>
-      <div id="loginError" class="form-error" style="color:var(--danger, #ff4d4f); margin:0 0 12px; font-size:13px; display:none;"></div>
+      <div id="loginError" class="form-error" role="alert" style="color:var(--danger, #ff4d4f); margin:0 0 12px; font-size:13px; display:none;"></div>
       <label class="f" for="lu">Email</label>
-      <input class="input" id="lu" type="email" value="r59mediatesting@gmail.com" placeholder="r59mediatesting@gmail.com" required autocomplete="username">
+      <input class="input" id="lu" type="email" placeholder="admin@example.com" required autocomplete="username">
       <label class="f" for="lp">Password</label>
       <input class="input" id="lp" type="password" placeholder="••••••••" required autocomplete="current-password">
       <button class="btn btn-primary" id="loginBtn" type="submit">Sign in</button>
