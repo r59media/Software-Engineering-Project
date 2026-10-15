@@ -14,6 +14,7 @@ import { adminRouter } from './routes/admin'
 export type Bindings = {
   DB: D1Database
   BUCKET?: R2Bucket
+  ASSETS?: Fetcher
   SQUARE_ACCESS_TOKEN?: string
   SQUARE_ENVIRONMENT?: string
   SQUARE_LOCATION_ID?: string
@@ -48,8 +49,22 @@ app.use('*', async (c, next) => {
   return corsMiddleware(c, next)
 })
 
-app.get('/', (c) => {
+// Serve admin dashboard at root via ASSETS or redirect
+app.get('/', async (c) => {
+  if (c.env.ASSETS) {
+    return await c.env.ASSETS.fetch(c.req.raw)
+  }
   return c.text('R59 Media API is running!')
+})
+
+// Convenience redirect for /admin to /
+app.get('/admin', (c) => {
+  return c.redirect('/')
+})
+
+// API status endpoint
+app.get('/api', (c) => {
+  return c.json({ status: 'ok', message: 'R59 Media API is running!' })
 })
 
 // Healthcheck — returns only status, never data
