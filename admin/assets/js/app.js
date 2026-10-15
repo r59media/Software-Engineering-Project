@@ -109,42 +109,64 @@
   }
 
   function initAuth() {
+    function resetLoginForm() {
+      const submitBtn = $('#loginBtn');
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Sign in';
+      }
+      const errEl = $('#loginError');
+      if (errEl) {
+        errEl.textContent = '';
+        errEl.style.display = 'none';
+      }
+      if ($('#lp')) $('#lp').value = '';
+      if ($('#modal')?.classList.contains('open')) {
+        window.R59.modal?.closeModal();
+      }
+    }
+
     function logout() {
       const drawer = $('#drawer');
       if (drawer && drawer.classList.contains('open')) {
         window.R59.navigation.setDrawer(false);
       }
 
-      window.R59.confirmation.confirmLogout(window.R59.state.isDirty(), () => {
+      const doLogout = () => {
         window.R59.apiClient?.setAuthToken(null);
         document.body.classList.remove('authenticated');
         $('#login')?.classList.add('open');
-        const errEl = $('#loginError');
-        if (errEl) {
-          errEl.textContent = '';
-          errEl.style.display = 'none';
-        }
-        if ($('#lp')) $('#lp').value = '';
+        resetLoginForm();
         const savedState = window.R59.state.getSaved();
         window.R59.state.setState(window.R59.state.clone(savedState));
         window.R59.state.setDirty(false);
         window.R59.state.syncStatus();
         window.toast('Logged out');
-        $('#lu')?.focus();
-      });
+        setTimeout(() => {
+          const u = $('#lu');
+          if (u && !u.value) u.focus();
+          else $('#lp')?.focus();
+        }, 50);
+      };
+
+      if (window.R59.state?.isDirty && window.R59.state.isDirty()) {
+        window.R59.confirmation.confirmLogout(true, doLogout);
+      } else {
+        doLogout();
+      }
     }
 
     window.addEventListener('r59:unauthorized', (e) => {
       window.R59.apiClient?.setAuthToken(null);
       document.body.classList.remove('authenticated');
       $('#login')?.classList.add('open');
+      resetLoginForm();
       const errEl = $('#loginError');
       if (errEl) {
         errEl.textContent = (e.detail && e.detail.message) || 'Session expired. Please sign in again.';
         errEl.style.display = 'block';
       }
-      if ($('#lp')) $('#lp').value = '';
-      $('#lu')?.focus();
+      setTimeout(() => $('#lp')?.focus(), 50);
     });
 
     $('#logoutTop')?.addEventListener('click', logout);
@@ -175,44 +197,50 @@
         submitBtn.textContent = 'Signing in...';
       }
 
+      let res;
       try {
-        const res = await window.R59.apiClient.post('/admin/login', { email, password });
+        res = await window.R59.apiClient.post('/admin/login', { email, password });
         if (!res || !res.token) {
           throw new Error('Authentication failed: No session token received.');
         }
-        window.R59.apiClient.setAuthToken(res.token);
-        document.body.classList.add('authenticated');
-        $('#login')?.classList.remove('open');
-        if ($('#lp')) $('#lp').value = '';
-        renderAll();
-        window.R59.navigation.go('overview');
-        window.toast('Signed in');
-        await loadInitialBackendData();
       } catch (err) {
         if (errEl) {
           errEl.textContent = err.message || 'Invalid email address or password.';
           errEl.style.display = 'block';
         }
-        $('#lp')?.focus();
-      } finally {
         if (submitBtn) {
           submitBtn.disabled = false;
           submitBtn.textContent = 'Sign in';
         }
+        $('#lp')?.focus();
+        return;
       }
+
+      // Login succeeded: transition UI immediately
+      window.R59.apiClient.setAuthToken(res.token);
+      document.body.classList.add('authenticated');
+      $('#login')?.classList.remove('open');
+      resetLoginForm();
+      renderAll();
+      window.R59.navigation.go('overview');
+      window.toast('Signed in');
+
+      // Fetch dashboard data concurrently in background without blocking UI
+      loadInitialBackendData();
     });
   }
 
   /**
-   * Attempt to load backend records if the API is available.
+   * Concurrently load backend records if the API is available.
    * If backend is not running or endpoints are not yet mounted,
    * frontend remains functional with empty state.
    */
   async function loadInitialBackendData() {
-    // 1. Packages / Services
-    try {
-      if (window.R59.packagesApi) {
-        const services = await window.R59.packagesApi.getPackages();
+    await Promise.allSettled([
+      // 1. Packages / Services
+      (async () => {
+        if (!window.R59.packagesApi) return;
+        const services = await window.R59.packagesApi.getPackages().catch(() => []);
         if (Array.isArray(services) && services.length > 0) {
           const currentState = window.R59.state.getState();
           currentState.packages = services.map(s => ({
@@ -224,13 +252,12 @@
           }));
           window.R59.payments?.renderPackages();
         }
-      }
-    } catch {}
+      })(),
 
-    // 2. Bookings
-    try {
-      if (window.R59.bookingsApi) {
-        const res = await window.R59.bookingsApi.getBookings();
+      // 2. Bookings
+      (async () => {
+        if (!window.R59.bookingsApi) return;
+        const res = await window.R59.bookingsApi.getBookings().catch(() => null);
         if (res && Array.isArray(res.bookings) && res.bookings.length > 0) {
           const bookings = res.bookings.map(b => ({
             id: b.id,
@@ -249,59 +276,54 @@
           window.R59.schedule?.renderCalendar();
           window.R59.dashboard?.renderOverview();
         }
-      }
-    } catch {}
+      })(),
 
-    // 3. Pricing Configuration
-    try {
-      if (window.R59.paymentsApi) {
-        const pricing = await window.R59.paymentsApi.getPricingSettings();
+      // 3. Pricing Configuration
+      (async () => {
+        if (!window.R59.paymentsApi) return;
+        const pricing = await window.R59.paymentsApi.getPricingSettings().catch(() => null);
         if (pricing && typeof pricing === 'object') {
           const currentState = window.R59.state.getState();
           currentState.pricing = { ...currentState.pricing, ...pricing };
           window.R59.payments?.renderPricing();
         }
-      }
-    } catch {}
+      })(),
 
-    // 4. Coupons
-    try {
-      if (window.R59.paymentsApi) {
-        const coupons = await window.R59.paymentsApi.getCoupons();
+      // 4. Coupons
+      (async () => {
+        if (!window.R59.paymentsApi) return;
+        const coupons = await window.R59.paymentsApi.getCoupons().catch(() => []);
         if (Array.isArray(coupons)) {
           const currentState = window.R59.state.getState();
           currentState.coupons = coupons;
           window.R59.payments?.renderCoupons();
         }
-      }
-    } catch {}
+      })(),
 
-    // 5. Weekly Availability
-    try {
-      if (window.R59.scheduleApi) {
-        const avail = await window.R59.scheduleApi.getWeeklyAvailability();
+      // 5. Weekly Availability
+      (async () => {
+        if (!window.R59.scheduleApi) return;
+        const avail = await window.R59.scheduleApi.getWeeklyAvailability().catch(() => null);
         if (Array.isArray(avail) && avail.length > 0) {
           window.R59.state.setAvailability(avail);
           window.R59.schedule?.renderAvailability();
         }
-      }
-    } catch {}
+      })(),
 
-    // 6. Blocked Dates
-    try {
-      if (window.R59.scheduleApi) {
-        const blocked = await window.R59.scheduleApi.getBlockedDates();
+      // 6. Blocked Dates
+      (async () => {
+        if (!window.R59.scheduleApi) return;
+        const blocked = await window.R59.scheduleApi.getBlockedDates().catch(() => []);
         if (Array.isArray(blocked)) {
           window.R59.state.setBlockedDates(blocked);
           window.R59.schedule?.renderBlockedDates();
         }
-      }
-    } catch {}
+      })(),
 
-    // 7. Profile Information
-    try {
-      if (window.R59.photographyApi) {
-        const profile = await window.R59.photographyApi.getProfile();
+      // 7. Profile Information
+      (async () => {
+        if (!window.R59.photographyApi) return;
+        const profile = await window.R59.photographyApi.getProfile().catch(() => null);
         if (profile && typeof profile === 'object') {
           const currentState = window.R59.state.getState();
           if (profile.bio !== undefined) currentState.bio = profile.bio;
@@ -312,8 +334,8 @@
           if (Array.isArray(profile.social)) currentState.social = profile.social;
           renderAll();
         }
-      }
-    } catch {}
+      })()
+    ]);
   }
 
   // App initialization

@@ -68,8 +68,8 @@ adminRouter.post('/login', async (c) => {
     const passwordMatches = timingSafeEqual(password, expectedSecret)
 
     if (!emailMatches || !passwordMatches) {
-      // Intentional delay to mitigate rapid automated brute-force attacks
-      await new Promise(r => setTimeout(r, 800))
+      // Intentional short delay to mitigate rapid automated brute-force attacks
+      await new Promise(r => setTimeout(r, 300))
       return c.json({
         error: {
           code: 'UNAUTHORIZED',
