@@ -273,8 +273,14 @@
     renderAll();
     window.R59.navigation.go('overview');
 
-    // 3. Gracefully query backend if available
-    loadInitialBackendData();
+    // Prompt login modal if not yet authenticated
+    if (!window.R59.apiClient?.getAuthToken()) {
+      $('#login')?.classList.add('open');
+      $('#lu')?.focus();
+    } else {
+      // 3. Gracefully query backend if authenticated
+      loadInitialBackendData();
+    }
   });
 
   window.R59 = window.R59 || {};

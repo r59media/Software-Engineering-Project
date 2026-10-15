@@ -3,18 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2024-03-20"
 compatibility_flags = [ "nodejs_compat" ]
 
-# Bind a D1 database
+[assets]
+directory = "../admin"
+binding = "ASSETS"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "r59_db"
 database_id = "a774e6aa-39ec-4a9c-8206-48c57aeead87"
 
-# Bind an R2 bucket (uncomment once R2 is enabled with a credit card on Cloudflare)
-# [[r2_buckets]]
-# binding = "BUCKET"
-# bucket_name = "r59-portfolio-images"
-
-[vars]
-# Add environment variables here (Square API keys, etc.)
-# SQUARE_ACCESS_TOKEN = "..."
-# SQUARE_ENVIRONMENT = "sandbox" # or production

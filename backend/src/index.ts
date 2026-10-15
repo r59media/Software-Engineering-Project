@@ -14,6 +14,7 @@ import { adminRouter } from './routes/admin'
 export type Bindings = {
   DB: D1Database
   BUCKET?: R2Bucket
+  ASSETS?: Fetcher
   SQUARE_ACCESS_TOKEN?: string
   SQUARE_ENVIRONMENT?: string
   SQUARE_LOCATION_ID?: string
@@ -48,8 +49,30 @@ app.use('*', async (c, next) => {
   return corsMiddleware(c, next)
 })
 
+// Root route (public facing)
 app.get('/', (c) => {
   return c.text('R59 Media API is running!')
+})
+
+// Route /admin and /admin/* to Admin Dashboard static assets
+app.get('/admin', (c) => {
+  return c.redirect('/admin/')
+})
+
+app.all('/admin/*', async (c) => {
+  if (c.env.ASSETS) {
+    const url = new URL(c.req.url)
+    const assetPath = url.pathname.replace(/^\/admin\/?$/, '/index.html').replace(/^\/admin/, '') || '/index.html'
+    const assetUrl = new URL(assetPath + url.search, url.origin)
+    const assetReq = new Request(assetUrl.toString(), c.req.raw)
+    return await c.env.ASSETS.fetch(assetReq)
+  }
+  return c.text('Admin assets binding not found.', 500)
+})
+
+// API status endpoint
+app.get('/api', (c) => {
+  return c.json({ status: 'ok', message: 'R59 Media API is running!' })
 })
 
 // Healthcheck — returns only status, never data
