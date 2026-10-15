@@ -8,17 +8,28 @@ export const adminRouter = new Hono<{ Bindings: Bindings }>()
 adminRouter.post('/login', async (c) => {
   try {
     const body = await c.req.json().catch(() => ({}))
-    const provided = body.password || body.token || body.secret || ''
-    const expected = c.env.ADMIN_SECRET
+    const email = (body.email || '').trim().toLowerCase()
+    const password = body.password || body.token || body.secret || ''
+    const expectedSecret = c.env.ADMIN_SECRET
+    const allowedEmail = 'r59mediatesting@gmail.com'
 
-    // If ADMIN_SECRET is set, compare against it. If unset in local dev, allow login with warning.
-    if (expected && provided !== expected) {
-      return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid admin credentials.', details: [] } }, 401)
+    // Verify email matches the authorized admin email
+    if (email && email !== allowedEmail) {
+      return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid email address or password.', details: [] } }, 401)
     }
 
+    // Verify password matches ADMIN_SECRET
+    if (expectedSecret) {
+      if (password !== expectedSecret) {
+        return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid email address or password.', details: [] } }, 401)
+      }
+      return c.json({ success: true, token: expectedSecret })
+    }
+
+    // Local development fallback if ADMIN_SECRET is not yet configured in local environment
     return c.json({
       success: true,
-      token: expected || 'dev-admin-token'
+      token: 'dev-admin-token'
     })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Authentication error.', details: [] } }, 500)

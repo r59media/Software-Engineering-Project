@@ -132,14 +132,51 @@
 
     $('#loginForm')?.addEventListener('submit', async e => {
       e.preventDefault();
-      const pass = $('#lp')?.value || '';
-      if (pass && window.R59.apiClient) {
-        window.R59.apiClient.setAuthToken(pass);
+      const email = $('#lu')?.value.trim() || '';
+      const password = $('#lp')?.value || '';
+      const errEl = $('#loginError');
+      const submitBtn = $('#loginBtn');
+
+      if (errEl) {
+        errEl.textContent = '';
+        errEl.style.display = 'none';
       }
-      $('#login')?.classList.remove('open');
-      window.R59.navigation.go('overview');
-      window.toast('Signed in');
-      await loadInitialBackendData();
+
+      if (!email || !password) {
+        if (errEl) {
+          errEl.textContent = 'Please enter both email and password.';
+          errEl.style.display = 'block';
+        }
+        return;
+      }
+
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Signing in...';
+      }
+
+      try {
+        const res = await window.R59.apiClient.post('/admin/login', { email, password });
+        const token = (res && res.token) || password;
+        if (window.R59.apiClient) {
+          window.R59.apiClient.setAuthToken(token);
+        }
+        $('#login')?.classList.remove('open');
+        window.R59.navigation.go('overview');
+        window.toast('Signed in');
+        await loadInitialBackendData();
+      } catch (err) {
+        if (errEl) {
+          errEl.textContent = err.message || 'Invalid email or password.';
+          errEl.style.display = 'block';
+        }
+        $('#lp')?.focus();
+      } finally {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Sign in';
+        }
+      }
     });
   }
 
