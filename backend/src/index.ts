@@ -13,7 +13,7 @@ import { adminRouter } from './routes/admin'
 
 export type Bindings = {
   DB: D1Database
-  BUCKET: R2Bucket
+  BUCKET?: R2Bucket
   SQUARE_ACCESS_TOKEN?: string
   SQUARE_ENVIRONMENT?: string
   SQUARE_LOCATION_ID?: string
