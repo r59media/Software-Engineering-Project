@@ -1,0 +1,141 @@
+/* ==========================================================================
+   R59 Media Admin — Payments, Packages & Coupons Styles
+   ========================================================================== */
+
+    /* ---------- Payment & Pricing ---------- */
+    .pricing-grid {
+      grid-template-columns: repeat(3, 1fr);
+      margin-bottom: 24px
+    }
+
+    .price-display {
+      font-family: var(--display);
+      font-size: 26px;
+      font-weight: 900;
+      color: var(--accent-text);
+      margin-bottom: 12px
+    }
+
+    /* Locked price fields */
+    .price-field-row {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 10px;
+      margin-top: 12px;
+      margin-bottom: 6px;
+    }
+
+    .price-field-row label.f {
+      margin: 0;
+    }
+
+    .price-field-row .btn-sm {
+      padding: 4px 12px;
+    }
+
+    .input[readonly].price-locked {
+      opacity: .65;
+      cursor: not-allowed;
+      background: var(--panel-2);
+    }
+
+    .section-head {
+      margin: 28px 0 14px
+    }
+
+    .packages-grid {
+      grid-template-columns: repeat(3, 1fr)
+    }
+
+    textarea.input.desc-input {
+      min-height: 80px
+    }
+
+    .add-package-card {
+      min-height: 260px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      border: 2px dashed var(--line);
+      background: transparent;
+      color: var(--text);
+      cursor: pointer;
+      text-align: center;
+    }
+    .add-package-card:hover { border-color: var(--yellow); }
+    .add-package-plus {
+      display: grid; place-items: center;
+      width: 54px; height: 54px; border-radius: 50%;
+      background: var(--yellow); color: var(--black);
+      font-size: 38px; font-weight: 500; line-height: 1;
+    }
+    .package-remove-confirm { max-width: 420px; }
+
+    /* Coupons + new booking */
+    .coupon-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .coupon-row .input {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .price-summary {
+      margin-top: 16px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 13px;
+    }
+
+    .price-summary .ps-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--text-soft);
+    }
+
+    .price-summary .ps-row.discount b {
+      color: #4ade80;
+    }
+
+    .price-summary .ps-row.total {
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+      margin-top: 2px;
+      font-family: var(--display);
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .price-summary .ps-row.total b {
+      color: var(--accent-text);
+      font-size: 16px;
+    }
+
+    .coupon-form {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr 1fr auto;
+      gap: 12px;
+      align-items: end;
+    }
+
+    .coupon-form label.f {
+      margin-top: 0;
+    }
+
+    .coupon-form-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .coupon-item {
