@@ -31,12 +31,19 @@ app.use('*', logger())
 
 // CORS — restrict to known frontend origins
 app.use('*', async (c, next) => {
-  const allowedRaw = c.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:8787'
+  const defaultOrigins = 'http://localhost:5173,http://localhost:8787,http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000,http://127.0.0.1:5500'
+  const allowedRaw = c.env.ALLOWED_ORIGINS || defaultOrigins
   const allowedOrigins = allowedRaw.split(',').map(o => o.trim())
+
+  const requestOrigin = c.req.header('Origin') || ''
+  const isAllowed = allowedOrigins.includes(requestOrigin) || requestOrigin === 'null' || allowedOrigins.includes('*')
+
   const corsMiddleware = cors({
-    origin: allowedOrigins,
-    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization'],
+    origin: isAllowed ? requestOrigin : allowedOrigins[0],
+    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    exposeHeaders: ['Content-Length', 'X-Requested-With'],
+    credentials: true,
   })
   return corsMiddleware(c, next)
 })
