@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>R59 Media — Admin Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,400;0,500;0,700;0,900;1,400&family=Space+Grotesk:wght@400;500&display=swap"
+    rel="stylesheet">
+
+  <!-- Stylesheets -->
+  <link rel="stylesheet" href="assets/css/main.css">
+  <link rel="stylesheet" href="assets/css/layout.css">
+  <link rel="stylesheet" href="assets/css/components.css">
+  <link rel="stylesheet" href="assets/css/pages/dashboard.css">
+  <link rel="stylesheet" href="assets/css/pages/payments.css">
+  <link rel="stylesheet" href="assets/css/pages/photography.css">
+  <link rel="stylesheet" href="assets/css/pages/schedule.css">
+</head>
+
+<body>
+
+  <header class="topbar">
+    <button class="burger" id="burger" aria-label="Open menu" aria-expanded="false"
+      aria-controls="drawer"><span></span></button>
+    <div class="logo"><span class="logo-mark">R59</span>MEDIA <small>Admin</small></div>
+    <div class="spacer"></div>
+    <span class="status" id="status">All changes saved</span>
+    <button class="theme-btn" id="themeToggle" aria-label="Switch to light mode" title="Toggle light / dark">
+      <svg class="i moon" viewBox="0 0 24 24">
+        <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
+      </svg>
+      <svg class="i sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+      </svg>
+    </button>
+    <button class="btn" id="logoutTop">
+      <svg class="i" viewBox="0 0 24 24">
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+        <path d="M16 17l5-5-5-5" />
+        <path d="M21 12H9" />
+      </svg>
+      Log out
+    </button>
+  </header>
+
+  <div class="scrim" id="scrim"></div>
+  <aside class="drawer" id="drawer" aria-label="Admin navigation" aria-hidden="true">
+    <div class="drawer-head">
+      <div class="logo"><span class="logo-mark">R59</span>MEDIA</div>
+      <button class="icon-btn" id="closeDrawer" aria-label="Close menu">
+        <svg class="i" viewBox="0 0 24 24">
+          <path d="M18 6 6 18M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+    <nav>
+      <button class="nav-link" data-go="overview">
+        <svg class="i" viewBox="0 0 24 24">
+        </svg>Main Menu
+      </button>
+
+      <div class="nav-label">Personal/Contact Information</div>
+      <button class="nav-link" data-go="text">
+        <svg class="i" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="7" height="7" />
+          <rect x="14" y="3" width="7" height="7" />
+          <rect x="3" y="14" width="7" height="7" />
+          <rect x="14" y="14" width="7" height="7" />
+        </svg>
+        Dashboard
+      </button>
+      <button class="nav-link nav-sub" data-go="text" data-anchor="card-bio">Biography</button>
+      <button class="nav-link nav-sub" data-go="text" data-anchor="card-contact">Contact info</button>
+      <button class="nav-link nav-sub" data-go="text" data-anchor="card-location">Location</button>
+      <button class="nav-link nav-sub" data-go="text" data-anchor="card-social">Social media links</button>
+
+      <div class="nav-label">Business Management</div>
+      <button class="nav-link" data-go="payment">
+        <svg class="i" viewBox="0 0 24 24">
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <path d="M3 10h18" />
+          <path d="M7 15h4" />
+        </svg>
+        Payment
+      </button>
+      <button class="nav-link" data-go="schedule">
+        <svg class="i" viewBox="0 0 24 24">
+          <rect x="3" y="4" width="18" height="17" rx="2" />
+          <path d="M16 2v4M8 2v4M3 10h18" />
+        </svg>
+        Schedule
+      </button>
+
+      <div class="nav-label">Images</div>
+      <button class="nav-link" data-go="images" data-tab="main">
+        <svg class="i" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <path d="m21 15-5-5L5 21" />
+        </svg>Most Recent
+      </button>
+      <button class="nav-link" data-go="images" data-tab="gallery">
+        <svg class="i" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="8" height="10" />
+          <rect x="13" y="3" width="8" height="6" />
+          <rect x="13" y="11" width="8" height="10" />
+          <rect x="3" y="15" width="8" height="6" />
+        </svg>Gallery
+      </button>
+      <button class="nav-link" data-go="images" data-tab="about">
+        <svg class="i" viewBox="0 0 24 24">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4 21a8 8 0 0 1 16 0" />
+        </svg>About me
+      </button>
+    </nav>
+
+    <div class="drawer-foot">
+      <p class="seg-label" id="segLabel">Appearance</p>
+      <div class="seg" role="group" aria-labelledby="segLabel">
+        <button data-theme-set="light" aria-pressed="false">Light</button>
+        <button data-theme-set="dark" aria-pressed="false">Dark</button>
+        <button data-theme-set="system" aria-pressed="true">System</button>
+      </div>
+      <button class="btn btn-danger" id="logoutDrawer">Log out</button>
+    </div>
+  </aside>
+
+  <main>
+    <!-- OVERVIEW -->
+    <section class="view" id="view-overview" aria-labelledby="h-overview">
+      <div class="eyebrow">Dashboard</div>
+      <h1 id="h-overview">Welcome back, <em>Admin.</em></h1>
+      <p class="lead">Your bookings, revenue and schedule at a glance.</p>
+
+      <!-- Top row: stats on the left half, bookings manager on the right half -->
+      <div class="ov-top">
+      <!-- Revenue + booking KPI cards (values are computed from scheduleBookings; swap that array for DB data later) -->
+        <div class="grid kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-label">Total Revenue</span>
+            <b class="kpi-value" id="kpiTotalRevenue">$0</b>
+            <span class="kpi-sub" id="kpiTotalSub">All bookings, excluding cancelled</span>
+          </div>
+  
+          <div class="kpi-card">
+            <div class="kpi-head">
+              <span class="kpi-label">Monthly Revenue</span>
+              <div class="kpi-nav" role="group" aria-label="Revenue month navigation">
+                <button type="button" class="cal-nav-btn" id="ovPrevMonth" aria-label="Previous month">&#8592;</button>
+                <button type="button" class="cal-nav-btn" id="ovNextMonth" aria-label="Next month">&#8594;</button>
+              </div>
+            </div>
+            <b class="kpi-value" id="kpiMonthRevenue">$0</b>
+            <span class="kpi-sub" id="kpiMonthLabel">October 2026</span>
+          </div>
+  
+          <div class="kpi-card">
+            <span class="kpi-label">Bookings</span>
+            <div class="kpi-split">
+              <div>
+                <b class="kpi-value" id="kpiBookingsMonth">0</b>
+                <span class="kpi-sub" id="kpiBookingsMonthLabel">This month</span>
+              </div>
+              <div>
+                <b class="kpi-value" id="kpiBookingsYtd">0</b>
+                <span class="kpi-sub" id="kpiYtdLabel">Year to date</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      <!-- Bookings manager -->
+        <div class="card ov-bookings-card" id="card-ov-bookings">
+          <div class="card-head">
+            <div>
+              <h2>Manage Bookings</h2>
+              <span class="hint" id="ovBookingsHint">Edit or remove customer bookings for the month shown above</span>
+            </div>
+            <button type="button" class="btn btn-danger btn-sm" id="ovClearCancelled" style="display:none;"></button>
+          </div>
+          <div id="ovBookingsList"></div>
+        </div>
+      </div>
+
+      <!-- Calendar -->
+      <div class="card" id="card-ov-calendar" style="margin-top: 18px;">
+        <div class="card-head cal-head">
+          <div>
+            <h2>Calendar</h2>
+            <div class="cal-date-nav" aria-label="Calendar month navigation">
+              <button type="button" class="cal-nav-btn" id="ovCalPrev" aria-label="Previous month">&#8592;</button>
+              <span class="cal-range-title" id="ovCalTitle">October 2026</span>
+              <button type="button" class="cal-nav-btn" id="ovCalNext" aria-label="Next month">&#8594;</button>
+            </div>
+          </div>
+          <button type="button" class="btn btn-sm" id="ovCalToday">Today</button>
+        </div>
+        <div id="ovCalendarDisplay"></div>
+      </div>
+
+      <div class="preview-bio" aria-label="About section preview">
+        <img id="previewImg" alt="">
+        <div>
+          <div class="hint" style="color:#666">Live preview · About me</div>
+          <h3>The face <em>behind the camera</em></h3>
+          <p id="previewBio"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- TEXT -->
+    <section class="view" id="view-text" aria-labelledby="h-text">
+      <div class="eyebrow">Text changes</div>
+      <h1 id="h-text">Site <em>copy</em></h1>
+      <p class="lead">Edits appear on the live site after you save.</p>
+
+      <div class="grid text-grid">
+
+        <div class="left-stack">
+
+          <div class="card" id="card-bio">
+            <div class="card-head">
+              <h2>Biography</h2>
+              <span class="hint" id="bioCount">0 / 1200</span>
+            </div>
+
+            <label class="f sr-only" for="bio">Biography</label>
+            <textarea class="input" id="bio" maxlength="1200" data-bind="bio"></textarea>
+          </div>
+
+          <div class="card" id="card-social">
+            <div class="card-head">
+              <h2>Social media links</h2>
+              <button class="btn btn-sm" id="addSocial">+ Add link</button>
+            </div>
+
+            <div id="socialList"></div>
+
+            <p class="hint" style="margin:6px 0 0">
+              Links appear in the contact section and footer.
+            </p>
+          </div>
+
+        </div>
+
+        <div class="stack">
+
+          <div class="card" id="card-contact">
+            <div class="card-head">
+              <h2>Contact info</h2>
+            </div>
+
+            <label class="f" for="email">Professional email</label>
+            <input class="input" id="email" type="email" data-bind="email">
+
+            <label class="f" for="phone">Phone</label>
+            <input class="input" id="phone" type="tel" data-bind="phone">
+          </div>
+
+          <div class="card" id="card-location">
+            <div class="card-head">
+              <h2>Location</h2>
+            </div>
+
+            <label class="f" for="city">City / service area</label>
+            <input class="input" id="city" data-bind="location">
+
+            <label class="f" for="travel">Travel note</label>
+            <input class="input" id="travel" data-bind="travel">
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+    <!-- IMAGES -->
+    <section class="view" id="view-images" aria-labelledby="h-images">
+      <div class="eyebrow">Images</div>
+      <h1 id="h-images">Photo <em>library</em></h1>
+      <p class="lead">Click an image to replace it, or drop a file onto any card.</p>
+
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" data-tab="main" aria-selected="true">Most Recent</button>
+        <button class="tab" role="tab" data-tab="gallery" aria-selected="false">Gallery</button>
+        <button class="tab" role="tab" data-tab="about" aria-selected="false">About me</button>
+      </div>
+
+      <div class="toolbar">
+        <div class="filters" id="filters"></div>
+        <span class="hint" id="imgHint"></span>
+      </div>
+
+      <div class="img-grid" id="imgGrid"></div>
+      <input type="file" id="filePick" accept="image/*" hidden>
+      <input type="file" id="fileAdd" accept="image/*" multiple hidden>
+    </section>
+
+    <!-- PAYMENT -->
+    <section class="view" id="view-payment" aria-labelledby="h-payment">
+      <div class="eyebrow">Business management</div>
+      <h1 id="h-payment">Payment</h1>
+      <p class="lead">Manage payment and deposit settings for customer bookings.</p>
+
+      <!-- 1 & 2: Base Line Fee & Per Person Price -->
+      <div class="grid pricing-grid">
+        <div class="card" id="card-base-fee">
+          <div class="card-head">
+            <h2>Base Line Fee</h2>
+            <span class="hint">Starting fee</span>
+          </div>
+          <div class="price-display" id="baseFeeDisplay">$0.00</div>
+          <div class="price-field-row">
+            <label class="f" for="baseFee">Base fee amount ($)</label>
+            <button type="button" class="btn btn-sm price-edit-btn" data-price-key="baseFee" aria-controls="baseFee">Edit price</button>
+          </div>
+          <input class="input" id="baseFee" type="number" min="0" step="5" value="0" placeholder="0" readonly>
+          <p class="hint" style="margin-top: 10px;">
+            This is the base fee charged for a booking before any additional per-person or package pricing.
+          </p>
+        </div>
+
+        <div class="card" id="card-per-person">
+          <div class="card-head">
+            <h2>Per Person Price</h2>
+            <span class="hint">Attendee rate</span>
+          </div>
+          <div class="price-display" id="perPersonDisplay">$0.00</div>
+          <div class="price-field-row">
+            <label class="f" for="perPerson">Per-person price ($)</label>
+            <button type="button" class="btn btn-sm price-edit-btn" data-price-key="perPerson" aria-controls="perPerson">Edit price</button>
+          </div>
+          <input class="input" id="perPerson" type="number" min="0" step="5" value="0" placeholder="0" readonly>
+          <p class="hint" style="margin-top: 10px;">
+            This amount is added based on the number of people included in the photoshoot.
+          </p>
+        </div>
+
+        <div class="card" id="card-deposit">
+          <div class="card-head">
+            <h2>Down Payment</h2>
+            <span class="hint">Deposit percentage</span>
+          </div>
+          <div class="price-display" id="depositDisplay">50%</div>
+          <div class="price-field-row">
+            <label class="f" for="depositPercent">Down payment (% of total)</label>
+            <button type="button" class="btn btn-sm price-edit-btn" data-price-key="depositPercent" aria-controls="depositPercent">Edit percentage</button>
+          </div>
+          <input class="input" id="depositPercent" type="number" min="0" max="100" step="1" value="50" placeholder="50" readonly>
+          <p class="hint" style="margin-top: 10px;" id="depositExample">
+            The share of a booking's total that is collected upfront.
+          </p>
+        </div>
+      </div>
+
+      <!-- 3: Photography Packages -->
+      <div class="section-head">
+        <h2>Photography Packages</h2>
+        <p class="hint">Configure available packages, descriptions, and booking availability.</p>
+      </div>
+
+      <div class="grid packages-grid" id="packageList">
+        <!-- Photography packages rendered dynamically via packagesApi / state -->
+      </div>
+      <div style="margin-top: 16px;">
+        <button type="button" class="card add-package-card" id="addPackageBtn" aria-label="Add a photography package">
+          <span class="add-package-plus" aria-hidden="true">+</span>
+          <strong>Add package</strong>
+          <span class="hint">Create another photography package</span>
+        </button>
+      </div>
+      </div>
+
+      <!-- 4: Coupon codes -->
+      <div class="section-head">
+        <h2>Coupon Codes</h2>
+        <p class="hint">Create discount codes that can be applied when adding a booking. Changes apply after you click “Save changes”.</p>
+      </div>
+
+      <div class="card" id="card-coupons">
+        <div class="coupon-form">
+          <div>
+            <label class="f" for="couponCode">Code</label>
+            <input class="input" id="couponCode" type="text" autocomplete="off" maxlength="24" placeholder="e.g. SUMMER20" style="text-transform: uppercase;">
+          </div>
+          <div>
+            <label class="f" for="couponType">Discount type</label>
+            <select class="input" id="couponType">
+              <option value="percent">Percent (%)</option>
+              <option value="fixed">Fixed amount ($)</option>
+            </select>
+          </div>
+          <div>
+            <label class="f" for="couponAmount" id="couponAmountLabel">Percent off</label>
+            <input class="input" id="couponAmount" type="number" min="0" step="1" placeholder="10">
+          </div>
+          <div class="coupon-form-actions">
+            <button type="button" class="btn btn-primary" id="couponSubmit">Add coupon</button>
+            <button type="button" class="btn" id="couponCancelEdit" style="display:none;">Cancel</button>
+          </div>
+        </div>
+        <p class="form-error" id="couponError" role="alert" style="margin: 8px 0 0;"></p>
+
+        <div style="font-family: var(--display); font-size: 13px; font-weight: 700; color: var(--accent-text); letter-spacing: .06em; text-transform: uppercase; margin: 14px 0 10px;">
+          Coupon List
+        </div>
+        <div id="couponList"></div>
+      </div>
+    </section>
+
+    <!-- SCHEDULE -->
+    <section class="view" id="view-schedule" aria-labelledby="h-schedule">
+      <div class="eyebrow">Business management</div>
+      <h1 id="h-schedule">Schedule</h1>
+      <p class="lead">Manage the dates and appointment times customers can book.</p>
+
+      <!-- 1. CALENDAR VIEW (Full width) -->
+      <div class="card" id="card-calendar" style="margin-bottom: 24px;">
+        <div class="card-head cal-head">
+          <div>
+            <h2>Calendar</h2>
+            <div class="cal-date-nav" aria-label="Calendar date navigation">
+              <button type="button" class="cal-nav-btn" id="calPrev" aria-label="Previous">&#8592;</button>
+              <span class="cal-range-title" id="calActiveRange">October 2026</span>
+              <button type="button" class="cal-nav-btn" id="calNext" aria-label="Next">&#8594;</button>
+            </div>
+          </div>
+          <div class="cal-views-wrap" role="group" aria-label="Calendar view mode">
+            <button type="button" class="cal-view-btn" id="calBtnDay">Day</button>
+            <button type="button" class="cal-view-btn" id="calBtnWeek">Week</button>
+            <button type="button" class="cal-view-btn active" id="calBtnMonth">Month</button>
+          </div>
+        </div>
+
+        <div id="calendarDisplay">
+          <!-- Calendar rendered via JS -->
+        </div>
+      </div>
+
+      <!-- TWO-COLUMN LAYOUT: Availability + Blocked Dates | Bookings -->
+      <div class="schedule-grid-2col">
+        <!-- LEFT COLUMN: Availability + Blocked Dates -->
+        <div class="schedule-left-col">
+          <!-- 2. BOOKING AVAILABILITY -->
+          <div class="card" id="card-availability">
+            <div class="card-head">
+              <div>
+                <h2>Booking Availability</h2>
+                <span class="hint">Control times customers are allowed to book</span>
+              </div>
+            </div>
+
+            <div id="availabilityList">
+              <!-- 7 Days rendered via JS -->
+            </div>
+          </div>
+
+          <!-- 4. BLOCKED DATES -->
+          <div class="card" id="card-blocked-dates">
+            <div class="card-head">
+              <div>
+                <h2>Blocked Dates</h2>
+                <span class="hint">Prevent bookings on specific days</span>
+              </div>
+            </div>
+
+            <div class="blocked-dates-form" style="margin-bottom: 18px;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;" class="block-form-row">
+                <div>
+                  <label class="f" for="blockDateInput" style="margin-top: 0;">Date</label>
+                  <input type="date" id="blockDateInput" class="input">
+                </div>
+                <div>
+                  <label class="f" for="blockReasonInput" style="margin-top: 0;">Reason (optional)</label>
+                  <input type="text" id="blockReasonInput" class="input" placeholder="e.g. Vacation, Holiday">
+                </div>
+              </div>
+              <button type="button" class="btn btn-primary" id="btnBlockDate">Block Date</button>
+            </div>
+
+            <div style="font-family: var(--display); font-size: 13px; font-weight: 700; color: var(--accent-text); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 10px;">
+              Blocked Dates List
+            </div>
+
+            <div id="blockedDatesList">
+              <!-- Blocked dates list rendered via JS -->
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. BOOKINGS (Right column, scrollable) -->
+        <div class="card" id="card-bookings">
+          <div class="card-head">
+            <div>
+              <h2>Bookings</h2>
+              <span class="hint">Customer bookings organized by date</span>
+            </div>
+            <div class="head-actions">
+              <button type="button" class="btn btn-danger btn-sm" id="btnClearCancelled" style="display:none;"></button>
+              <button type="button" class="btn btn-primary btn-sm" id="btnAddBooking">+ Add Booking</button>
+            </div>
+          </div>
+
+          <div id="bookingsList">
+            <!-- Bookings grouped by date rendered via JS -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Savebar -->
+  <div class="savebar" id="savebar" role="region" aria-label="Unsaved changes">
+    <span>You have unsaved changes</span>
+    <button class="btn btn-sm" id="discard">Discard</button>
+    <button class="btn btn-primary btn-sm" id="save">Save changes</button>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Logout modal -->
+  <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-box">
+      <h2 id="modalTitle">Log out?</h2>
+      <p id="modalText">You’ll need to sign in again to edit the site.</p>
+      <div class="row">
+        <button class="btn" id="modalCancel">Cancel</button>
+        <button class="btn btn-primary" id="modalOk">Log out</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New booking modal -->
+  <div class="modal" id="newBookingModal" role="dialog" aria-modal="true" aria-labelledby="newBookingTitle">
+    <div class="modal-box modal-wide">
+      <h2 id="newBookingTitle">Add Booking</h2>
+      <div class="booking-form-grid">
+        <div>
+          <label class="f" for="nbFirst">First name</label>
+          <input class="input" id="nbFirst" type="text" autocomplete="off">
+        </div>
+        <div>
+          <label class="f" for="nbLast">Last name</label>
+          <input class="input" id="nbLast" type="text" autocomplete="off">
+        </div>
+        <div class="full">
+          <label class="f" for="nbEmail">Email</label>
+          <input class="input" id="nbEmail" type="email" autocomplete="off" placeholder="name@example.com">
+        </div>
+        <div>
+          <label class="f" for="nbPhone">Phone number</label>
+          <input class="input" id="nbPhone" type="tel" autocomplete="off" placeholder="(555) 555-5555">
+        </div>
+        <div>
+          <label class="f" for="nbAttendees">Number of attendees</label>
+          <input class="input" id="nbAttendees" type="number" min="1" step="1" value="1">
+        </div>
+        <div class="full">
+          <label class="f" for="nbDate">Date of booking</label>
+          <input class="input" id="nbDate" type="date">
+        </div>
+        <div>
+          <label class="f" for="nbStart">Start time</label>
+          <input class="input" id="nbStart" type="time">
+        </div>
+        <div>
+          <label class="f" for="nbEnd">End time (optional)</label>
+          <input class="input" id="nbEnd" type="time">
+        </div>
+        <div class="full">
+          <label class="f" for="nbLocation">Location (optional)</label>
+          <input class="input" id="nbLocation" type="text" autocomplete="off" placeholder="e.g. Branch Brook Park, Newark NJ">
+        </div>
+        <div class="full">
+          <label class="f" for="nbPackage">Package</label>
+          <select class="input" id="nbPackage"></select>
+        </div>
+        <div class="full">
+          <label class="f" for="nbCoupon">Coupon code (optional)</label>
+          <div class="coupon-row">
+            <input class="input" id="nbCoupon" type="text" autocomplete="off" placeholder="Enter code" style="text-transform: uppercase;">
+            <button type="button" class="btn btn-sm" id="nbApplyCoupon">Apply</button>
+          </div>
+          <p class="hint" id="nbCouponMsg" style="margin: 6px 0 0; min-height: 16px;"></p>
+        </div>
+        <div class="full">
+          <label class="f" for="nbNotes">Notes (optional)</label>
+          <textarea class="input" id="nbNotes" rows="3" maxlength="1000" placeholder="Anything to remember about this booking"></textarea>
+        </div>
+      </div>
+
+      <div class="price-summary" id="nbSummary" aria-live="polite"></div>
+
+      <p class="form-error" id="nbError" role="alert"></p>
+      <div class="row form-actions">
+        <button type="button" class="btn" id="nbCancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="nbSave">Create booking</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit booking modal -->
+  <div class="modal" id="bookingModal" role="dialog" aria-modal="true" aria-labelledby="bookingModalTitle">
+    <div class="modal-box modal-wide">
+      <h2 id="bookingModalTitle">Edit Booking</h2>
+      <div class="booking-form-grid">
+        <div class="full">
+          <label class="f" for="bkCustomer">Customer name</label>
+          <input class="input" id="bkCustomer" type="text" autocomplete="off">
+        </div>
+        <div class="full">
+          <label class="f" for="bkPackage">Package</label>
+          <input class="input" id="bkPackage" type="text" autocomplete="off">
+        </div>
+        <div class="full">
+          <label class="f" for="bkEmail">Email</label>
+          <input class="input" id="bkEmail" type="email" autocomplete="off">
+        </div>
+        <div>
+          <label class="f" for="bkPhone">Phone</label>
+          <input class="input" id="bkPhone" type="tel" autocomplete="off">
+        </div>
+        <div>
+          <label class="f" for="bkAttendees">Attendees</label>
+          <input class="input" id="bkAttendees" type="number" min="1" step="1">
+        </div>
+        <div class="full">
+          <label class="f" for="bkLocation">Location</label>
+          <input class="input" id="bkLocation" type="text" autocomplete="off">
+        </div>
+        <div class="full">
+          <label class="f" for="bkDate">Date</label>
+          <input class="input" id="bkDate" type="date">
+        </div>
+        <div>
+          <label class="f" for="bkStart">Start time</label>
+          <input class="input" id="bkStart" type="time">
+        </div>
+        <div>
+          <label class="f" for="bkEnd">End time</label>
+          <input class="input" id="bkEnd" type="time">
+        </div>
+        <div>
+          <label class="f" for="bkPrice">Session price ($)</label>
+          <input class="input" id="bkPrice" type="number" min="0" step="1">
+        </div>
+        <div>
+          <label class="f" for="bkDeposit">Down payment ($)</label>
+          <input class="input" id="bkDeposit" type="number" min="0" step="1">
+        </div>
+        <div class="full">
+          <label class="f" for="bkStatus">Status</label>
+          <select class="input" id="bkStatus">
+            <option>Confirmed</option>
+            <option>Pending</option>
+            <option>Cancelled</option>
+          </select>
+          <label class="f" for="bkNotes" style="margin-top: 12px;">Notes</label>
+          <textarea class="input" id="bkNotes" rows="3" maxlength="1000"></textarea>
+          <p class="hint" id="bkRefundNote" style="display:none; margin: 8px 0 0; color: var(--red);">Cancelling a booking means the down payment will be reimbursed.</p>
+        </div>
+      </div>
+      <p class="form-error" id="bkError" role="alert"></p>
+      <div class="row form-actions">
+        <button type="button" class="btn" id="bkCancel">Close</button>
+        <button type="button" class="btn btn-primary" id="bkSave">Save changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Login -->
+  <div class="login" id="login">
+    <form id="loginForm">
+      <div class="logo" style="margin-bottom:18px"><span class="logo-mark">R59</span>MEDIA <small>Admin</small></div>
+      <h2 style="margin-bottom:4px">Sign in</h2>
+      <p class="hint" id="loginHint" style="margin:0 0 16px">Enter your administrator credentials to sign in.</p>
+      <div id="loginError" class="form-error" style="color:var(--danger, #ff4d4f); margin:0 0 12px; font-size:13px; display:none;"></div>
+      <label class="f" for="lu">Email</label>
+      <input class="input" id="lu" type="email" value="r59mediatesting@gmail.com" placeholder="r59mediatesting@gmail.com" required autocomplete="username">
+      <label class="f" for="lp">Password</label>
+      <input class="input" id="lp" type="password" placeholder="••••••••" required autocomplete="current-password">
+      <button class="btn btn-primary" id="loginBtn" type="submit">Sign in</button>
+    </form>
+  </div>
+
+
+
+
+
+  <!-- Application Scripts -->
+  <script src="assets/js/api/apiClient.js"></script>
+  <script src="assets/js/api/bookingsApi.js"></script>
+  <script src="assets/js/api/paymentsApi.js"></script>
+  <script src="assets/js/api/packagesApi.js"></script>
+  <script src="assets/js/api/photographyApi.js"></script>
+  <script src="assets/js/api/scheduleApi.js"></script>
+  <script src="assets/js/components/modal.js"></script>
+  <script src="assets/js/components/confirmation.js"></script>
+  <script src="assets/js/components/notifications.js"></script>
+  <script src="assets/js/components/formValidation.js"></script>
+  <script src="assets/js/state.js"></script>
+  <script src="assets/js/navigation.js"></script>
+  <script src="assets/js/pages/dashboard.js"></script>
+  <script src="assets/js/pages/payments.js"></script>
+  <script src="assets/js/pages/photography.js"></script>
+  <script src="assets/js/pages/schedule.js"></script>
+  <script src="assets/js/app.js"></script>
+</body>
+
+</html>
