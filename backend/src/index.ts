@@ -35,15 +35,22 @@ app.use('*', logger())
 // Global Security Headers
 app.use('*', async (c, next) => {
   await next()
-  c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https: blob:; connect-src 'self' https://*.workers.dev;")
+  c.header(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://*.workers.dev https://*.r2.cloudflarestorage.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+  )
   c.header('X-Frame-Options', 'DENY')
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
   c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(self)')
+  c.header('Cross-Origin-Opener-Policy', 'same-origin')
 })
 
 // CORS — restrict to known frontend origins and same-origin requests
 app.use('*', async (c, next) => {
+  c.header('Vary', 'Origin')
+
   const defaultOrigins = 'http://localhost:5173,http://localhost:8787,http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000,http://127.0.0.1:5500'
   const allowedRaw = c.env.ALLOWED_ORIGINS || defaultOrigins
   const allowedOrigins = allowedRaw.split(',').map(o => o.trim()).filter(Boolean)
@@ -88,13 +95,17 @@ const STATIC_EXT_REGEX = /\.(css|js|html|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|js
 app.get('/admin/*', async (c) => {
   if (c.env.ASSETS) {
     const url = new URL(c.req.url)
+    let assetRes: Response
     // If requesting a static web asset with a legitimate extension, fetch directly
     if (STATIC_EXT_REGEX.test(url.pathname)) {
-      return await c.env.ASSETS.fetch(c.req.raw)
+      assetRes = await c.env.ASSETS.fetch(c.req.raw)
+    } else {
+      // Otherwise fallback to /admin/index.html for client-side routing
+      const adminIndexUrl = new URL('/admin/index.html', url.origin)
+      assetRes = await c.env.ASSETS.fetch(new Request(adminIndexUrl.toString(), c.req.raw))
     }
-    // Otherwise fallback to /admin/index.html for client-side routing
-    const adminIndexUrl = new URL('/admin/index.html', url.origin)
-    return await c.env.ASSETS.fetch(new Request(adminIndexUrl.toString(), c.req.raw))
+    // Clone with mutable headers so global security header middleware can attach headers cleanly
+    return new Response(assetRes.body, assetRes)
   }
   return c.text('Internal server error.', 500)
 })

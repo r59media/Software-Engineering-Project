@@ -13,8 +13,8 @@ portfolioRouter.get('/', async (c) => {
     const { results } = await c.env.DB.prepare(
       'SELECT id, r2_object_key, category, alt_text, display_order, is_featured FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC LIMIT ? OFFSET ?'
     ).bind(limit, offset).all()
-    
-    return c.json({ images: results, limit, offset })
+
+    return c.json({ images: results, limit, offset, status: 'success', data: results })
   } catch (e: any) {
     return c.json({
       error: {
@@ -32,22 +32,33 @@ portfolioRouter.post('/', adminAuth, async (c) => {
     const body = await c.req.json()
     const { r2_object_key, category = 'All', alt_text = null, display_order = 0, is_featured = false } = body
 
-    if (!r2_object_key) {
+    if (
+      typeof r2_object_key !== 'string' ||
+      r2_object_key.trim().length < 1 ||
+      r2_object_key.trim().length > 1024 ||
+      r2_object_key.includes('..')
+    ) {
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
-          message: 'Cannot save image record without an object key.',
+          message: 'A valid r2_object_key (1-1024 characters, no path traversal) is required.',
           target: 'portfolio',
-          details: [{ field: 'r2_object_key', message: 'R2 Object Key is required.', code: 'REQUIRED_FIELD' }]
+          details: [{ field: 'r2_object_key', message: 'Valid R2 Object Key is required.', code: 'INVALID_VALUE' }]
         }
       }, 400)
     }
 
+    const cleanKey = r2_object_key.trim()
     const result = await c.env.DB.prepare(
       'INSERT INTO Portfolio_Images (r2_object_key, category, alt_text, display_order, is_featured) VALUES (?, ?, ?, ?, ?)'
-    ).bind(r2_object_key, category, alt_text, display_order, is_featured ? 1 : 0).run()
+    ).bind(cleanKey, category, alt_text, display_order, is_featured ? 1 : 0).run()
 
-    return c.json({ success: true, id: result.meta.last_row_id })
+    return c.json({
+      success: true,
+      status: 'success',
+      id: result.meta.last_row_id,
+      data: { id: result.meta.last_row_id, r2_object_key: cleanKey, category, alt_text, display_order }
+    })
   } catch (e: any) {
     return c.json({
       error: {
@@ -85,7 +96,7 @@ portfolioRouter.put('/order', adminAuth, async (c) => {
       await c.env.DB.batch(statements)
     }
 
-    return c.json({ success: true })
+    return c.json({ success: true, status: 'success' })
   } catch (e: any) {
     return c.json({
       error: {
@@ -97,19 +108,67 @@ portfolioRouter.put('/order', adminAuth, async (c) => {
   }
 })
 
-// DELETE: Remove an image (admin only)
-portfolioRouter.delete('/:id', adminAuth, async (c) => {
+// PUT: Update single image metadata (admin only)
+portfolioRouter.put('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
-    const result = await c.env.DB.prepare(
-      'DELETE FROM Portfolio_Images WHERE id = ?'
-    ).bind(id).run()
+    const body = await c.req.json()
 
-    if (result.meta.changes === 0) {
+    const existing = await c.env.DB.prepare('SELECT * FROM Portfolio_Images WHERE id = ?').bind(id).first<any>()
+    if (!existing) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
     }
 
-    return c.json({ success: true })
+    const category = body.category !== undefined ? String(body.category) : existing.category
+    const alt_text = body.alt_text !== undefined ? (body.alt_text === null ? null : String(body.alt_text)) : existing.alt_text
+    const is_active =
+      body.is_active !== undefined
+        ? (body.is_active ? 1 : 0)
+        : body.active !== undefined
+          ? (body.active ? 1 : 0)
+          : existing.is_active
+    const is_featured = body.is_featured !== undefined ? (body.is_featured ? 1 : 0) : existing.is_featured
+    const display_order = body.display_order !== undefined ? Number(body.display_order) : existing.display_order
+
+    await c.env.DB.prepare(
+      'UPDATE Portfolio_Images SET category = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
+    ).bind(category, alt_text, is_active, is_featured, display_order, id).run()
+
+    return c.json({
+      success: true,
+      status: 'success',
+      data: { id: Number(id), category, alt_text, is_active, is_featured, display_order }
+    })
+  } catch (e: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Could not update portfolio image.',
+        details: []
+      }
+    }, 500)
+  }
+})
+
+// DELETE: Remove an image and clean up R2 object if bound (admin only)
+portfolioRouter.delete('/:id', adminAuth, async (c) => {
+  try {
+    const id = c.req.param('id')
+    const existing = await c.env.DB.prepare(
+      'SELECT id, r2_object_key FROM Portfolio_Images WHERE id = ?'
+    ).bind(id).first<{ id: number; r2_object_key: string }>()
+
+    if (!existing) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
+    }
+
+    await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
+
+    if (c.env.BUCKET && existing.r2_object_key && existing.r2_object_key.startsWith('portfolio/')) {
+      await c.env.BUCKET.delete(existing.r2_object_key).catch(() => {})
+    }
+
+    return c.json({ success: true, status: 'success' })
   } catch (e: any) {
     return c.json({
       error: {

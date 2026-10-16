@@ -55,4 +55,6 @@
 
   window.R59 = window.R59 || {};
   window.R59.bookingsApi = bookingsApi;
+  window.R59.api = window.R59.api || {};
+  window.R59.api.bookings = bookingsApi;
 })();

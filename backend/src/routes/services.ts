@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth, verifySessionToken, timingSafeEqual } from '../middleware/auth'
+import { adminAuth, verifySessionToken, extractSessionToken, isTokenRevoked } from '../middleware/auth'
 
 export const servicesRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -11,16 +11,13 @@ servicesRouter.get('/', async (c) => {
     let includeAll = false
 
     if (includeAllRequested) {
-      const auth = c.req.header('Authorization')
-      if (auth && auth.startsWith('Bearer ')) {
-        const token = auth.substring(7).trim()
-        const secret = c.env.ADMIN_SECRET
-        if (secret) {
-          const signingSecret = c.env.SESSION_SECRET || secret
-          const session = await verifySessionToken(token, signingSecret)
-          if (session.valid || timingSafeEqual(token, secret)) {
-            includeAll = true
-          }
+      const token = extractSessionToken(c)
+      const secret = c.env.ADMIN_SECRET
+      if (token && secret && !isTokenRevoked(token)) {
+        const signingSecret = c.env.SESSION_SECRET || secret
+        const session = await verifySessionToken(token, signingSecret)
+        if (session.valid) {
+          includeAll = true
         }
       }
     }
@@ -30,8 +27,12 @@ servicesRouter.get('/', async (c) => {
       : 'SELECT id, name, description, price, duration_minutes, is_active FROM Services WHERE is_active = 1 ORDER BY id ASC'
 
     const { results } = await c.env.DB.prepare(query).all()
-    
-    return c.json({ services: results })
+    const services = (results || []).map((s: any) => ({
+      ...s,
+      title: s.name
+    }))
+
+    return c.json({ services, status: 'success', data: services })
   } catch (e: any) {
     return c.json({
       error: {
@@ -47,43 +48,115 @@ servicesRouter.get('/', async (c) => {
 servicesRouter.post('/', adminAuth, async (c) => {
   try {
     const body = await c.req.json()
-    const { name, description, price, duration_minutes } = body
+    const rawName = body.name ?? body.title
+    const name = typeof rawName === 'string' ? rawName.trim() : ''
+    const description = body.description !== undefined && body.description !== null ? String(body.description) : null
+    const numPrice = Number(body.price)
+    const rawDuration = body.duration_minutes ?? body.durationMinutes ?? 60
+    const numDuration = Number(rawDuration)
+    const isActive = body.is_active !== undefined ? (body.is_active ? 1 : 0) : (body.active !== undefined ? (body.active ? 1 : 0) : 1)
 
     const errors = []
-    if (!name) errors.push({ field: 'name', message: 'Service name is required.', code: 'REQUIRED_FIELD' })
-    if (price == null || price < 0) errors.push({ field: 'price', message: 'Price (in cents) is required and must be >= 0.', code: 'REQUIRED_FIELD' })
-    if (!duration_minutes || duration_minutes < 1) errors.push({ field: 'duration_minutes', message: 'Duration in minutes is required.', code: 'REQUIRED_FIELD' })
+    if (!name) {
+      errors.push({ field: 'name', message: 'Service name/title is required.', code: 'REQUIRED_FIELD' })
+    }
+    if (body.price === undefined || body.price === null || !Number.isFinite(numPrice) || numPrice < 0) {
+      errors.push({ field: 'price', message: 'Price (in cents) is required and must be >= 0.', code: 'INVALID_VALUE' })
+    }
+    if (!Number.isFinite(numDuration) || numDuration < 0) {
+      errors.push({ field: 'duration_minutes', message: 'Duration in minutes must be >= 0.', code: 'INVALID_VALUE' })
+    }
 
     if (errors.length > 0) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not create service.', details: errors } }, 400)
     }
 
-    const result = await c.env.DB.prepare(
-      'INSERT INTO Services (name, description, price, duration_minutes) VALUES (?, ?, ?, ?)'
-    ).bind(name, description || null, price, duration_minutes).run()
+    const cleanPrice = Math.round(numPrice)
+    const cleanDuration = Math.round(numDuration)
 
-    return c.json({ success: true, id: result.meta.last_row_id })
+    const result = await c.env.DB.prepare(
+      'INSERT INTO Services (name, description, price, duration_minutes, is_active) VALUES (?, ?, ?, ?, ?)'
+    ).bind(name, description, cleanPrice, cleanDuration, isActive).run()
+
+    return c.json({
+      success: true,
+      status: 'success',
+      id: result.meta.last_row_id,
+      data: {
+        id: result.meta.last_row_id,
+        name,
+        title: name,
+        description,
+        price: cleanPrice,
+        duration_minutes: cleanDuration,
+        is_active: isActive
+      }
+    })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not create service.', details: [] } }, 500)
   }
 })
 
-// PUT: Admin — update a service
+// PUT: Admin — update a service (supports partial updates)
 servicesRouter.put('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
     const body = await c.req.json()
-    const { name, description, price, duration_minutes, is_active } = body
 
-    const result = await c.env.DB.prepare(
-      'UPDATE Services SET name = COALESCE(?, name), description = COALESCE(?, description), price = COALESCE(?, price), duration_minutes = COALESCE(?, duration_minutes), is_active = COALESCE(?, is_active) WHERE id = ?'
-    ).bind(name || null, description !== undefined ? description : null, price ?? null, duration_minutes ?? null, is_active ?? null, id).run()
-
-    if (result.meta.changes === 0) {
+    const existing = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(id).first<any>()
+    if (!existing) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
     }
 
-    return c.json({ success: true })
+    const rawName = body.name ?? body.title
+    const name = rawName !== undefined ? String(rawName).trim() : String(existing.name || '').trim()
+    const description = body.description !== undefined ? (body.description === null ? null : String(body.description)) : existing.description
+    const rawPrice = body.price !== undefined ? body.price : existing.price
+    const numPrice = Number(rawPrice)
+    const rawDuration = body.duration_minutes ?? body.durationMinutes ?? existing.duration_minutes ?? 60
+    const numDuration = Number(rawDuration)
+    const isActive =
+      body.is_active !== undefined
+        ? (body.is_active ? 1 : 0)
+        : body.active !== undefined
+          ? (body.active ? 1 : 0)
+          : existing.is_active
+
+    const errors = []
+    if (!name) {
+      errors.push({ field: 'name', message: 'Service name/title cannot be empty.', code: 'REQUIRED_FIELD' })
+    }
+    if (!Number.isFinite(numPrice) || numPrice < 0) {
+      errors.push({ field: 'price', message: 'Price must be a valid number >= 0.', code: 'INVALID_VALUE' })
+    }
+    if (!Number.isFinite(numDuration) || numDuration < 0) {
+      errors.push({ field: 'duration_minutes', message: 'Duration in minutes must be >= 0.', code: 'INVALID_VALUE' })
+    }
+
+    if (errors.length > 0) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not update service.', details: errors } }, 400)
+    }
+
+    const cleanPrice = Math.round(numPrice)
+    const cleanDuration = Math.round(numDuration)
+
+    await c.env.DB.prepare(
+      'UPDATE Services SET name = ?, description = ?, price = ?, duration_minutes = ?, is_active = ? WHERE id = ?'
+    ).bind(name, description, cleanPrice, cleanDuration, isActive, id).run()
+
+    return c.json({
+      success: true,
+      status: 'success',
+      data: {
+        id: Number(id),
+        name,
+        title: name,
+        description,
+        price: cleanPrice,
+        duration_minutes: cleanDuration,
+        is_active: isActive
+      }
+    })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not update service.', details: [] } }, 500)
   }
@@ -94,23 +167,29 @@ servicesRouter.delete('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
 
+    const existing = await c.env.DB.prepare('SELECT id FROM Services WHERE id = ?').bind(id).first()
+    if (!existing) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
+    }
+
     // Check if service has existing bookings
     const bookingCheck = await c.env.DB.prepare(
       'SELECT id FROM Bookings WHERE service_id = ? LIMIT 1'
     ).bind(id).first()
 
     if (bookingCheck) {
-      // Soft delete to protect financial integrity of bookings
       await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
-      return c.json({ success: true, message: 'Service deactivated (has associated bookings).' })
+      return c.json({ success: true, status: 'success', message: 'Service deactivated (has associated bookings).' })
     }
 
-    const result = await c.env.DB.prepare('DELETE FROM Services WHERE id = ?').bind(id).run()
-    if (result.meta.changes === 0) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
+    try {
+      await c.env.DB.prepare('DELETE FROM Services WHERE id = ?').bind(id).run()
+      return c.json({ success: true, status: 'success' })
+    } catch {
+      // Fallback to soft-deactivation if foreign key constraint prevents deletion
+      await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
+      return c.json({ success: true, status: 'success', message: 'Service deactivated (has associated records).' })
     }
-
-    return c.json({ success: true })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete service.', details: [] } }, 500)
   }

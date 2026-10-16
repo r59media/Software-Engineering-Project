@@ -19,12 +19,12 @@
   "dependencies": {
     "@aws-sdk/client-s3": "3.1132.0",
     "@aws-sdk/s3-request-presigner": "3.1132.0",
-    "hono": "4.13.7",
+    "hono": "4.13.13",
     "square": "45.1.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20240222.0",
-    "typescript": "^5.0.0",
-    "wrangler": "^4.0.0"
+    "@cloudflare/workers-types": "4.20260702.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.151.1"
   }
 }

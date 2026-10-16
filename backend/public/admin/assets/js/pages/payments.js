@@ -107,7 +107,7 @@
         <div class="card-head">
           <h2>${esc(pkg.name || 'New Package')}</h2>
           <label class="toggle">
-            <input type="checkbox" class="pkg-active-toggle" ${pkg.active ? 'checked' : ''}>
+            <input type="checkbox" class="pkg-active-toggle" data-pkg-toggle="${esc(pkg.id)}" ${pkg.active !== false ? 'checked' : ''}>
             <span>Available</span>
           </label>
         </div>
@@ -124,7 +124,7 @@
         <textarea class="input desc-input" id="pkg-${esc(pkg.id)}-desc" rows="3" placeholder="Describe this photography package">${esc(pkg.description || '')}</textarea>
 
         <div class="row" style="margin-top:16px;">
-          <button type="button" class="btn btn-danger btn-sm pkg-remove-btn">Remove package</button>
+          <button type="button" class="btn btn-danger btn-sm pkg-remove-btn" data-pkg-delete="${esc(pkg.id)}">Remove package</button>
           <button type="button" class="btn btn-primary btn-sm pkg-save-btn" style="flex:1; justify-content:center;">Save package</button>
         </div>
       </div>
@@ -135,13 +135,17 @@
     const currentState = window.R59.state.getState();
     const newId = `pkg_${Date.now()}`;
     currentState.packages = currentState.packages || [];
-    currentState.packages.push({
+    const newPkg = {
       id: newId,
       name: 'New Package',
       price: 0,
       description: '',
-      active: true
-    });
+      duration_minutes: 60,
+      category: 'General',
+      active: true,
+      isNew: true
+    };
+    currentState.packages.push(newPkg);
     renderPackages();
     window.R59.state.markDirty();
     const newCard = document.querySelector(`#card-pkg-${newId}`);
@@ -153,7 +157,10 @@
 
   /* ---------- Coupons Management ---------- */
   let editingCouponId = null;
-  const couponLabel = c => c.type === 'percent' ? `${c.amount}% off` : `${money(c.amount)} off`;
+  const couponLabel = c => {
+    const amt = Number(c.amount ?? c.discount ?? 0);
+    return c.type === 'percent' ? `${amt}% off` : `${money(amt)} off`;
+  };
 
   function renderCoupons() {
     const list = $('#couponList');
@@ -167,21 +174,25 @@
       return;
     }
 
-    list.innerHTML = coupons.map(c => `
+    list.innerHTML = coupons.map(c => {
+      const amt = Number(c.amount ?? c.discount ?? 0);
+      const label = c.type === 'percent' ? `${amt}% off` : `${money(amt)} off`;
+      return `
       <div class="coupon-item ${c.active ? '' : 'inactive'}">
         <div>
           <div class="coupon-code">${esc(c.code)}</div>
-          <div class="hint">${couponLabel(c)}${c.active ? '' : ' · Inactive'}</div>
+          <div class="hint">${label}${c.active ? '' : ' · Inactive'}</div>
         </div>
         <div class="coupon-actions">
           <label class="toggle">
-            <input type="checkbox" data-coupon-active="${esc(c.id)}" ${c.active ? 'checked' : ''}>
+            <input type="checkbox" data-coupon-active="${esc(c.id)}" data-coupon-toggle="${esc(c.id)}" ${c.active ? 'checked' : ''}>
             <span>Active</span>
           </label>
           <button type="button" class="btn btn-sm" data-coupon-edit="${esc(c.id)}">Edit</button>
-          <button type="button" class="btn btn-danger btn-sm" data-coupon-remove="${esc(c.id)}">Remove</button>
+          <button type="button" class="btn btn-danger btn-sm" data-coupon-remove="${esc(c.id)}" data-coupon-delete="${esc(c.id)}">Remove</button>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   }
 
   function syncCouponTypeUI() {
@@ -215,7 +226,7 @@
     syncCouponTypeUI();
   }
 
-  function submitCoupon() {
+  async function submitCoupon() {
     const err = msg => {
       const errEl = $('#couponError');
       if (errEl) errEl.textContent = msg;
@@ -231,18 +242,48 @@
     if (type === 'percent' && amount > 100) return err('A percent discount cannot be more than 100%.');
 
     const currentState = window.R59.state.getState();
-    if (currentState.coupons.some(c => c.code === code && c.id !== editingCouponId)) {
+    if (currentState.coupons.some(c => c.code === code && String(c.id) !== String(editingCouponId))) {
       return err('A coupon with that code already exists.');
     }
 
     if (editingCouponId) {
-      const target = currentState.coupons.find(c => c.id === editingCouponId);
-      if (target) Object.assign(target, { code, type, amount });
-      window.toast('Coupon updated — click “Save changes” to apply');
+      const target = currentState.coupons.find(c => String(c.id) === String(editingCouponId));
+      if (target) {
+        const description = target.description || '';
+        const active = target.active !== false;
+        Object.assign(target, { code, type, amount, discount: amount, description, active });
+        if (window.R59.api?.payments?.updateCoupon) {
+          window.R59.api.payments.updateCoupon(target.id, {
+            code,
+            type,
+            amount,
+            discount: amount,
+            description,
+            active
+          }).catch(e => console.warn('[payments] Failed to update coupon:', e));
+        }
+      }
+      window.toast('Coupon updated');
     } else {
       const nextId = (currentState.coupons.reduce((max, c) => Math.max(max, Number(c.id) || 0), 0)) + 1;
-      currentState.coupons.push({ id: nextId, code, type, amount, active: true });
-      window.toast('Coupon added — click “Save changes” to apply');
+      const newCoupon = { id: nextId, code, type, amount, discount: amount, description: '', active: true };
+      currentState.coupons.push(newCoupon);
+      if (window.R59.api?.payments?.createCoupon) {
+        window.R59.api.payments.createCoupon({
+          code,
+          type,
+          amount,
+          discount: amount,
+          description: '',
+          active: true
+        }).then(created => {
+          if (created?.id) {
+            newCoupon.id = created.id;
+            renderCoupons();
+          }
+        }).catch(e => console.warn('[payments] Failed to create coupon:', e));
+      }
+      window.toast('Coupon added');
     }
 
     resetCouponForm();
@@ -295,22 +336,26 @@
     $('#addPackageBtn')?.addEventListener('click', addPackage);
 
     // Delegated package card actions
-    document.addEventListener('click', e => {
+    document.addEventListener('click', async e => {
       const target = e.target instanceof Element ? e.target : e.target?.parentElement;
       if (!target) return;
 
-      const removeBtn = target.closest('.pkg-remove-btn');
+      const removeBtn = target.closest('.pkg-remove-btn, [data-pkg-delete]');
       if (removeBtn) {
         e.preventDefault();
         const card = removeBtn.closest('.package-card');
         if (!card) return;
-        const pkgId = card.dataset.pkgId;
+        const pkgId = removeBtn.dataset.pkgDelete || card.dataset.pkgId;
         const nameInput = card.querySelector('.package-name');
         const packageName = (nameInput?.value || 'this package').trim();
 
         window.R59.confirmation.confirmRemovePackage(packageName, () => {
           const currentState = window.R59.state.getState();
+          const pkg = (currentState.packages || []).find(p => String(p.id) === String(pkgId));
           currentState.packages = (currentState.packages || []).filter(p => String(p.id) !== String(pkgId));
+          if (pkg && !pkg.isNew && !String(pkg.id).startsWith('pkg_') && window.R59.api?.packages?.deletePackage) {
+            window.R59.api.packages.deletePackage(pkg.id).catch(err => console.warn('[payments] Failed to delete package:', err));
+          }
           renderPackages();
           window.R59.state.markDirty();
           window.toast(`${packageName} deleted`);
@@ -348,9 +393,69 @@
           pkg.price = parseFloat(card.querySelector('.package-price')?.value) || 0;
           pkg.description = card.querySelector('.desc-input')?.value.trim() || '';
           pkg.active = card.querySelector('.pkg-active-toggle')?.checked ?? true;
+
+          const priceInput = card.querySelector('.package-price');
+          const priceBtn = card.querySelector('.package-price-edit');
+          if (priceInput) {
+            priceInput.readOnly = true;
+            priceInput.classList.add('price-locked');
+          }
+          if (priceBtn) priceBtn.textContent = 'Edit price';
+
+          const isNewPkg = pkg.isNew || String(pkg.id).startsWith('pkg_');
+          try {
+            if (isNewPkg && window.R59.api?.packages?.createPackage) {
+              const created = await window.R59.api.packages.createPackage({
+                title: pkg.name,
+                description: pkg.description,
+                price: Math.round((Number(pkg.price) || 0) * 100),
+                duration_minutes: Number(pkg.duration_minutes) || 60,
+                category: pkg.category || 'General',
+                is_active: pkg.active !== false ? 1 : 0
+              });
+              if (created?.id) {
+                pkg.id = created.id;
+                delete pkg.isNew;
+                renderPackages();
+              }
+            } else if (!isNewPkg && window.R59.api?.packages?.updatePackage) {
+              await window.R59.api.packages.updatePackage(pkg.id, {
+                title: pkg.name,
+                description: pkg.description,
+                price: Math.round((Number(pkg.price) || 0) * 100),
+                duration_minutes: Number(pkg.duration_minutes) || 60,
+                category: pkg.category || 'General',
+                is_active: pkg.active !== false ? 1 : 0
+              });
+            }
+          } catch (err) {
+            console.warn('[payments] Failed to persist package:', err);
+          }
         }
         window.R59.state.markDirty();
-        window.toast('Package updated — click “Save changes” to apply');
+        window.toast('Package saved');
+      }
+    });
+
+    // Package active toggle listener
+    document.addEventListener('change', e => {
+      const toggle = e.target.closest('.pkg-active-toggle, [data-pkg-toggle]');
+      if (!toggle) return;
+      const card = toggle.closest('.package-card');
+      const pkgId = toggle.dataset.pkgToggle || card?.dataset.pkgId;
+      if (!pkgId) return;
+      const currentState = window.R59.state.getState();
+      const pkg = currentState.packages?.find(p => String(p.id) === String(pkgId));
+      if (!pkg) return;
+      pkg.active = toggle.checked;
+      window.R59.state.markDirty();
+      if (!pkg.isNew && !String(pkg.id).startsWith('pkg_') && window.R59.api?.packages?.updatePackage) {
+        window.R59.api.packages.updatePackage(pkg.id, {
+          title: pkg.name,
+          description: pkg.description,
+          price: Math.round((Number(pkg.price) || 0) * 100),
+          is_active: pkg.active ? 1 : 0
+        }).catch(err => console.warn('[payments] Failed to toggle package active status:', err));
       }
     });
 
@@ -386,42 +491,56 @@
 
     $('#couponList')?.addEventListener('click', e => {
       const edit = e.target.closest('[data-coupon-edit]');
-      const rm = e.target.closest('[data-coupon-remove]');
+      const rm = e.target.closest('[data-coupon-remove], [data-coupon-delete]');
       const currentState = window.R59.state.getState();
 
       if (edit) {
-        const c = currentState.coupons.find(x => x.id === +edit.dataset.couponEdit);
+        const editId = edit.dataset.couponEdit;
+        const c = currentState.coupons.find(x => String(x.id) === String(editId));
         if (!c) return;
         editingCouponId = c.id;
         $('#couponCode').value = c.code;
         $('#couponType').value = c.type;
-        $('#couponAmount').value = c.amount;
+        $('#couponAmount').value = Number(c.amount ?? c.discount ?? 0);
         $('#couponError').textContent = '';
         $('#couponSubmit').textContent = 'Update coupon';
         $('#couponCancelEdit').style.display = '';
         syncCouponTypeUI();
         $('#couponCode').focus();
       } else if (rm) {
-        const id = +rm.dataset.couponRemove;
-        const coupon = currentState.coupons.find(c => c.id === id);
+        const rawId = rm.dataset.couponDelete || rm.dataset.couponRemove;
+        const coupon = currentState.coupons.find(c => String(c.id) === String(rawId));
         if (!coupon) return;
         window.R59.confirmation.confirmRemoveCoupon(coupon.code, () => {
-          currentState.coupons = currentState.coupons.filter(c => c.id !== id);
-          if (editingCouponId === id) resetCouponForm();
+          currentState.coupons = currentState.coupons.filter(c => String(c.id) !== String(rawId));
+          if (String(editingCouponId) === String(rawId)) resetCouponForm();
+          if (window.R59.api?.payments?.deleteCoupon) {
+            window.R59.api.payments.deleteCoupon(coupon.id).catch(err => console.warn('[payments] Failed to delete coupon:', err));
+          }
           renderCoupons();
           window.R59.state.markDirty();
-          window.toast('Coupon removed — click “Save changes” to apply');
+          window.toast('Coupon removed');
         });
       }
     });
 
     $('#couponList')?.addEventListener('change', e => {
-      const t = e.target.closest('[data-coupon-active]');
+      const t = e.target.closest('[data-coupon-active], [data-coupon-toggle]');
       if (!t) return;
+      const rawId = t.dataset.couponToggle || t.dataset.couponActive;
       const currentState = window.R59.state.getState();
-      const target = currentState.coupons.find(c => c.id === +t.dataset.couponActive);
+      const target = currentState.coupons.find(c => String(c.id) === String(rawId));
       if (target) {
         target.active = t.checked;
+        if (window.R59.api?.payments?.updateCoupon) {
+          const amt = Number(target.amount ?? target.discount ?? 0);
+          window.R59.api.payments.updateCoupon(target.id, {
+            ...target,
+            amount: amt,
+            discount: amt,
+            active: target.active
+          }).catch(err => console.warn('[payments] Failed to toggle coupon:', err));
+        }
         renderCoupons();
         window.R59.state.markDirty();
       }

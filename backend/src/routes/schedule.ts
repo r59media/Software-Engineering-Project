@@ -12,12 +12,22 @@ scheduleRouter.get('/', async (c) => {
     const tz = tzSetting?.setting_value || 'America/New_York'
 
     const now = new Date()
-    const formatter = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit',
-      hour12: false
-    })
+    let formatter: Intl.DateTimeFormat
+    try {
+      formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: tz,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit',
+        hour12: false
+      })
+    } catch {
+      formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit',
+        hour12: false
+      })
+    }
     const parts = formatter.formatToParts(now)
     const hash: Record<string, string> = {}
     parts.forEach(p => hash[p.type] = p.value)
@@ -35,6 +45,7 @@ scheduleRouter.get('/', async (c) => {
       `SELECT id, date, start_time, end_time FROM Schedule_Slots 
        WHERE is_booked = 0 
        AND (date > ? OR (date = ? AND start_time > ?))
+       AND date NOT IN (SELECT date FROM Blocked_Dates)
        ORDER BY date ASC, start_time ASC
        LIMIT ? OFFSET ?`
     ).bind(currentDate, currentDate, currentTime, limit, offset).all()

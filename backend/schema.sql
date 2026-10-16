@@ -40,12 +40,19 @@ CREATE TABLE Schedule_Slots (
 CREATE TABLE Bookings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     service_id INTEGER NOT NULL,
-    slot_id INTEGER NOT NULL UNIQUE,
+    slot_id INTEGER NOT NULL,
     client_name TEXT NOT NULL,
     client_email TEXT NOT NULL,
     price_at_booking INTEGER NOT NULL, -- Stored in cents
     square_payment_id TEXT UNIQUE,
     status TEXT DEFAULT 'pending', -- pending, confirmed, cancelled
+    customer_phone TEXT DEFAULT '',
+    location TEXT DEFAULT '',
+    notes TEXT DEFAULT '',
+    attendees INTEGER DEFAULT 1,
+    deposit_paid INTEGER DEFAULT 0,
+    coupon_code TEXT DEFAULT '',
+    custom_price INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (service_id) REFERENCES Services(id),
     FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)
@@ -72,24 +79,29 @@ CREATE TABLE Coupons (
     code TEXT NOT NULL UNIQUE,
     discount_type TEXT NOT NULL DEFAULT 'percent', -- 'percent' or 'amount'
     discount_value REAL NOT NULL,
+    description TEXT DEFAULT '',
     is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE Blocked_Dates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT NOT NULL,
+    date TEXT NOT NULL UNIQUE,
     reason TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Performance Indexes
-CREATE INDEX idx_slots_availability ON Schedule_Slots(date, is_booked);
-CREATE INDEX idx_portfolio_active ON Portfolio_Images(is_active, display_order);
-CREATE INDEX idx_services_active ON Services(is_active);
-CREATE INDEX idx_bookings_slot ON Bookings(slot_id);
-CREATE INDEX idx_coupons_code ON Coupons(code);
-CREATE INDEX idx_blocked_dates ON Blocked_Dates(date);
+CREATE INDEX IF NOT EXISTS idx_slots_availability ON Schedule_Slots(is_booked, date, start_time);
+CREATE INDEX IF NOT EXISTS idx_portfolio_active ON Portfolio_Images(is_active, display_order);
+CREATE INDEX IF NOT EXISTS idx_portfolio_active_cat_order ON Portfolio_Images(is_active, category, display_order);
+CREATE INDEX IF NOT EXISTS idx_services_active ON Services(is_active);
+CREATE INDEX IF NOT EXISTS idx_bookings_slot ON Bookings(slot_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot ON Bookings(slot_id) WHERE status != 'cancelled';
+CREATE INDEX IF NOT EXISTS idx_bookings_service ON Bookings(service_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_created ON Bookings(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_leads_created ON Leads(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_blocked_dates ON Blocked_Dates(date);
 
 -- Seed Data
 INSERT INTO Services (name, description, price, duration_minutes) VALUES ('Portrait Session', 'A standard 1-hour portrait session.', 25000, 60);

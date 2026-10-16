@@ -78,7 +78,7 @@
     const calDisplay = $('#ovCalendarDisplay');
     if (calDisplay && window.R59.schedule?.buildMonthGridHTML) {
       calDisplay.innerHTML = window.R59.schedule.buildMonthGridHTML(ovYear, ovMonth, {
-        chipClick: b => `window.R59.schedule.openBookingEditor(${Number(b.id)})`
+        chipAction: 'edit'
       });
     }
 
@@ -114,8 +114,11 @@
     const imgEl = $('#previewImg');
     if (imgEl) {
       const aboutImg = currentState.images?.about?.[0];
-      imgEl.src = aboutImg ? aboutImg.src : '';
-      imgEl.style.display = aboutImg ? '' : 'none';
+      const safeSrc = aboutImg && window.R59.photography?.safeImgSrc
+        ? window.R59.photography.safeImgSrc(aboutImg.src)
+        : (aboutImg ? aboutImg.src : '');
+      imgEl.src = safeSrc;
+      imgEl.style.display = safeSrc ? '' : 'none';
     }
   }
 

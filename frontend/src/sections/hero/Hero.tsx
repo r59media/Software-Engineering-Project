@@ -17,7 +17,7 @@ function HeroImage({ slide }: { slide: HeroSlide }) {
     '--image-position-mobile': slide.mobileObjectPosition ?? slide.objectPosition ?? '50% 50%',
   } as CSSProperties
   return <div className="hero__media" data-slide-id={slide.id} data-embedded-overlay={Boolean(slide.hasEmbeddedOverlay)} style={position}>
-    <img className="hero__image" src={slide.imageUrl} alt={slide.alt} width={slide.width} height={slide.height} fetchPriority="high" onError={() => setFailed(true)} />
+    <img className="hero__image" src={slide.imageUrl} alt={slide.alt.trim() || 'R59 Media featured automotive and portrait photography'} width={slide.width} height={slide.height} fetchPriority="high" decoding="async" onError={() => setFailed(true)} />
   </div>
 }
 

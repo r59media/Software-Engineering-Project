@@ -9,23 +9,29 @@
 (function () {
   'use strict';
 
-  // Configurable base URL: can be overridden via window.APP_CONFIG.apiBaseUrl,
-  // localStorage 'r59_api_url', or defaults to standard backend development URL.
+  // Configurable base URL: can be overridden via window.R59_API_URL or
+  // window.APP_CONFIG.apiBaseUrl; defaults to '/api' (or localhost:8787/api on file://).
   const DEFAULT_BASE_URL = 'http://localhost:8787/api';
 
   function getBaseUrl() {
+    if (window.R59_API_URL) {
+      return String(window.R59_API_URL).replace(/\/+$/, '');
+    }
     if (window.APP_CONFIG && window.APP_CONFIG.apiBaseUrl) {
       return window.APP_CONFIG.apiBaseUrl.replace(/\/+$/, '');
     }
-    const isLocal = window.location && (window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1') || window.location.protocol.startsWith('file'));
-    if (isLocal) {
-      const stored = localStorage.getItem('r59_api_url');
-      if (stored && /^https?:\/\//i.test(stored)) {
-        return stored.replace(/\/+$/, '');
-      }
+    if (window.location && window.location.protocol.startsWith('file')) {
       return DEFAULT_BASE_URL;
     }
-    return `${window.location.origin}/api`;
+    const isSeparateLocalServer = window.location &&
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
+      window.location.port &&
+      window.location.port !== '8787' &&
+      !window.location.pathname.startsWith('/admin');
+    if (isSeparateLocalServer) {
+      return DEFAULT_BASE_URL;
+    }
+    return '/api';
   }
 
   function getAuthToken() {
@@ -38,6 +44,10 @@
     } else {
       localStorage.removeItem('r59_admin_token');
     }
+  }
+
+  function clearAuthToken() {
+    localStorage.removeItem('r59_admin_token');
   }
 
   /**
@@ -160,12 +170,19 @@
     }
   }
 
+  async function logout() {
+    await request('/admin/logout', { method: 'POST', body: {} }).catch(() => {});
+    clearAuthToken();
+  }
+
   // HTTP method convenience helpers
   const apiClient = {
     getBaseUrl,
     getAuthToken,
     setAuthToken,
+    clearAuthToken,
     verifySession,
+    logout,
     request,
     get: (endpoint, params = null, headers = {}) => request(endpoint, { method: 'GET', params, headers }),
     post: (endpoint, body = null, headers = {}) => request(endpoint, { method: 'POST', body, headers }),
@@ -176,4 +193,6 @@
 
   window.R59 = window.R59 || {};
   window.R59.apiClient = apiClient;
+  window.R59.api = window.R59.api || {};
+  window.R59.api.client = apiClient;
 })();

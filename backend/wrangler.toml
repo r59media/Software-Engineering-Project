@@ -12,6 +12,7 @@ ADMIN_EMAIL = "r59mediatesting@gmail.com"
 [assets]
 directory = "./public"
 binding = "ASSETS"
+run_worker_first = true
 
 [[d1_databases]]
 binding = "DB"

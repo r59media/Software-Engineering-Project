@@ -74,4 +74,6 @@
 
   window.R59 = window.R59 || {};
   window.R59.paymentsApi = paymentsApi;
+  window.R59.api = window.R59.api || {};
+  window.R59.api.payments = paymentsApi;
 })();

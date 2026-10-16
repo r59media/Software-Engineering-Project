@@ -82,8 +82,78 @@ export async function verifySessionToken(token: string, secret: string): Promise
   }
 }
 
+const MAX_REVOKED_TOKENS = 1000
+const revokedTokens = new Map<string, number>()
+
+function pruneRevokedTokens(now: number): void {
+  for (const [tok, exp] of revokedTokens.entries()) {
+    if (now > exp) {
+      revokedTokens.delete(tok)
+    }
+  }
+}
+
 /**
- * Middleware that strictly checks for a valid Authorization header.
+ * Revokes a session token in memory within the isolate (capped at 1000 entries).
+ */
+export function revokeSessionToken(token: string, ttlMs: number = SESSION_TTL_MS): void {
+  if (!token) return
+  const now = Date.now()
+  pruneRevokedTokens(now)
+  if (revokedTokens.size >= MAX_REVOKED_TOKENS) {
+    const oldestKey = revokedTokens.keys().next().value
+    if (oldestKey) revokedTokens.delete(oldestKey)
+  }
+  revokedTokens.set(token, now + ttlMs)
+}
+
+/**
+ * Checks whether a session token has been revoked.
+ */
+export function isTokenRevoked(token: string): boolean {
+  if (!token) return true
+  const exp = revokedTokens.get(token)
+  if (exp === undefined) return false
+  if (Date.now() > exp) {
+    revokedTokens.delete(token)
+    return false
+  }
+  return true
+}
+
+/**
+ * Extracts the session token from Authorization: Bearer <token> first,
+ * falling back to the r59_session cookie.
+ */
+export function extractSessionToken(c: Context): string | null {
+  const auth = c.req.header('Authorization')
+  if (auth && auth.startsWith('Bearer ')) {
+    const token = auth.substring(7).trim()
+    if (token) return token
+  }
+  const cookieHeader = c.req.header('Cookie')
+  if (cookieHeader) {
+    const cookies = cookieHeader.split(';')
+    for (const cookie of cookies) {
+      const [rawName, ...rawValParts] = cookie.trim().split('=')
+      if (rawName === 'r59_session') {
+        const val = rawValParts.join('=').trim()
+        if (val) {
+          try {
+            return decodeURIComponent(val)
+          } catch {
+            return val
+          }
+        }
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Middleware that strictly checks for a valid HMAC-signed session token
+ * via Authorization Bearer header or HttpOnly session cookie.
  * Fails closed if ADMIN_SECRET is not configured.
  * Decouples session signing secret (SESSION_SECRET) from ADMIN_SECRET.
  */
@@ -101,8 +171,8 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
 
   const signingSecret = c.env.SESSION_SECRET || secret
 
-  const auth = c.req.header('Authorization')
-  if (!auth || !auth.startsWith('Bearer ')) {
+  const token = extractSessionToken(c)
+  if (!token) {
     return c.json({
       error: {
         code: 'UNAUTHORIZED',
@@ -112,25 +182,18 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }, 401)
   }
 
-  const token = auth.substring(7).trim()
-  if (!token) {
+  if (isTokenRevoked(token)) {
     return c.json({
       error: {
         code: 'UNAUTHORIZED',
-        message: 'Authentication token cannot be empty.',
+        message: 'Invalid or expired session token.',
         details: []
       }
     }, 401)
   }
 
-  // 1. Signed session token check
   const session = await verifySessionToken(token, signingSecret)
   if (session.valid) {
-    return await next()
-  }
-
-  // 2. Direct secret check (fallback for administrative CLI scripts, timing-safe)
-  if (timingSafeEqual(token, secret)) {
     return await next()
   }
 
