@@ -739,11 +739,11 @@
 
   function promptRemoveBooking(id) {
     const bookings = window.R59.state.getBookings();
-    const b = bookings.find(item => item.id === id);
+    const b = bookings.find(item => String(item.id) === String(id));
     if (!b || b.status !== 'Cancelled') return;
 
     window.R59.confirmation.confirmRemoveBooking(b, () => {
-      window.R59.state.setBookings(bookings.filter(item => item.id !== id));
+      window.R59.state.setBookings(bookings.filter(item => String(item.id) !== String(id)));
       if (window.R59.api?.bookings?.deleteBooking) {
         window.R59.api.bookings.deleteBooking(id).catch(err => console.warn('[schedule] Failed to delete booking:', err));
       }
@@ -754,7 +754,7 @@
 
   function promptCancelBooking(id) {
     const bookings = window.R59.state.getBookings();
-    const b = bookings.find(item => item.id === id);
+    const b = bookings.find(item => String(item.id) === String(id));
     if (!b || b.status === 'Cancelled') return;
 
     window.R59.confirmation.confirmCancelBooking(b, () => {
@@ -770,7 +770,8 @@
   function promptClearCancelled(scopeLabel, ids) {
     window.R59.confirmation.confirmClearCancelled(ids.length, scopeLabel, () => {
       const bookings = window.R59.state.getBookings();
-      window.R59.state.setBookings(bookings.filter(b => !ids.includes(b.id)));
+      const strIds = ids.map(String);
+      window.R59.state.setBookings(bookings.filter(b => !strIds.includes(String(b.id))));
       if (window.R59.api?.bookings?.deleteBooking) {
         ids.forEach(id => {
           window.R59.api.bookings.deleteBooking(id).catch(err => console.warn('[schedule] Failed to clear booking:', err));
@@ -789,10 +790,10 @@
   /* ---------- Booking Edit Modal ---------- */
   function openBookingEditor(id) {
     const bookings = window.R59.state.getBookings();
-    const b = bookings.find(item => item.id === id);
+    const b = bookings.find(item => String(item.id) === String(id));
     if (!b) return;
 
-    editingBookingId = id;
+    editingBookingId = b.id;
     $('#bkCustomer').value = b.customer || '';
     $('#bkPackage').value = b.package || '';
     $('#bkLocation').value = b.location || '';
@@ -822,7 +823,7 @@
 
   function saveBookingEdit() {
     const bookings = window.R59.state.getBookings();
-    const b = bookings.find(item => item.id === editingBookingId);
+    const b = bookings.find(item => String(item.id) === String(editingBookingId));
     if (!b) return closeBookingEditor();
 
     const customer = $('#bkCustomer').value.trim();
@@ -1165,7 +1166,7 @@
     if (bkStatusEl) {
       bkStatusEl.addEventListener('change', () => {
         const bookings = window.R59.state.getBookings();
-        const b = bookings.find(item => item.id === editingBookingId);
+        const b = bookings.find(item => String(item.id) === String(editingBookingId));
         const warn = $('#bkRefundNote');
         if (warn) warn.style.display = (bkStatusEl.value === 'Cancelled' && b && b.status !== 'Cancelled') ? 'block' : 'none';
       });
@@ -1220,6 +1221,27 @@
       if (selCalDate) {
         e.preventDefault();
         window.R59.schedule.selectCalendarDate(selCalDate.dataset.selectCalDate);
+        return;
+      }
+
+      const addTf = target.closest('[data-add-timeframe-day]');
+      if (addTf) {
+        e.preventDefault();
+        showAddTimeframe(addTf.dataset.addTimeframeDay);
+        return;
+      }
+
+      const saveTf = target.closest('[data-save-timeframe-day]');
+      if (saveTf) {
+        e.preventDefault();
+        saveTimeframe(saveTf.dataset.saveTimeframeDay);
+        return;
+      }
+
+      const cancelTf = target.closest('[data-cancel-timeframe]');
+      if (cancelTf) {
+        e.preventDefault();
+        cancelTimeframe();
         return;
       }
 

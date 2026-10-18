@@ -87,27 +87,65 @@ app.get('/', (c) => {
 
 // Route /admin and /admin/* to Admin Dashboard static assets
 app.get('/admin', (c) => {
-  return c.redirect('/admin/')
+  return c.redirect('/admin/', 301)
 })
 
-const STATIC_EXT_REGEX = /\.(css|js|html|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json)$/i
+const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|map)$/i
 
 app.get('/admin/*', async (c) => {
-  if (c.env.ASSETS) {
-    const url = new URL(c.req.url)
-    let assetRes: Response
-    // If requesting a static web asset with a legitimate extension, fetch directly
-    if (STATIC_EXT_REGEX.test(url.pathname)) {
-      assetRes = await c.env.ASSETS.fetch(c.req.raw)
-    } else {
-      // Otherwise fallback to /admin/index.html for client-side routing
-      const adminIndexUrl = new URL('/admin/index.html', url.origin)
-      assetRes = await c.env.ASSETS.fetch(new Request(adminIndexUrl.toString(), c.req.raw))
-    }
-    // Clone with mutable headers so global security header middleware can attach headers cleanly
-    return new Response(assetRes.body, assetRes)
+  if (!c.env.ASSETS) {
+    return c.text('Internal server error.', 500)
   }
-  return c.text('Internal server error.', 500)
+
+  const url = new URL(c.req.url)
+
+  // 1. Block internal documentation files (.md) from public access
+  if (url.pathname.toLowerCase().endsWith('.md')) {
+    return c.redirect('/admin/', 302)
+  }
+
+  let assetRes: Response
+
+  // 2. If requesting a static web asset with an extension (excluding html), fetch directly
+  if (STATIC_EXT_REGEX.test(url.pathname)) {
+    assetRes = await c.env.ASSETS.fetch(c.req.raw)
+  } else {
+    // 3. For '/admin/', '/admin/index.html', or extensionless SPA routes,
+    // request canonical '/admin/' so html_handling serves 200 OK directly
+    const canonicalAdminUrl = new URL('/admin/', url.origin)
+    assetRes = await c.env.ASSETS.fetch(
+      new Request(canonicalAdminUrl.toString(), {
+        method: 'GET',
+        headers: c.req.raw.headers
+      })
+    )
+  }
+
+  // 4. Guard against redirect loops: if ASSETS ever returns a redirect to /admin/,
+  // fetch /admin/ directly or return the body with 200 OK
+  if (assetRes.status >= 300 && assetRes.status < 400) {
+    const loc = assetRes.headers.get('Location')
+    if (loc === '/admin/' || loc === url.pathname) {
+      const fallbackUrl = new URL('/admin/', url.origin)
+      const directRes = await c.env.ASSETS.fetch(
+        new Request(fallbackUrl.toString(), {
+          method: 'GET',
+          headers: c.req.raw.headers
+        })
+      )
+      if (directRes.status === 200) {
+        assetRes = directRes
+      }
+    }
+  }
+
+  // Clone with mutable headers so global security header middleware attaches headers cleanly
+  const headers = new Headers(assetRes.headers)
+  return new Response(assetRes.body, {
+    status: assetRes.status,
+    statusText: assetRes.statusText,
+    headers
+  })
 })
 
 // API status endpoint
