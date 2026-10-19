@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth, verifySessionToken, extractSessionToken, isTokenRevoked } from '../middleware/auth'
+import { adminAuth, verifySessionToken, extractSessionToken, isTokenRevoked, isTokenRevokedInDb } from '../middleware/auth'
 
 export const servicesRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -13,7 +13,7 @@ servicesRouter.get('/', async (c) => {
     if (includeAllRequested) {
       const token = extractSessionToken(c)
       const secret = c.env.ADMIN_SECRET
-      if (token && secret && !isTokenRevoked(token)) {
+      if (token && secret && !isTokenRevoked(token) && !(await isTokenRevokedInDb(c.env.DB, token))) {
         const signingSecret = c.env.SESSION_SECRET || secret
         const session = await verifySessionToken(token, signingSecret)
         if (session.valid) {

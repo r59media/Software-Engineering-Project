@@ -122,8 +122,9 @@ export function isTokenRevoked(token: string): boolean {
 }
 
 /**
- * Extracts the session token from Authorization: Bearer <token> first,
- * falling back to the r59_session cookie.
+ * Extracts the session token strictly from Authorization: Bearer <token>.
+ * Does NOT fall back to the r59_session cookie, ensuring an old browser cookie
+ * cannot authenticate requests without an explicit in-memory Bearer token.
  */
 export function extractSessionToken(c: Context): string | null {
   const auth = c.req.header('Authorization')
@@ -131,29 +132,160 @@ export function extractSessionToken(c: Context): string | null {
     const token = auth.substring(7).trim()
     if (token) return token
   }
-  const cookieHeader = c.req.header('Cookie')
-  if (cookieHeader) {
-    const cookies = cookieHeader.split(';')
-    for (const cookie of cookies) {
-      const [rawName, ...rawValParts] = cookie.trim().split('=')
-      if (rawName === 'r59_session') {
-        const val = rawValParts.join('=').trim()
-        if (val) {
-          try {
-            return decodeURIComponent(val)
-          } catch {
-            return val
-          }
-        }
-      }
-    }
-  }
   return null
 }
 
 /**
+ * Revokes a session token in D1 database and in-memory cache across Cloudflare Worker isolates.
+ */
+export async function revokeTokenInDb(db: D1Database | undefined, token: string): Promise<void> {
+  if (!token) return
+  revokeSessionToken(token)
+  if (!db) return
+
+  try {
+    const parts = token.split('.')
+    const sig = parts.length > 1 ? parts[1] : token
+    const now = Date.now()
+    const expiry = now + SESSION_TTL_MS
+
+    let revokedMap: Record<string, number> = {}
+
+    // Read existing revoked tokens (supporting key/value and setting_key/setting_value)
+    let rawValue: string | null = null
+    try {
+      const row = await db.prepare("SELECT value FROM Admin_Settings WHERE key = 'revoked_tokens'").first<{ value: string }>()
+      if (row && typeof row.value === 'string') {
+        rawValue = row.value
+      }
+    } catch {
+      try {
+        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
+        if (row && typeof row.setting_value === 'string') {
+          rawValue = row.setting_value
+        }
+      } catch {}
+    }
+
+    if (!rawValue) {
+      try {
+        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
+        if (row && typeof row.setting_value === 'string') {
+          rawValue = row.setting_value
+        }
+      } catch {}
+    }
+
+    if (rawValue) {
+      try {
+        const parsed = JSON.parse(rawValue)
+        if (parsed && typeof parsed === 'object') {
+          revokedMap = parsed
+        }
+      } catch {}
+    }
+
+    // Prune entries where expiry <= Date.now()
+    const cleanedMap: Record<string, number> = {}
+    for (const [s, exp] of Object.entries(revokedMap)) {
+      if (typeof exp === 'number' && exp > now) {
+        cleanedMap[s] = exp
+      }
+    }
+
+    // Add current token's signature with Date.now() + 24 * 60 * 60 * 1000
+    cleanedMap[sig] = expiry
+
+    // Cap at 200 entries
+    const entries = Object.entries(cleanedMap)
+    if (entries.length > 200) {
+      entries.sort((a, b) => a[1] - b[1]) // oldest first
+      const excess = entries.length - 200
+      for (let i = 0; i < excess; i++) {
+        delete cleanedMap[entries[i][0]]
+      }
+    }
+
+    const jsonStr = JSON.stringify(cleanedMap)
+
+    let saved = false
+    try {
+      await db.prepare(
+        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('revoked_tokens', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+      ).bind(jsonStr).run()
+      saved = true
+    } catch {}
+
+    if (!saved) {
+      try {
+        await db.prepare(
+          "INSERT OR REPLACE INTO Admin_Settings (key, value) VALUES ('revoked_tokens', ?)"
+        ).bind(jsonStr).run()
+      } catch {}
+    }
+  } catch (err) {
+    // DB errors should never crash logout
+    console.warn('[auth] DB token revocation warning:', err)
+  }
+}
+
+/**
+ * Checks whether a token is revoked, consulting both the in-memory cache and D1 database.
+ */
+export async function isTokenRevokedInDb(db: D1Database | undefined, token: string): Promise<boolean> {
+  if (!token) return true
+  if (isTokenRevoked(token)) return true
+  if (!db) return false
+
+  try {
+    const parts = token.split('.')
+    const sig = parts.length > 1 ? parts[1] : token
+    const now = Date.now()
+
+    let rawValue: string | null = null
+    try {
+      const row = await db.prepare("SELECT value FROM Admin_Settings WHERE key = 'revoked_tokens'").first<{ value: string }>()
+      if (row && typeof row.value === 'string') {
+        rawValue = row.value
+      }
+    } catch {
+      try {
+        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
+        if (row && typeof row.setting_value === 'string') {
+          rawValue = row.setting_value
+        }
+      } catch {}
+    }
+
+    if (!rawValue) {
+      try {
+        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
+        if (row && typeof row.setting_value === 'string') {
+          rawValue = row.setting_value
+        }
+      } catch {}
+    }
+
+    if (rawValue) {
+      const parsed = JSON.parse(rawValue) as Record<string, number>
+      if (parsed && typeof parsed === 'object') {
+        const exp = parsed[sig]
+        if (typeof exp === 'number' && exp > now) {
+          revokeSessionToken(token)
+          return true
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[auth] DB token check warning:', err)
+  }
+
+  return false
+}
+
+/**
  * Middleware that strictly checks for a valid HMAC-signed session token
- * via Authorization Bearer header or HttpOnly session cookie.
+ * via Authorization Bearer header.
  * Fails closed if ADMIN_SECRET is not configured.
  * Decouples session signing secret (SESSION_SECRET) from ADMIN_SECRET.
  */
@@ -182,7 +314,7 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }, 401)
   }
 
-  if (isTokenRevoked(token)) {
+  if (await isTokenRevokedInDb(c.env.DB, token)) {
     return c.json({
       error: {
         code: 'UNAUTHORIZED',

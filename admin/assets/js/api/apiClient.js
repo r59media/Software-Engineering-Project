@@ -9,6 +9,14 @@
 (function () {
   'use strict';
 
+  let activeAuthToken = '';
+  try {
+    localStorage.removeItem('r59_admin_token');
+    sessionStorage.removeItem('r59_admin_token');
+  } catch {
+    // ignore storage errors
+  }
+
   // Configurable base URL: can be overridden via window.R59_API_URL or
   // window.APP_CONFIG.apiBaseUrl; defaults to '/api' (or localhost:8787/api on file://).
   const DEFAULT_BASE_URL = 'http://localhost:8787/api';
@@ -25,9 +33,8 @@
     }
     const isSeparateLocalServer = window.location &&
       (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
-      window.location.port &&
       window.location.port !== '8787' &&
-      !window.location.pathname.startsWith('/admin');
+      window.location.port !== '';
     if (isSeparateLocalServer) {
       return DEFAULT_BASE_URL;
     }
@@ -35,19 +42,21 @@
   }
 
   function getAuthToken() {
-    return localStorage.getItem('r59_admin_token') || '';
+    return activeAuthToken || '';
   }
 
   function setAuthToken(token) {
-    if (token) {
-      localStorage.setItem('r59_admin_token', token);
-    } else {
+    activeAuthToken = token ? String(token) : '';
+    try {
       localStorage.removeItem('r59_admin_token');
+      sessionStorage.removeItem('r59_admin_token');
+    } catch {
+      // ignore storage errors
     }
   }
 
   function clearAuthToken() {
-    localStorage.removeItem('r59_admin_token');
+    setAuthToken(null);
   }
 
   /**

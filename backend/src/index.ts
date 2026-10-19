@@ -80,11 +80,6 @@ app.use('*', async (c, next) => {
   return corsMiddleware(c, next)
 })
 
-// Root route (public facing)
-app.get('/', (c) => {
-  return c.text('R59 Media API is running!')
-})
-
 // Route /admin and /admin/* to Admin Dashboard static assets
 app.get('/admin', (c) => {
   return c.redirect('/admin/', 301)
@@ -171,5 +166,54 @@ app.route('/api/checkout', checkoutRouter)
 app.route('/api/portfolio', portfolioRouter)
 app.route('/api/services', servicesRouter)
 app.route('/api/admin', adminRouter)
+
+app.get('*', async (c) => {
+  const url = new URL(c.req.url)
+  if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
+    return c.json({ status: 'error', code: 'NOT_FOUND', message: 'API endpoint not found' }, 404)
+  }
+  if (!c.env.ASSETS) {
+    return c.text('R59 Media API is running!')
+  }
+  if (url.pathname.toLowerCase().endsWith('.md')) {
+    return c.notFound()
+  }
+
+  let assetRes: Response
+  if (STATIC_EXT_REGEX.test(url.pathname)) {
+    assetRes = await c.env.ASSETS.fetch(c.req.raw)
+  } else {
+    const rootUrl = new URL('/', url.origin)
+    assetRes = await c.env.ASSETS.fetch(
+      new Request(rootUrl.toString(), {
+        method: 'GET',
+        headers: c.req.raw.headers
+      })
+    )
+  }
+
+  if (assetRes.status >= 300 && assetRes.status < 400) {
+    const loc = assetRes.headers.get('Location')
+    if (loc === '/' || loc === url.pathname) {
+      const fallbackUrl = new URL('/', url.origin)
+      const directRes = await c.env.ASSETS.fetch(
+        new Request(fallbackUrl.toString(), {
+          method: 'GET',
+          headers: c.req.raw.headers
+        })
+      )
+      if (directRes.status === 200) {
+        assetRes = directRes
+      }
+    }
+  }
+
+  const headers = new Headers(assetRes.headers)
+  return new Response(assetRes.body, {
+    status: assetRes.status,
+    statusText: assetRes.statusText,
+    headers
+  })
+})
 
 export default app

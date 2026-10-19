@@ -1,6 +1,6 @@
 import { Hono, Context } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth, timingSafeEqual, createSessionToken, extractSessionToken, revokeSessionToken } from '../middleware/auth'
+import { adminAuth, timingSafeEqual, createSessionToken, extractSessionToken, revokeSessionToken, revokeTokenInDb, isTokenRevokedInDb } from '../middleware/auth'
 
 export const adminRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -191,9 +191,10 @@ adminRouter.post('/login', async (c) => {
     const signingSecret = c.env.SESSION_SECRET || expectedSecret
     const token = await createSessionToken(signingSecret, expectedEmail)
 
+    // Clear any legacy r59_session cookie so browser removes lingering cookies from older versions
     c.header(
       'Set-Cookie',
-      `r59_session=${token}; Path=/; HttpOnly; SameSite=Strict${c.req.url.startsWith('https://') ? '; Secure' : ''}; Max-Age=86400`
+      `r59_session=; Path=/; HttpOnly; SameSite=Strict${c.req.url.startsWith('https://') ? '; Secure' : ''}; Max-Age=0`
     )
 
     return c.json({
@@ -222,6 +223,7 @@ adminRouter.post('/logout', async (c) => {
   const token = extractSessionToken(c)
   if (token) {
     revokeSessionToken(token)
+    await revokeTokenInDb(c.env.DB, token)
   }
   c.header(
     'Set-Cookie',

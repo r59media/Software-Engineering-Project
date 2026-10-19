@@ -416,38 +416,33 @@
     }
   }
 
+  const initLogin = initAuth;
+  const initGlobalActions = initSaveBar;
+
   // App initialization
-  document.addEventListener('DOMContentLoaded', async () => {
+  document.addEventListener('DOMContentLoaded', () => {
     // 1. Initialize component listeners
-    window.R59.modal.initModalListeners();
-    window.R59.navigation.initNavigation();
-    window.R59.payments.initPaymentsListeners();
-    window.R59.photography.initPhotographyListeners();
-    window.R59.schedule.initScheduleListeners();
-    window.R59.dashboard.initDashboardListeners();
+    window.R59.modal?.initModalListeners?.();
+    window.R59.navigation?.initNavigation?.();
+    window.R59.payments?.initPaymentsListeners?.();
+    window.R59.photography?.initPhotographyListeners?.();
+    window.R59.schedule?.initScheduleListeners?.();
+    window.R59.dashboard?.initDashboardListeners?.();
 
-    initSaveBar();
-    initAuth();
+    document.body.classList.remove('authenticated');
+    window.R59.apiClient?.clearAuthToken?.();
+    initLogin();
+    initGlobalActions();
 
-    // 2. Asynchronously verify session with backend
-    const hasToken = !!window.R59.apiClient?.getAuthToken();
-    let isAuthenticated = false;
-
-    if (hasToken) {
-      isAuthenticated = await window.R59.apiClient.verifySession();
+    const loginEl = $('#login');
+    if (loginEl) loginEl.classList.add('open');
+    const luEl = $('#lu');
+    const lpEl = $('#lp');
+    if (luEl) {
+      luEl.value = '';
+      luEl.focus();
     }
-
-    if (isAuthenticated) {
-      document.body.classList.add('authenticated');
-      $('#login')?.classList.remove('open');
-      renderAll();
-      window.R59.navigation.go('overview');
-      loadInitialBackendData();
-    } else {
-      document.body.classList.remove('authenticated');
-      $('#login')?.classList.add('open');
-      $('#lu')?.focus();
-    }
+    if (lpEl) lpEl.value = '';
   });
 
   window.R59 = window.R59 || {};
