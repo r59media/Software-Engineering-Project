@@ -1,0 +1,75 @@
+.about {
+  position: relative;
+  isolation: isolate;
+  container-type: inline-size;
+  color: var(--color-brand-black);
+  background: var(--color-white);
+  overflow: clip;
+}
+.about__artwork { position: relative; }
+.about__motion { width: 100%; height: 100%; }
+.about__art { display: block; width: 100%; height: auto; user-select: none; }
+.about__paper { position: absolute; inset: 0; z-index: -2; pointer-events: none; overflow: hidden; }
+.about__paper .about__art { width: 100%; height: 258.46%; position: absolute; top: -65%; object-fit: cover; }
+.about__layout { display: grid; grid-template-columns: 49.1% 45.6%; min-height: 53.98cqw; }
+.about__collage { position: relative; align-self: start; width: 100%; aspect-ratio: 710 / 780; }
+.about__collage > .about__artwork, .about__portrait { position: absolute; }
+.about__collage [data-about-part="yellow-card"] { left: 12.2%; top: 11.5%; width: 37.6%; }
+.about__collage [data-about-part="yellow-card"] .about__art { transform: rotate(-7.91deg); }
+.about__collage [data-about-part="red-card"] { left: 51.9%; top: 38.1%; width: 41.55%; }
+.about__collage [data-about-part="red-card"] .about__art { transform: rotate(7.91deg); }
+.about__collage [data-about-part="signature-seal"] { left: 70.9%; top: 10.7%; width: 28.27%; }
+.about__collage [data-about-part="signature-seal"] .about__art { transform: scale(1.25); filter: drop-shadow(4px 6px 5px var(--color-black-30)); }
+.about__portrait { left: 17.75%; top: 16%; width: 65.35%; aspect-ratio: 464 / 552; }
+.about__portrait-pose { position: relative; width: 100%; height: 100%; transform: rotate(-2deg); }
+.about__portrait [data-about-part="portrait"] { position: absolute; left: 13%; top: 10%; width: 74%; height: 67%; }
+.about__portrait [data-about-part="portrait"] .about__art { height: 100%; object-fit: cover; }
+.about__portrait [data-about-part="portrait-frame"] { position: absolute; inset: 0; }
+.about__portrait [data-about-part="portrait-frame"] .about__art { clip-path: inset(5% 6.8% 5.5% 6.8%); }
+.about__content { position: relative; padding-top: 10.38cqw; padding-bottom: 5.5cqw; min-width: 0; }
+.about__eyebrow { display: flex; align-items: center; gap: 15px; margin: 0; font-size: var(--text-caption); font-weight: var(--font-weight-light); line-height: 1rem; }
+.about__eyebrow > span { width: 9px; height: 11px; background: var(--color-brand-red); flex: none; }
+.about__heading { margin: 0; font-family: var(--font-title); font-weight: var(--font-weight-bold); font-size: var(--text-about-title); line-height: .9; }
+.about__heading > span { display: block; }
+.about__subheading { padding-top: .62cqw; padding-left: 1.25cqw; font-size: var(--text-about-subtitle); font-weight: var(--font-weight-medium); font-style: italic; line-height: 1; }
+.about__biography { margin: 2.1cqw 0 0; font-size: var(--text-base); line-height: var(--line-body); }
+.about__lens { position: relative; width: 10.56cqw; aspect-ratio: 813 / 814; margin: 3.65cqw 0 0 4.75cqw; }
+.about__lens-center { position: absolute; width: 10.89%; height: 5.89%; left: 44.38%; top: 46.82%; overflow: hidden; border-radius: 50%; }
+.about__lens-center .about__artwork, .about__lens-center .about__art { width: 100%; height: 100%; object-fit: cover; }
+.about__decorations { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.about__decorations > .about__artwork { position: absolute; }
+.about__decorations .about__art { filter: drop-shadow(8px 12px 9px var(--color-black-30)); }
+.about__decorations [data-about-part="top-lens"] { width: 16.07%; left: 30.2%; top: -14.2cqw; }
+.about__decorations [data-about-part="top-lens"] .about__art { transform: rotate(78.1deg); }
+.about__decorations [data-about-part="top-right-lens"] { width: 18%; right: -3.4%; top: -2.4cqw; }
+.about__decorations [data-about-part="top-right-lens"] .about__art { transform: rotate(-12.73deg); }
+.about__decorations [data-about-part="bottom-right-camera"] { width: 20.8%; right: -3.9%; bottom: -6.4cqw; }
+.about__decorations [data-about-part="bottom-right-camera"] .about__art { transform: rotate(25.65deg); }
+.about__decorations [data-about-part="left-flash"] { width: 10.46%; left: -4.4%; bottom: 1.9cqw; }
+.about__decorations [data-about-part="left-flash"] .about__art { transform: rotate(8.98deg); }
+.about__decorations [data-about-part="left-memory-card"] { width: 3.46%; left: -1.2%; top: 1.65cqw; }
+.about__decorations [data-about-part="left-memory-card"] .about__art { transform: rotate(4.71deg); }
+.about__decorations [data-about-part="top-memory-card"] { width: 4.01%; left: 67.7%; top: 3.6cqw; }
+.about__decorations [data-about-part="top-memory-card"] .about__art { transform: rotate(-6.4deg); }
+.about__decorations [data-about-part="bottom-memory-card"] { width: 3.3%; left: 79.9%; bottom: 12.4cqw; }
+.about__decorations [data-about-part="bottom-memory-card"] .about__art { transform: rotate(18.45deg); }
+@media (max-width: 1000px) {
+  .about__layout { grid-template-columns: 1fr; padding-top: clamp(3rem, 8vw, 5rem); }
+  .about__collage { width: min(100%, 710px); justify-self: center; }
+  .about__content { padding: 0 clamp(1.5rem, 7vw, 5rem) 3rem; }
+  .about__heading { font-size: clamp(2.75rem, 8.6vw, 5rem); }
+  .about__subheading { padding: .5rem 0 0; font-size: clamp(1.5rem, 4.9vw, 3rem); }
+  .about__biography { margin-top: 1.75rem; max-width: 42rem; }
+  .about__lens { width: clamp(7rem, 17vw, 9.5rem); margin: 2.5rem 0 0 10%; }
+  .about__decorations [data-about-part="top-lens"] { width: 20%; top: -7cqw; }
+  .about__decorations [data-about-part="top-right-lens"] { width: 22.5%; top: -1cqw; }
+  .about__decorations [data-about-part="left-flash"] { width: 15%; bottom: auto; top: calc(55cqw + clamp(3rem, 8vw, 5rem)); }
+  .about__decorations [data-about-part="left-memory-card"] { width: clamp(2rem, 5vw, 3rem); left: -.625rem; top: 1.25rem; }
+  .about__decorations [data-about-part="top-memory-card"] { width: clamp(2.25rem, 5.5vw, 3.5rem); top: 1rem; }
+  .about__decorations [data-about-part="bottom-memory-card"] { width: clamp(2rem, 5vw, 3rem); left: 58%; bottom: 8rem; }
+  .about__decorations [data-about-part="bottom-right-camera"] { width: 24%; bottom: -4cqw; }
+}
+
+@media (max-width: 600px) {
+  .about__decorations [data-about-part="bottom-right-camera"] { width: 36%; }
+}
