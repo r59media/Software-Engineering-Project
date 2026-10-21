@@ -13,7 +13,8 @@ button:disabled { cursor: not-allowed; }
 .skip-link { position: absolute; left: 1rem; top: -6rem; z-index: 10; padding: 1rem; background: var(--color-brand-white); color: var(--color-brand-black); }
 .skip-link:focus { top: 1rem; }
 .site-shell { width: 100%; min-height: 100svh; display: flex; flex-direction: column; }
-.site-shell > main { display: flex; flex: 1; min-width: 0; }
+.site-shell > main { min-width: 0; }
+.site-intro { min-height: 100svh; display: flex; flex-direction: column; }
 .action { display: inline-flex; align-items: center; justify-content: center; min-height: 3.875rem; padding: 1rem 1.5rem; border: 0; border-radius: var(--radius-control); font-size: var(--text-medium); line-height: 1.5; text-align: center; }
 .action--primary { background: var(--color-brand-yellow); color: var(--color-brand-black); }
 .action--light { background: var(--color-brand-white); color: var(--color-brand-black); }

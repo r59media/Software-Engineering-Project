@@ -3,6 +3,7 @@ import './styles/global.css'
 import { fetchHeroSlides } from './api/client'
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
+import { About } from './sections/about/About'
 import { Hero } from './sections/hero/Hero'
 import type { HeroSlide } from './types/hero'
 
@@ -21,8 +22,13 @@ function App() {
 
   return <div className="site-shell">
     <a className="skip-link" href="#hero">Skip to content</a>
-    <SiteHeader destinations={heroDestinations} />
-    <main><Hero slides={slides} destinations={heroDestinations} /></main>
+    <main>
+      <div className="site-intro">
+        <SiteHeader destinations={heroDestinations} />
+        <Hero slides={slides} destinations={heroDestinations} />
+      </div>
+      <About />
+    </main>
   </div>
 }
 
