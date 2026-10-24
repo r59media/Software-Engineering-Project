@@ -11,7 +11,7 @@
 .about__art { display: block; width: 100%; height: auto; user-select: none; }
 .about__paper { position: absolute; inset: 0; z-index: -2; pointer-events: none; overflow: hidden; }
 .about__paper .about__art { width: 100%; height: 258.46%; position: absolute; top: -65%; object-fit: cover; }
-.about__layout { display: grid; grid-template-columns: 49.1% 45.6%; min-height: 53.98cqw; }
+.about__layout { display: grid; grid-template-columns: 49.1% 45.6%; min-height: max(100svh, 53.98cqw); }
 .about__collage { position: relative; align-self: start; width: 100%; aspect-ratio: 710 / 780; }
 .about__collage > .about__artwork, .about__portrait { position: absolute; }
 .about__collage [data-about-part="yellow-card"] { left: 12.2%; top: 11.5%; width: 37.6%; }
@@ -22,7 +22,7 @@
 .about__collage [data-about-part="signature-seal"] .about__art { transform: scale(1.25); filter: drop-shadow(4px 6px 5px var(--color-black-30)); }
 .about__portrait { left: 17.75%; top: 16%; width: 65.35%; aspect-ratio: 464 / 552; }
 .about__portrait-pose { position: relative; width: 100%; height: 100%; transform: rotate(-2deg); }
-.about__portrait [data-about-part="portrait"] { position: absolute; left: 13%; top: 10%; width: 74%; height: 67%; }
+.about__portrait [data-about-part="portrait"] { position: absolute; left: 12%; top: 9%; width: 76%; height: 69%; }
 .about__portrait [data-about-part="portrait"] .about__art { height: 100%; object-fit: cover; }
 .about__portrait [data-about-part="portrait-frame"] { position: absolute; inset: 0; }
 .about__portrait [data-about-part="portrait-frame"] .about__art { clip-path: inset(5% 6.8% 5.5% 6.8%); }

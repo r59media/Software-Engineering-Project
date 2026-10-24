@@ -3,6 +3,7 @@ import './styles/global.css'
 import { fetchHeroSlides } from './api/client'
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
+import { RecentPhotoshoot } from './sections/recent/RecentPhotoshoot'
 import { About } from './sections/about/About'
 import { Hero } from './sections/hero/Hero'
 import type { HeroSlide } from './types/hero'
@@ -28,6 +29,7 @@ function App() {
         <Hero slides={slides} destinations={heroDestinations} />
       </div>
       <About />
+      <RecentPhotoshoot />
     </main>
   </div>
 }
