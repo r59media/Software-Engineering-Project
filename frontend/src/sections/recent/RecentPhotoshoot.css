@@ -1,0 +1,49 @@
+.recent { position: relative; isolation: isolate; overflow: clip; container-type: inline-size; min-height: 100svh; display: grid; align-items: center; color: var(--color-brand-black); background: var(--color-brand-yellow); }
+.recent__glow { position: absolute; z-index: -1; pointer-events: none; left: -85.6%; top: -26.67%; width: 270.72%; height: 314.87%; background: url('../../assets/mrphshImages/recent-glow.svg') center / 100% 100% no-repeat; }
+.recent__composition { position: relative; padding-bottom: 4cqw; }
+.recent__stage { position: relative; height: 35.43cqw; }
+.recent__slot { position: absolute; top: 7.5cqw; left: 50%; width: 18.48cqw; height: 27.68cqw; }
+.recent__motion { width: 100%; height: 100%; }
+.recent__slot[data-recent-slot="0"] { top: 6.16cqw; width: 16.12cqw; height: 27.75cqw; transform: translateX(-50%); }
+.recent__slot[data-recent-slot="-1"] { left: 22.9%; transform: translateX(-50%) rotate(-8.66deg); }
+.recent__slot[data-recent-slot="1"] { left: 77.1%; transform: translateX(-50%) rotate(8.66deg); }
+.recent__slot[data-recent-slot="-2"] { left: -4.2%; top: 13.5cqw; transform: translateX(-50%) rotate(-17.32deg); }
+.recent__slot[data-recent-slot="2"] { left: 104.2%; top: 13.5cqw; transform: translateX(-50%) rotate(17.32deg); }
+.recent__photo { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: var(--color-gray); cursor: pointer; box-shadow: 5px 5px 15px rgb(0 0 0 / 25%); }
+.recent__photo img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.recent__controls { display: flex; align-items: center; justify-content: center; min-height: 44px; position: relative; z-index: 1; }
+.recent__controls button { display: grid; place-items: center; min-width: 44px; min-height: 44px; border: 0; padding: 0; color: var(--color-black-80); background: transparent; cursor: pointer; }
+.recent__dot { display: block; width: 14px; height: 14px; border-radius: 100px; background: currentColor; }
+.recent__dot--current { width: 28px; }
+.recent__heading { position: relative; margin: 1.5cqw auto 0; font-family: var(--font-title); font-size: var(--text-recent-title); line-height: .9; text-align: center; }
+.recent__heading span, .recent__heading strong { display: block; }
+.recent__heading span { font-style: italic; font-weight: var(--font-weight-medium); }
+.recent__heading strong { font-weight: var(--font-weight-bold); }
+.recent__empty { margin: 0; position: absolute; inset: 0; display: grid; place-items: center; padding: 2rem; text-align: center; }
+.recent__sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.photo-unavailable { display: grid; width: 100%; height: 100%; place-items: center; padding: 1rem; color: var(--color-brand-white); font: 1rem var(--font-body); }
+.photo-viewer { position: fixed; inset: 0; width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; padding: 0; overflow: hidden; color: var(--color-brand-white); background: transparent; }
+.photo-viewer::backdrop { background: var(--color-black-80); }
+.photo-viewer__image { position: absolute; top: 8%; left: 50%; transform: translateX(-50%); height: 84%; width: min(70vw, 56dvh); }
+.photo-viewer__image img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.photo-viewer button { position: absolute; display: grid; place-items: center; width: 56px; height: 64px; padding: 0; border: 0; color: inherit; background: transparent; cursor: pointer; }
+.photo-viewer__previous { left: 10%; top: calc(50% - 32px); }
+.photo-viewer__next { right: 10%; top: calc(50% - 32px); }
+.photo-viewer__next img { transform: rotate(180deg); }
+.photo-viewer__close { top: 1rem; right: 1rem; font-size: 2.5rem; line-height: 1; }
+.photo-viewer__count { position: absolute; bottom: 1rem; left: 50%; transform: translateX(-50%); margin: 0; font-size: var(--text-caption); }
+@media (max-width: 1000px) {
+  .recent__composition { padding-block: 3rem; }
+  .recent__stage { height: min(100cqw, 38rem); }
+  .recent__slot { width: min(48cqw, 18.5rem); height: min(72cqw, 28rem); top: 12cqw; }
+  .recent__slot[data-recent-slot="0"] { top: 8cqw; width: min(52cqw, 20rem); height: min(80cqw, 30.8rem); z-index: 1; }
+  .recent__slot[data-recent-slot="-1"] { left: -10%; }
+  .recent__slot[data-recent-slot="1"] { left: 110%; }
+  .recent__slot[data-recent-slot="-2"], .recent__slot[data-recent-slot="2"] { display: none; }
+  .recent__heading { margin-top: 1.5rem; font-size: clamp(2rem, 8.5cqw, 3.75rem); padding-inline: 1rem; }
+  .photo-viewer__image { top: 12%; height: 72%; width: calc(100% - 6rem); }
+  .photo-viewer .photo-viewer__previous { left: 0; width: 64px; height: 112px; top: calc(50% - 56px); }
+  .photo-viewer .photo-viewer__next { right: 0; width: 64px; height: 112px; top: calc(50% - 56px); }
+  .photo-viewer__previous img { transform: scale(.65); pointer-events: none; }
+  .photo-viewer__next img { transform: rotate(180deg) scale(.65); pointer-events: none; }
+}
