@@ -246,9 +246,21 @@
   }
 
   function initPhotographyListeners() {
-    // Tabs
-    $$('.tab').forEach(t => {
+    // Tabs & ArrowLeft / ArrowRight keyboard navigation
+    const tabEls = $$('.tabs [role="tab"]');
+    tabEls.forEach((t, index) => {
       t.onclick = () => window.go('images', { tab: t.dataset.tab });
+      t.addEventListener('keydown', e => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const nextIndex = e.key === 'ArrowRight'
+            ? (index + 1) % tabEls.length
+            : (index - 1 + tabEls.length) % tabEls.length;
+          const nextTab = tabEls[nextIndex];
+          nextTab.focus();
+          window.go('images', { tab: nextTab.dataset.tab });
+        }
+      });
     });
 
     // Social list listeners
@@ -260,6 +272,15 @@
         const currentState = window.R59.state.getState();
         currentState.social[t.dataset.s][t.dataset.k] = t.value;
         window.R59.state.markDirty();
+      });
+
+      socialList.addEventListener('change', e => {
+        const t = e.target;
+        if (t.dataset.s === undefined || t.dataset.k !== 'url') return;
+        const val = t.value.trim();
+        if (val && !window.R59.formValidation?.isValidUrl(val)) {
+          window.toast?.('Please enter a valid URL (starting with http:// or https://)');
+        }
       });
 
       socialList.addEventListener('click', e => {

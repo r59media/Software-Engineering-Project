@@ -13,11 +13,13 @@ function App() {
 
   useEffect(() => {
     const controller = new AbortController()
-    void fetchHeroSlides(heroSlides, controller.signal).then(remoteSlides => {
-      if (!controller.signal.aborted && remoteSlides.length > 0) {
-        setSlides(remoteSlides)
-      }
-    })
+    void fetchHeroSlides(heroSlides, controller.signal)
+      .then(remoteSlides => {
+        if (!controller.signal.aborted && remoteSlides !== heroSlides && remoteSlides.length > 0) {
+          setSlides(remoteSlides)
+        }
+      })
+      .catch(() => {})
     return () => controller.abort()
   }, [])
 

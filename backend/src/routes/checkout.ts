@@ -63,6 +63,7 @@ checkoutRouter.post('/', async (c) => {
     const clientEmail = typeof rawEmail === 'string' ? rawEmail.trim() : ''
     const idempotencyKey = body.idempotencyKey ?? body.idempotency_key
     slotId = body.slotId ?? body.slot_id
+    const couponCode = typeof (body.coupon_code ?? body.couponCode) === 'string' ? (body.coupon_code ?? body.couponCode).trim().toUpperCase() : ''
 
     const errors = []
     if (!sourceId || typeof sourceId !== 'string') {
@@ -163,6 +164,23 @@ checkoutRouter.post('/', async (c) => {
       }, 400)
     }
 
+    let finalPriceCents = priceCents
+    if (couponCode) {
+      const coupon: any = await c.env.DB.prepare(
+        'SELECT code, discount_type, discount_value FROM Coupons WHERE UPPER(code) = ? AND is_active = 1'
+      ).bind(couponCode).first()
+
+      if (coupon) {
+        let discountCents = 0
+        if (coupon.discount_type === 'percent') {
+          discountCents = Math.round(priceCents * (Math.min(100, Math.max(0, Number(coupon.discount_value) || 0)) / 100))
+        } else {
+          discountCents = Math.round(Math.max(0, Number(coupon.discount_value) || 0) * 100)
+        }
+        finalPriceCents = Math.max(100, priceCents - discountCents)
+      }
+    }
+
     if (!c.env.SQUARE_ACCESS_TOKEN) {
       throw new Error('Square Access Token not configured')
     }
@@ -187,7 +205,7 @@ checkoutRouter.post('/', async (c) => {
             name: service.name,
             quantity: '1',
             basePriceMoney: {
-              amount: BigInt(priceCents),
+              amount: BigInt(finalPriceCents),
               currency: 'USD'
             }
           }
@@ -211,7 +229,7 @@ checkoutRouter.post('/', async (c) => {
       autocomplete: true,
       acceptPartialAuthorization: false,
       amountMoney: {
-        amount: BigInt(priceCents),
+        amount: BigInt(finalPriceCents),
         currency: 'USD'
       }
     })
@@ -219,7 +237,7 @@ checkoutRouter.post('/', async (c) => {
     const payment = paymentResponse.payment
     const paymentId = payment?.id
 
-    if (payment?.status !== 'COMPLETED' || payment.amountMoney?.amount !== BigInt(priceCents)) {
+    if (payment?.status !== 'COMPLETED' || payment.amountMoney?.amount !== BigInt(finalPriceCents)) {
       // Explicitly release slot lock before returning 402 payment error
       try {
         await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
@@ -239,10 +257,12 @@ checkoutRouter.post('/', async (c) => {
     paymentConfirmed = true
 
     // 4. Record successful booking
+    let bookingId: number | undefined
     try {
-      await c.env.DB.prepare(
-        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, price_at_booking, square_payment_id, status) VALUES (?, ?, ?, ?, ?, ?, 'confirmed')"
-      ).bind(service.id, slotId, clientName, clientEmail, priceCents, paymentId).run()
+      const bookingInsert = await c.env.DB.prepare(
+        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, price_at_booking, square_payment_id, status, coupon_code) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?)"
+      ).bind(service.id, slotId, clientName, clientEmail, finalPriceCents, paymentId, couponCode || null).run()
+      bookingId = bookingInsert.meta?.last_row_id
     } catch (bookingErr) {
       console.error('CRITICAL: Payment succeeded but booking insert failed:', {
         paymentId,
@@ -252,19 +272,52 @@ checkoutRouter.post('/', async (c) => {
         customer_email: clientEmail,
         error: bookingErr
       })
+
+      // S-2: Attempt refund and release slot
+      if (paymentId) {
+        await client.refunds.refundPayment({
+          idempotencyKey: idempotencyKey + '_refund',
+          paymentId: paymentId,
+          amountMoney: {
+            amount: BigInt(finalPriceCents),
+            currency: 'USD'
+          }
+        }).catch((refundErr) => {
+          console.error('Failed to refund payment after booking failure:', refundErr)
+        })
+      }
+
+      try {
+        await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
+        slotLocked = false
+      } catch (releaseErr) {
+        console.error('Failed to release slot lock after booking failure:', releaseErr)
+      }
+
       return c.json({
         error: {
           code: 'BOOKING_RECORD_ERROR',
           message:
             'Your payment was processed (Ref: ' +
             paymentId +
-            '), but we encountered an error saving your booking. Please contact us with this reference and do not submit payment again.',
+            '), but we encountered an error saving your booking. We have initiated an automatic refund. Please contact us if you need assistance.',
           details: [{ paymentId, orderId }]
         }
       }, 500)
     }
 
-    return c.json({ success: true, paymentId, orderId })
+    return c.json({
+      success: true,
+      status: 'success',
+      paymentId,
+      orderId,
+      bookingId,
+      data: {
+        booking_id: bookingId,
+        payment_id: paymentId,
+        order_id: orderId
+      }
+    })
   } catch (e: any) {
     console.error('Checkout error:', e)
 

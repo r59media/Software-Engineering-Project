@@ -9,16 +9,49 @@ export interface HeroProps {
   destinations: HeroDestinations
 }
 
-function HeroImage({ slide }: { slide: HeroSlide }) {
+interface HeroImageProps {
+  slide: HeroSlide
+  fallbackImageUrl?: string
+}
+
+function HeroImage({ slide, fallbackImageUrl }: HeroImageProps) {
+  const [currentUrl, setCurrentUrl] = useState(slide.imageUrl)
   const [failed, setFailed] = useState(false)
-  if (failed) return null
+
+  const handleImageError = () => {
+    if (fallbackImageUrl && currentUrl !== fallbackImageUrl) {
+      setCurrentUrl(fallbackImageUrl)
+    } else {
+      setFailed(true)
+    }
+  }
+
   const position = {
     '--image-position': slide.objectPosition ?? '50% 50%',
     '--image-position-mobile': slide.mobileObjectPosition ?? slide.objectPosition ?? '50% 50%',
   } as CSSProperties
-  return <div className="hero__media" data-slide-id={slide.id} data-embedded-overlay={Boolean(slide.hasEmbeddedOverlay)} style={position}>
-    <img className="hero__image" src={slide.imageUrl} alt={slide.alt.trim() || 'R59 Media featured automotive and portrait photography'} width={slide.width} height={slide.height} fetchPriority="high" decoding="async" onError={() => setFailed(true)} />
-  </div>
+
+  return (
+    <div
+      className="hero__media"
+      data-slide-id={slide.id}
+      data-embedded-overlay={Boolean(slide.hasEmbeddedOverlay)}
+      style={position}
+    >
+      {!failed && (
+        <img
+          className="hero__image"
+          src={currentUrl}
+          alt={slide.alt.trim() || 'R59 Media featured automotive and portrait photography'}
+          width={slide.width}
+          height={slide.height}
+          fetchPriority="high"
+          decoding="async"
+          onError={handleImageError}
+        />
+      )}
+    </div>
+  )
 }
 
 /** Presentation only: a future parent controller owns fetching and slide changes. */
@@ -27,7 +60,13 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
   const activeSlide = availableSlides.find(slide => slide.id === activeSlideId) ?? availableSlides[0]
   return <section id="hero" className="hero" aria-labelledby="hero-title" tabIndex={-1}>
     <div className="hero__stage">
-      {activeSlide && <HeroImage key={`${activeSlide.id}:${activeSlide.imageUrl}`} slide={activeSlide} />}
+      {activeSlide && (
+        <HeroImage
+          key={`${activeSlide.id}:${activeSlide.imageUrl}`}
+          slide={activeSlide}
+          fallbackImageUrl={slides[0]?.imageUrl}
+        />
+      )}
       <div className="hero__content">
         <p className="hero__role"><span aria-hidden="true" />Photographer</p>
         <h1 id="hero-title">Kevin D<br />Gonzalez</h1>

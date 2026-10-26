@@ -12,7 +12,7 @@
   let activeAuthToken = '';
   try {
     localStorage.removeItem('r59_admin_token');
-    sessionStorage.removeItem('r59_admin_token');
+    activeAuthToken = sessionStorage.getItem('r59_admin_token') || '';
   } catch {
     // ignore storage errors
   }
@@ -49,7 +49,11 @@
     activeAuthToken = token ? String(token) : '';
     try {
       localStorage.removeItem('r59_admin_token');
-      sessionStorage.removeItem('r59_admin_token');
+      if (activeAuthToken) {
+        sessionStorage.setItem('r59_admin_token', activeAuthToken);
+      } else {
+        sessionStorage.removeItem('r59_admin_token');
+      }
     } catch {
       // ignore storage errors
     }

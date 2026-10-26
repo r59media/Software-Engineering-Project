@@ -313,8 +313,13 @@
           if (!window.R59.paymentsApi) return;
           const pricing = await window.R59.paymentsApi.getPricingSettings().catch(() => null);
           if (pricing && typeof pricing === 'object') {
+            const cleanPricing = pricing.data || pricing;
             const currentState = window.R59.state.getState();
-            currentState.pricing = { ...currentState.pricing, ...pricing };
+            currentState.pricing = {
+              baseFee: Number(cleanPricing.baseFee ?? currentState.pricing.baseFee ?? 0),
+              perPerson: Number(cleanPricing.perPerson ?? currentState.pricing.perPerson ?? 0),
+              depositPercent: Number(cleanPricing.depositPercent ?? currentState.pricing.depositPercent ?? 50)
+            };
             window.R59.payments?.renderPricing();
           }
         })(),
@@ -391,16 +396,20 @@
             : Promise.resolve(null)).catch(() => null);
           if (Array.isArray(photosRes) && photosRes.length > 0) {
             const currentState = window.R59.state.getState();
-            const mappedPhotos = photosRes.map((p, idx) => ({
-              id: p.id ?? idx + 1,
-              src: p.url || p.src || p.r2_object_key || '',
-              r2_object_key: p.r2_object_key || '',
-              label: p.title || p.label || p.alt_text || 'Photo',
-              alt: p.alt_text || p.alt || p.title || 'Photo',
-              cat: p.category || p.cat || 'Portrait',
-              display_order: p.display_order ?? idx,
-              is_featured: Boolean(p.is_featured)
-            }));
+            const mappedPhotos = photosRes.map((p, idx) => {
+              const rawUrl = p.url || p.public_url || p.src || (p.r2_object_key ? `/api/media/${String(p.r2_object_key).replace(/^\/+/, '')}` : '');
+              return {
+                id: p.id ?? idx + 1,
+                src: rawUrl,
+                url: rawUrl,
+                r2_object_key: p.r2_object_key || '',
+                label: p.title || p.label || p.alt_text || 'Photo',
+                alt: p.alt_text || p.alt || p.title || 'Photo',
+                cat: p.category || p.cat || 'Portrait',
+                display_order: p.display_order ?? idx,
+                is_featured: Boolean(p.is_featured)
+              };
+            });
             currentState.photos = mappedPhotos;
             currentState.images = currentState.images || { main: [], gallery: [], about: [] };
             currentState.images.gallery = mappedPhotos;
@@ -420,7 +429,7 @@
   const initGlobalActions = initSaveBar;
 
   // App initialization
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     // 1. Initialize component listeners
     window.R59.modal?.initModalListeners?.();
     window.R59.navigation?.initNavigation?.();
@@ -429,11 +438,23 @@
     window.R59.schedule?.initScheduleListeners?.();
     window.R59.dashboard?.initDashboardListeners?.();
 
-    document.body.classList.remove('authenticated');
-    window.R59.apiClient?.clearAuthToken?.();
     initLogin();
     initGlobalActions();
 
+    if (window.R59.apiClient?.getAuthToken()) {
+      const valid = await window.R59.apiClient.verifySession();
+      if (valid) {
+        document.body.classList.add('authenticated');
+        $('#login')?.classList.remove('open');
+        renderAll();
+        window.R59.navigation.go('overview');
+        loadInitialBackendData();
+        return;
+      }
+    }
+
+    document.body.classList.remove('authenticated');
+    window.R59.apiClient?.clearAuthToken?.();
     const loginEl = $('#login');
     if (loginEl) loginEl.classList.add('open');
     const luEl = $('#lu');

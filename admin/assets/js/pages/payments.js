@@ -118,7 +118,7 @@
           <label class="f" for="pkg-${esc(pkg.id)}-price">Price ($)</label>
           <button type="button" class="btn btn-sm package-price-edit">Edit price</button>
         </div>
-        <input class="input package-price price-locked" id="pkg-${esc(pkg.id)}-price" type="number" min="0" step="10" value="${pkg.price || 0}" readonly>
+        <input class="input package-price price-locked" id="pkg-${esc(pkg.id)}-price" type="number" min="0" step="10" value="${Number(pkg.price) || 0}" readonly>
 
         <label class="f" for="pkg-${esc(pkg.id)}-desc">Short description</label>
         <textarea class="input desc-input" id="pkg-${esc(pkg.id)}-desc" rows="3" placeholder="Describe this photography package">${esc(pkg.description || '')}</textarea>
@@ -175,8 +175,7 @@
     }
 
     list.innerHTML = coupons.map(c => {
-      const amt = Number(c.amount ?? c.discount ?? 0);
-      const label = c.type === 'percent' ? `${amt}% off` : `${money(amt)} off`;
+      const label = couponLabel(c);
       return `
       <div class="coupon-item ${c.active ? '' : 'inactive'}">
         <div>
@@ -237,9 +236,12 @@
     const amount = parseFloat($('#couponAmount')?.value);
 
     if (!code) return err('Please enter a coupon code.');
-    if (!/^[A-Z0-9_-]+$/.test(code)) return err('Codes can only use letters, numbers, dashes and underscores.');
-    if (!(amount > 0)) return err('Please enter a discount greater than 0.');
-    if (type === 'percent' && amount > 100) return err('A percent discount cannot be more than 100%.');
+    if (!window.R59.formValidation?.isValidCouponCode(code)) return err('Codes can only use letters, numbers, dashes and underscores.');
+    if (type === 'percent') {
+      if (!window.R59.formValidation?.isValidPercentage(amount) || amount <= 0) return err('A percent discount must be between 1 and 100%.');
+    } else {
+      if (!window.R59.formValidation?.isValidPrice(amount) || amount <= 0) return err('Please enter a valid discount amount greater than 0.');
+    }
 
     const currentState = window.R59.state.getState();
     if (currentState.coupons.some(c => c.code === code && String(c.id) !== String(editingCouponId))) {
@@ -389,8 +391,13 @@
         const currentState = window.R59.state.getState();
         const pkg = currentState.packages?.find(p => String(p.id) === String(pkgId));
         if (pkg) {
+          const rawPrice = card.querySelector('.package-price')?.value;
+          if (rawPrice !== undefined && rawPrice !== '' && !window.R59.formValidation?.isValidPrice(rawPrice)) {
+            window.toast?.('Please enter a valid package price');
+            return;
+          }
           pkg.name = card.querySelector('.package-name')?.value.trim() || 'Package';
-          pkg.price = parseFloat(card.querySelector('.package-price')?.value) || 0;
+          pkg.price = parseFloat(rawPrice) || 0;
           pkg.description = card.querySelector('.desc-input')?.value.trim() || '';
           pkg.active = card.querySelector('.pkg-active-toggle')?.checked ?? true;
 

@@ -72,11 +72,12 @@
         isFeatured
       });
 
+      const resolvedUrl = publicUrl || saved?.url || saved?.public_url || (key ? `/api/media/${String(key).replace(/^\/+/, '')}` : '');
       return {
         id: saved?.id,
         key,
-        url: publicUrl || '',
-        src: publicUrl || '',
+        url: resolvedUrl,
+        src: resolvedUrl,
         filename: file.name
       };
     },

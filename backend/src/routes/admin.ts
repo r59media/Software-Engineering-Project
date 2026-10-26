@@ -1,6 +1,8 @@
 import { Hono, Context } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth, timingSafeEqual, createSessionToken, extractSessionToken, revokeSessionToken, revokeTokenInDb, isTokenRevokedInDb } from '../middleware/auth'
+import { adminAuth, timingSafeEqual, createSessionToken, extractSessionToken, revokeSessionToken, revokeTokenInDb, hashPassword, verifyPassword } from '../middleware/auth'
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export const adminRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -138,6 +140,10 @@ adminRouter.post('/login', async (c) => {
       }, 500)
     }
 
+    if (c.env.DB) {
+      await ensureSchemaReady(c.env.DB)
+    }
+
     const expectedEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
 
     const clientIp = c.req.header('cf-connecting-ip') || 'unknown'
@@ -167,9 +173,21 @@ adminRouter.post('/login', async (c) => {
       }, 401)
     }
 
-    // Timing-safe constant-time credential comparison
+    let storedPasswordSource = expectedSecret
+    if (c.env.DB) {
+      try {
+        const row = await c.env.DB.prepare(
+          "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'admin_password_hash'"
+        ).first<{ setting_value: string }>()
+        if (row?.setting_value && row.setting_value.startsWith('pbkdf2_sha256$')) {
+          storedPasswordSource = row.setting_value
+        }
+      } catch {}
+    }
+
+    // Timing-safe constant-time credential comparison with PBKDF2-SHA256 support
     const emailMatches = timingSafeEqual(email, expectedEmail)
-    const passwordMatches = timingSafeEqual(password, expectedSecret)
+    const { matches: passwordMatches, needsHashUpgrade } = await verifyPassword(password, storedPasswordSource)
 
     if (!emailMatches || !passwordMatches) {
       recordFailedLoginAttempt(clientIp)
@@ -182,6 +200,16 @@ adminRouter.post('/login', async (c) => {
           details: []
         }
       }, 401)
+    }
+
+    // If legacy secret was used and validated, upgrade to salted PBKDF2 hash in D1
+    if (needsHashUpgrade && c.env.DB) {
+      try {
+        const saltedHash = await hashPassword(password)
+        await c.env.DB.prepare(
+          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('admin_password_hash', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+        ).bind(saltedHash).run()
+      } catch {}
     }
 
     // Clear failed attempts on successful login
@@ -258,6 +286,81 @@ adminRouter.get('/verify', async (c) => {
       email: expectedEmail
     }
   })
+})
+
+// PUT: Update admin password with salted PBKDF2-SHA256 hash
+adminRouter.put('/password', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    const currentPassword = typeof body.currentPassword === 'string' ? body.currentPassword : (typeof body.current_password === 'string' ? body.current_password : '')
+    const newPassword = typeof body.newPassword === 'string' ? body.newPassword : (typeof body.new_password === 'string' ? body.new_password : '')
+
+    if (!currentPassword) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Current password is required.',
+          details: [{ field: 'currentPassword', message: 'Current password is required.', code: 'REQUIRED_FIELD' }]
+        }
+      }, 400)
+    }
+
+    if (!newPassword || newPassword.length < 8) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'New password must be at least 8 characters long.',
+          details: [{ field: 'newPassword', message: 'New password must be at least 8 characters long.', code: 'TOO_SHORT' }]
+        }
+      }, 400)
+    }
+
+    const expectedSecret = c.env.ADMIN_SECRET || ''
+    let storedPasswordSource = expectedSecret
+    if (c.env.DB) {
+      try {
+        const row = await c.env.DB.prepare(
+          "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'admin_password_hash'"
+        ).first<{ setting_value: string }>()
+        if (row?.setting_value && row.setting_value.startsWith('pbkdf2_sha256$')) {
+          storedPasswordSource = row.setting_value
+        }
+      } catch {}
+    }
+
+    const { matches: currentMatches } = await verifyPassword(currentPassword, storedPasswordSource)
+    if (!currentMatches) {
+      return c.json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Incorrect current password.',
+          details: [{ field: 'currentPassword', message: 'Current password does not match.', code: 'INVALID_CREDENTIALS' }]
+        }
+      }, 401)
+    }
+
+    const saltedHash = await hashPassword(newPassword)
+    if (c.env.DB) {
+      await c.env.DB.prepare(
+        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('admin_password_hash', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+      ).bind(saltedHash).run()
+    }
+
+    return c.json({
+      success: true,
+      status: 'success',
+      message: 'Password updated with salted PBKDF2-SHA256 hash.',
+      data: { message: 'Password updated with salted PBKDF2-SHA256 hash.' }
+    })
+  } catch (e: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Could not update password.',
+        details: []
+      }
+    }, 500)
+  }
 })
 
 // ── Schedule Management ──────────────────────────────────────────
@@ -692,7 +795,31 @@ adminRouter.put('/bookings/:id', async (c) => {
     const client_name = rawName !== undefined ? String(rawName).trim() : existing.client_name
 
     const rawEmail = body.client_email ?? body.customer_email ?? body.email
+    if (rawEmail !== undefined && rawEmail !== null && String(rawEmail).trim() !== '') {
+      if (!EMAIL_REGEX.test(String(rawEmail).trim())) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Please enter a valid client email address.',
+            details: [{ field: 'client_email', message: 'Invalid email format.', code: 'INVALID_FORMAT' }]
+          }
+        }, 400)
+      }
+    }
     const client_email = rawEmail !== undefined ? String(rawEmail).trim() : existing.client_email
+
+    const newDate = body.date
+    if (newDate !== undefined && newDate !== null && String(newDate).trim() !== '') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(newDate).trim())) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Date must be in YYYY-MM-DD format.',
+            details: [{ field: 'date', message: 'Invalid date format.', code: 'INVALID_FORMAT' }]
+          }
+        }, 400)
+      }
+    }
 
     const rawPhone = body.customer_phone ?? body.phone
     const customer_phone = rawPhone !== undefined ? String(rawPhone).trim() : (existing.customer_phone || '')
@@ -773,7 +900,6 @@ adminRouter.put('/bookings/:id', async (c) => {
     ).run()
 
     // Update associated Schedule_Slots row if date/startTime/endTime changed
-    const newDate = body.date
     const newStartTime = body.start_time ?? body.startTime
     const newEndTime = body.end_time ?? body.endTime
     if (existing.slot_id && (newDate !== undefined || newStartTime !== undefined || newEndTime !== undefined)) {
@@ -955,6 +1081,16 @@ adminRouter.post('/coupons', async (c) => {
     const description = String(body.description || '').trim()
     const isActive = body.active !== undefined ? (body.active ? 1 : 0) : (body.is_active !== undefined ? (body.is_active ? 1 : 0) : 1)
 
+    if (!['percent', 'amount'].includes(discountType)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Discount type must be either "percent" or "amount".',
+          details: [{ field: 'discount_type', message: 'Must be "percent" or "amount".', code: 'INVALID_VALUE' }]
+        }
+      }, 400)
+    }
+
     if (!code || !Number.isFinite(discountVal) || discountVal <= 0) {
       return c.json({
         error: {
@@ -1011,6 +1147,16 @@ adminRouter.put('/coupons/:id', async (c) => {
 
     const rawDiscount = body.discount ?? body.amount ?? body.discount_value
     const discountVal = rawDiscount !== undefined ? Number(rawDiscount) : Number(existing.discount_value)
+
+    if (!['percent', 'amount'].includes(discountType)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Discount type must be either "percent" or "amount".',
+          details: [{ field: 'discount_type', message: 'Must be "percent" or "amount".', code: 'INVALID_VALUE' }]
+        }
+      }, 400)
+    }
 
     if (!code || !Number.isFinite(discountVal) || discountVal <= 0) {
       return c.json({

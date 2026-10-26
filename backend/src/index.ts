@@ -75,7 +75,7 @@ app.use('*', async (c, next) => {
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
     exposeHeaders: ['Content-Length', 'X-Requested-With'],
-    credentials: true,
+    credentials: false,
   })
   return corsMiddleware(c, next)
 })
@@ -167,6 +167,24 @@ app.route('/api/portfolio', portfolioRouter)
 app.route('/api/services', servicesRouter)
 app.route('/api/admin', adminRouter)
 
+// R2 Public Media Delivery
+app.get('/api/media/*', async (c) => {
+  const url = new URL(c.req.url)
+  const key = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+  if (!key || key.includes('..')) {
+    return c.json({ status: 'error', code: 'BAD_REQUEST', message: 'Invalid media key' }, 400)
+  }
+  if (c.env.BUCKET) {
+    const obj = await c.env.BUCKET.get(key)
+    if (!obj) return c.notFound()
+    const headers = new Headers()
+    obj.writeHttpMetadata(headers)
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+    return new Response(obj.body, { headers })
+  }
+  return c.notFound()
+})
+
 app.get('*', async (c) => {
   const url = new URL(c.req.url)
   if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
@@ -214,6 +232,14 @@ app.get('*', async (c) => {
     statusText: assetRes.statusText,
     headers
   })
+})
+
+app.notFound((c) => {
+  const url = new URL(c.req.url)
+  if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
+    return c.json({ status: 'error', code: 'NOT_FOUND', message: 'API endpoint not found' }, 404)
+  }
+  return c.text('Not Found', 404)
 })
 
 export default app

@@ -154,7 +154,7 @@
     body:not(.authenticated) .drawer,
     body:not(.authenticated) .scrim,
     body:not(.authenticated) main,
-    body:not(.authenticated) .save-bar,
+    body:not(.authenticated) .savebar,
     body:not(.authenticated) #modal {
       display: none !important;
     }

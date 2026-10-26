@@ -35,7 +35,7 @@ export function SiteHeader({ destinations }: { destinations: HeroDestinations })
   </>
   return <header className="site-header">
     <div className="site-header__bar">
-      <a href="#hero" className="site-header__brand" aria-label="R59 Media Home"><img src={`${import.meta.env.BASE_URL}r59Media_logo.svg`} alt="R59 Media" width="81" height="50" /></a>
+      <a href="#hero" className="site-header__brand" aria-label="R59 Media Home"><img src={`${import.meta.env.BASE_URL}r59Media_logo.svg`} alt="" width="81" height="50" /></a>
       <span className="site-header__divider" aria-hidden="true" />
       <nav className="site-header__desktop" aria-label="Main navigation">{navigation}</nav>
       <details className="site-header__mobile site-header__menu" ref={menu}>

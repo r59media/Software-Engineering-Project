@@ -92,11 +92,11 @@ contactRouter.post('/', async (c) => {
       }, 400)
     }
 
-    await c.env.DB.prepare(
+    const insertRes = await c.env.DB.prepare(
       'INSERT INTO Leads (name, email, phone, session_type, message) VALUES (?, ?, ?, ?, ?)'
     ).bind(rawName, rawEmail, rawPhone || null, session_type || null, rawMessage).run()
 
-    return c.json({ success: true })
+    return c.json({ success: true, status: 'success', id: insertRes.meta?.last_row_id, data: { id: insertRes.meta?.last_row_id } })
   } catch (e: any) {
     return c.json({
       error: {

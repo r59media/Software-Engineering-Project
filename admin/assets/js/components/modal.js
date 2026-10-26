@@ -61,6 +61,21 @@
     }
   }
 
+  function getActiveModal() {
+    if (!document.body.classList.contains('authenticated')) {
+      const login = $('#login');
+      if (login && (login.classList.contains('open') || window.getComputedStyle(login).display !== 'none')) {
+        return login;
+      }
+    }
+    const openModals = [
+      $('#modal.open'),
+      $('#newBookingModal.open'),
+      $('#bookingModal.open')
+    ].filter(Boolean);
+    return openModals[openModals.length - 1] || null;
+  }
+
   function initModalListeners() {
     const modalEl = $('#modal');
     if (!modalEl) return;
@@ -79,7 +94,34 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Tab') {
+        const activeModal = getActiveModal();
+        if (!activeModal) return;
+
+        const focusableSelector = 'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+        const focusables = Array.from(activeModal.querySelectorAll(focusableSelector))
+          .filter(el => el.offsetParent !== null && window.getComputedStyle(el).visibility !== 'hidden');
+
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+
+        const firstEl = focusables[0];
+        const lastEl = focusables[focusables.length - 1];
+
+        if (e.shiftKey) {
+          if (document.activeElement === firstEl || !activeModal.contains(document.activeElement)) {
+            e.preventDefault();
+            lastEl.focus();
+          }
+        } else {
+          if (document.activeElement === lastEl || !activeModal.contains(document.activeElement)) {
+            e.preventDefault();
+            firstEl.focus();
+          }
+        }
+      } else if (e.key === 'Escape') {
         if (modalEl.classList.contains('open')) {
           closeModal();
         }

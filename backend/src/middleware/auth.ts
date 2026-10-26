@@ -21,6 +21,88 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return mismatch === 0
 }
 
+const PBKDF2_PREFIX = 'pbkdf2_sha256'
+const PBKDF2_ITERATIONS = 100_000
+const PBKDF2_KEY_BITS = 256
+const SALT_BYTES = 16
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+function hexToBytes(hex: string): Uint8Array | null {
+  if (!hex || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) return null
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < hex.length; i += 2) {
+    out[i / 2] = parseInt(hex.substring(i, i + 2), 16)
+  }
+  return out
+}
+
+async function derivePbkdf2Hex(password: string, salt: Uint8Array, iterations: number): Promise<string> {
+  const encoder = new TextEncoder()
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  )
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      salt,
+      iterations
+    },
+    baseKey,
+    PBKDF2_KEY_BITS
+  )
+  return bytesToHex(new Uint8Array(derivedBits))
+}
+
+/**
+ * Generates a salted PBKDF2-SHA256 password hash:
+ * Format: pbkdf2_sha256$100000$<16-byte-random-salt-hex>$<32-byte-hash-hex>
+ */
+export async function hashPassword(password: string, iterations: number = PBKDF2_ITERATIONS): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES))
+  const hashHex = await derivePbkdf2Hex(password, salt, iterations)
+  return `${PBKDF2_PREFIX}$${iterations}$${bytesToHex(salt)}$${hashHex}`
+}
+
+/**
+ * Verifies a candidate password against either:
+ * 1. A salted PBKDF2-SHA256 hash (`pbkdf2_sha256$<iterations>$<saltHex>$<hashHex>`), OR
+ * 2. A legacy secret (for seamless first-login migration, after which it is upgraded to a salted hash in D1).
+ */
+export async function verifyPassword(
+  candidatePassword: string,
+  storedSecretOrHash: string
+): Promise<{ matches: boolean; needsHashUpgrade: boolean }> {
+  if (!candidatePassword || !storedSecretOrHash) {
+    return { matches: false, needsHashUpgrade: false }
+  }
+  if (storedSecretOrHash.startsWith(`${PBKDF2_PREFIX}$`)) {
+    const parts = storedSecretOrHash.split('$')
+    if (parts.length !== 4) return { matches: false, needsHashUpgrade: false }
+    const iterations = Number(parts[1])
+    const salt = hexToBytes(parts[2])
+    const expectedHashHex = parts[3].toLowerCase()
+    if (!iterations || iterations < 10_000 || iterations > 1_000_000 || !salt) {
+      return { matches: false, needsHashUpgrade: false }
+    }
+    const derivedHex = await derivePbkdf2Hex(candidatePassword, salt, iterations)
+    return {
+      matches: timingSafeEqual(derivedHex, expectedHashHex),
+      needsHashUpgrade: false
+    }
+  }
+  // Legacy raw secret comparison (constant-time) — triggers automatic upgrade to salted PBKDF2 hash in D1
+  const matches = timingSafeEqual(candidatePassword, storedSecretOrHash)
+  return { matches, needsHashUpgrade: matches }
+}
+
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
 
 /**
@@ -135,12 +217,16 @@ export function extractSessionToken(c: Context): string | null {
   return null
 }
 
+let lastDbCheckMs = 0
+const DB_CACHE_TTL_MS = 30_000
+
 /**
  * Revokes a session token in D1 database and in-memory cache across Cloudflare Worker isolates.
  */
 export async function revokeTokenInDb(db: D1Database | undefined, token: string): Promise<void> {
   if (!token) return
   revokeSessionToken(token)
+  lastDbCheckMs = 0
   if (!db) return
 
   try {
@@ -151,39 +237,16 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
 
     let revokedMap: Record<string, number> = {}
 
-    // Read existing revoked tokens (supporting key/value and setting_key/setting_value)
-    let rawValue: string | null = null
+    // Read existing revoked tokens using setting_key / setting_value
     try {
-      const row = await db.prepare("SELECT value FROM Admin_Settings WHERE key = 'revoked_tokens'").first<{ value: string }>()
-      if (row && typeof row.value === 'string') {
-        rawValue = row.value
-      }
-    } catch {
-      try {
-        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
-        if (row && typeof row.setting_value === 'string') {
-          rawValue = row.setting_value
-        }
-      } catch {}
-    }
-
-    if (!rawValue) {
-      try {
-        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
-        if (row && typeof row.setting_value === 'string') {
-          rawValue = row.setting_value
-        }
-      } catch {}
-    }
-
-    if (rawValue) {
-      try {
-        const parsed = JSON.parse(rawValue)
+      const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
+      if (row && typeof row.setting_value === 'string') {
+        const parsed = JSON.parse(row.setting_value)
         if (parsed && typeof parsed === 'object') {
           revokedMap = parsed
         }
-      } catch {}
-    }
+      }
+    } catch {}
 
     // Prune entries where expiry <= Date.now()
     const cleanedMap: Record<string, number> = {}
@@ -208,21 +271,9 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
 
     const jsonStr = JSON.stringify(cleanedMap)
 
-    let saved = false
-    try {
-      await db.prepare(
-        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('revoked_tokens', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-      ).bind(jsonStr).run()
-      saved = true
-    } catch {}
-
-    if (!saved) {
-      try {
-        await db.prepare(
-          "INSERT OR REPLACE INTO Admin_Settings (key, value) VALUES ('revoked_tokens', ?)"
-        ).bind(jsonStr).run()
-      } catch {}
-    }
+    await db.prepare(
+      "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('revoked_tokens', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+    ).bind(jsonStr).run()
   } catch (err) {
     // DB errors should never crash logout
     console.warn('[auth] DB token revocation warning:', err)
@@ -235,43 +286,31 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
 export async function isTokenRevokedInDb(db: D1Database | undefined, token: string): Promise<boolean> {
   if (!token) return true
   if (isTokenRevoked(token)) return true
+
+  const parts = token.split('.')
+  const sig = parts.length > 1 ? parts[1] : token
+  if (isTokenRevoked(sig)) return true
+
+  const now = Date.now()
+  if (now - lastDbCheckMs < DB_CACHE_TTL_MS) {
+    return false
+  }
+
   if (!db) return false
 
   try {
-    const parts = token.split('.')
-    const sig = parts.length > 1 ? parts[1] : token
-    const now = Date.now()
+    const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
+    lastDbCheckMs = now
 
-    let rawValue: string | null = null
-    try {
-      const row = await db.prepare("SELECT value FROM Admin_Settings WHERE key = 'revoked_tokens'").first<{ value: string }>()
-      if (row && typeof row.value === 'string') {
-        rawValue = row.value
-      }
-    } catch {
-      try {
-        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
-        if (row && typeof row.setting_value === 'string') {
-          rawValue = row.setting_value
-        }
-      } catch {}
-    }
-
-    if (!rawValue) {
-      try {
-        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
-        if (row && typeof row.setting_value === 'string') {
-          rawValue = row.setting_value
-        }
-      } catch {}
-    }
-
-    if (rawValue) {
-      const parsed = JSON.parse(rawValue) as Record<string, number>
+    if (row && typeof row.setting_value === 'string') {
+      const parsed = JSON.parse(row.setting_value) as Record<string, number>
       if (parsed && typeof parsed === 'object') {
-        const exp = parsed[sig]
-        if (typeof exp === 'number' && exp > now) {
-          revokeSessionToken(token)
+        for (const [key, exp] of Object.entries(parsed)) {
+          if (typeof exp === 'number' && exp > now) {
+            revokedTokens.set(key, exp)
+          }
+        }
+        if (isTokenRevoked(token) || isTokenRevoked(sig)) {
           return true
         }
       }
