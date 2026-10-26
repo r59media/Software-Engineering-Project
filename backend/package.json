@@ -11,7 +11,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
     "sync-admin": "node -e \"const fs=require('fs'); fs.mkdirSync('public/admin', {recursive:true}); fs.cpSync('../admin', 'public/admin', {recursive:true, filter: (src) => !src.endsWith('.md')});\"",
-    "sync-frontend": "node -e \"const fs=require('fs'), cp=require('child_process'); if (!fs.existsSync('../frontend/node_modules')) { cp.execSync('pnpm --dir ../frontend install', {stdio:'inherit'}); } cp.execSync('pnpm --dir ../frontend run build', {stdio:'inherit'}); if (fs.existsSync('../frontend/dist')) { if (fs.existsSync('public/assets')) { fs.rmSync('public/assets', {recursive:true, force:true}); } fs.mkdirSync('public', {recursive:true}); fs.cpSync('../frontend/dist', 'public', {recursive:true}); }\"",
+    "sync-frontend": "node -e \"const fs=require('fs'), cp=require('child_process'); cp.execSync('pnpm --dir ../frontend install', {stdio:'inherit'}); cp.execSync('pnpm --dir ../frontend run build', {stdio:'inherit'}); if (fs.existsSync('../frontend/dist')) { if (fs.existsSync('public/assets')) { fs.rmSync('public/assets', {recursive:true, force:true}); } fs.mkdirSync('public', {recursive:true}); fs.cpSync('../frontend/dist', 'public', {recursive:true}); }\"",
     "build": "pnpm run sync-frontend && pnpm run sync-admin",
     "db:init": "wrangler d1 create r59_db",
     "db:reset": "wrangler d1 execute r59_db --local --file=./schema.sql",
