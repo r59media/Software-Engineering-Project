@@ -1,6 +1,10 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth, verifySessionToken, extractSessionToken, isTokenRevoked, isTokenRevokedInDb } from '../middleware/auth'
+import { adminAuth, verifySessionToken, extractSessionToken, isTokenRevoked, isTokenRevokedInDb, hasForbiddenPaymentFields } from '../middleware/auth'
+
+function isValidId(id: string | undefined): boolean {
+  return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
+}
 
 export const servicesRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -48,6 +52,15 @@ servicesRouter.get('/', async (c) => {
 servicesRouter.post('/', adminAuth, async (c) => {
   try {
     const body = await c.req.json()
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
     const rawName = body.name ?? body.title
     const name = typeof rawName === 'string' ? rawName.trim() : ''
     const description = body.description !== undefined && body.description !== null ? String(body.description) : null
@@ -101,7 +114,19 @@ servicesRouter.post('/', adminAuth, async (c) => {
 servicesRouter.put('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const body = await c.req.json()
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
 
     const existing = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(id).first<any>()
     if (!existing) {
@@ -166,6 +191,9 @@ servicesRouter.put('/:id', adminAuth, async (c) => {
 servicesRouter.delete('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
 
     const existing = await c.env.DB.prepare('SELECT id FROM Services WHERE id = ?').bind(id).first()
     if (!existing) {

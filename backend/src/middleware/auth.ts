@@ -204,17 +204,80 @@ export function isTokenRevoked(token: string): boolean {
 }
 
 /**
- * Extracts the session token strictly from Authorization: Bearer <token>.
- * Does NOT fall back to the r59_session cookie, ensuring an old browser cookie
- * cannot authenticate requests without an explicit in-memory Bearer token.
+ * Parses a named cookie from the Cookie header.
+ */
+export function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null
+  const parts = cookieHeader.split(';')
+  for (const part of parts) {
+    const eqIdx = part.indexOf('=')
+    if (eqIdx === -1) continue
+    const k = part.substring(0, eqIdx).trim()
+    if (k === name) {
+      const val = part.substring(eqIdx + 1).trim()
+      if (val) {
+        try {
+          return decodeURIComponent(val)
+        } catch {
+          return val
+        }
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Extracts the session token from:
+ * 1. Authorization: Bearer <token> (for API clients/tests), OR
+ * 2. HttpOnly cookie `r59_session` (for browser Admin SPA).
  */
 export function extractSessionToken(c: Context): string | null {
   const auth = c.req.header('Authorization')
   if (auth && auth.startsWith('Bearer ')) {
     const token = auth.substring(7).trim()
-    if (token) return token
+    if (token && token !== 'cookie') return token
   }
+  const cookieToken = getCookieValue(c.req.header('Cookie'), 'r59_session')
+  if (cookieToken) return cookieToken
   return null
+}
+
+/**
+ * Strictly extracts client IP from Cloudflare's non-spoofable CF-Connecting-IP header.
+ * Explicitly ignores X-Forwarded-For and X-Real-IP.
+ */
+export function getTrustedClientIp(c: Context): string {
+  return (c.req.header('cf-connecting-ip') || 'unknown').trim()
+}
+
+/**
+ * PCI / Bank Data Guard: Detects raw credit card numbers (13-19 digit PANs)
+ * or forbidden raw card/bank keys in request payloads.
+ */
+const FORBIDDEN_PAYMENT_KEYS = new Set([
+  'cardnumber', 'card_number', 'pan', 'cvv', 'cvc', 'cvv2', 'csc',
+  'securitycode', 'security_code', 'pin', 'accountnumber', 'account_number',
+  'routingnumber', 'routing_number', 'iban', 'swift', 'bankaccount', 'bank_account'
+])
+
+export function hasForbiddenPaymentFields(obj: unknown): boolean {
+  if (!obj || typeof obj !== 'object') return false
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    const normKey = k.toLowerCase().replace(/[\s_-]/g, '')
+    if (FORBIDDEN_PAYMENT_KEYS.has(k.toLowerCase()) || FORBIDDEN_PAYMENT_KEYS.has(normKey)) {
+      return true
+    }
+    if (typeof v === 'string') {
+      const digitsOnly = v.replace(/[\s-]/g, '')
+      if (/^\d{13,19}$/.test(digitsOnly)) {
+        return true
+      }
+    } else if (typeof v === 'object' && v !== null) {
+      if (hasForbiddenPaymentFields(v)) return true
+    }
+  }
+  return false
 }
 
 let lastDbCheckMs = 0
@@ -365,6 +428,27 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
 
   const session = await verifySessionToken(token, signingSecret)
   if (session.valid) {
+    const method = c.req.method.toUpperCase()
+    const hasBearer = Boolean(c.req.header('Authorization')?.startsWith('Bearer '))
+    if (!hasBearer && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+      const xrw = c.req.header('X-Requested-With')
+      const secFetchSite = c.req.header('Sec-Fetch-Site')
+      const origin = c.req.header('Origin')
+      const reqOrigin = new URL(c.req.url).origin
+      const csrfSafe =
+        xrw === 'XMLHttpRequest' ||
+        secFetchSite === 'same-origin' ||
+        (origin && origin === reqOrigin)
+      if (!csrfSafe) {
+        return c.json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'CSRF validation failed for cookie-authenticated request.',
+            details: []
+          }
+        }, 403)
+      }
+    }
     return await next()
   }
 

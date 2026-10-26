@@ -10,6 +10,7 @@ import { checkoutRouter } from './routes/checkout'
 import { portfolioRouter } from './routes/portfolio'
 import { servicesRouter } from './routes/services'
 import { adminRouter } from './routes/admin'
+import { extractSessionToken, verifySessionToken, isTokenRevokedInDb } from './middleware/auth'
 
 export type Bindings = {
   DB: D1Database
@@ -86,6 +87,7 @@ app.get('/admin', (c) => {
 })
 
 const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|map)$/i
+const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|api\/(bookingsApi|packagesApi|paymentsApi|photographyApi|scheduleApi)\.js)/i
 
 app.get('/admin/*', async (c) => {
   if (!c.env.ASSETS) {
@@ -97,6 +99,28 @@ app.get('/admin/*', async (c) => {
   // 1. Block internal documentation files (.md) from public access
   if (url.pathname.toLowerCase().endsWith('.md')) {
     return c.redirect('/admin/', 302)
+  }
+
+  // Gate sensitive admin scripts behind valid authentication
+  if (GATED_ADMIN_SCRIPT_REGEX.test(url.pathname)) {
+    const token = extractSessionToken(c)
+    const secret = c.env.ADMIN_SECRET
+    const signingSecret = c.env.SESSION_SECRET || secret || ''
+    const isAuthed = Boolean(
+      token &&
+      signingSecret &&
+      !(await isTokenRevokedInDb(c.env.DB, token)) &&
+      (await verifySessionToken(token, signingSecret)).valid
+    )
+    if (!isAuthed) {
+      return new Response('/* 401 Unauthorized: Admin authentication required */', {
+        status: 401,
+        headers: {
+          'Content-Type': 'application/javascript; charset=utf-8',
+          'Cache-Control': 'no-store, no-cache, must-revalidate'
+        }
+      })
+    }
   }
 
   let assetRes: Response
@@ -136,6 +160,7 @@ app.get('/admin/*', async (c) => {
 
   // Clone with mutable headers so global security header middleware attaches headers cleanly
   const headers = new Headers(assetRes.headers)
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
   return new Response(assetRes.body, {
     status: assetRes.status,
     statusText: assetRes.statusText,

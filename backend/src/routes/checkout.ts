@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { Bindings } from '../index'
 import { SquareClient, SquareEnvironment } from 'square'
 import { ensureSchemaReady } from './admin'
+import { getTrustedClientIp, hasForbiddenPaymentFields } from '../middleware/auth'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const IDEMPOTENCY_KEY_REGEX = /^[a-zA-Z0-9_-]{8,36}$/
@@ -41,8 +42,9 @@ checkoutRouter.post('/', async (c) => {
   let slotId: number | undefined
 
   try {
-    const clientIp = c.req.header('cf-connecting-ip') || 'unknown'
+    const clientIp = getTrustedClientIp(c)
     if (!checkCheckoutRateLimit(clientIp)) {
+      c.header('Retry-After', '60')
       return c.json({
         error: {
           code: 'TOO_MANY_REQUESTS',
@@ -55,7 +57,30 @@ checkoutRouter.post('/', async (c) => {
     await ensureSchemaReady(c.env.DB)
 
     const body = await c.req.json()
+
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account details are prohibited. Tokenize payments with the Square Web Payments SDK.',
+          target: 'checkout',
+          details: []
+        }
+      }, 400)
+    }
+
     const sourceId = body.sourceId ?? body.source_id
+
+    if (/^\d{13,19}$/.test(String(sourceId || '').replace(/[\s-]/g, ''))) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account details are prohibited. Tokenize payments with the Square Web Payments SDK.',
+          target: 'checkout',
+          details: []
+        }
+      }, 400)
+    }
     const serviceId = body.serviceId ?? body.service_id
     const rawName = body.clientName ?? body.customer_name
     const rawEmail = body.clientEmail ?? body.customer_email

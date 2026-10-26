@@ -1,6 +1,10 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth } from '../middleware/auth'
+import { adminAuth, hasForbiddenPaymentFields } from '../middleware/auth'
+
+function isValidId(id: string | undefined): boolean {
+  return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
+}
 
 export function resolveMediaUrl(key: string): string {
   if (!key) return ''
@@ -156,7 +160,19 @@ portfolioRouter.put('/order', adminAuth, async (c) => {
 portfolioRouter.put('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const body = await c.req.json()
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
 
     const existing = await c.env.DB.prepare('SELECT * FROM Portfolio_Images WHERE id = ?').bind(id).first<any>()
     if (!existing) {
@@ -198,6 +214,9 @@ portfolioRouter.put('/:id', adminAuth, async (c) => {
 portfolioRouter.delete('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const existing = await c.env.DB.prepare(
       'SELECT id, r2_object_key FROM Portfolio_Images WHERE id = ?'
     ).bind(id).first<{ id: number; r2_object_key: string }>()
