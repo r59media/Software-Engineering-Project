@@ -47,10 +47,15 @@
      * Upload image binary directly to R2 bucket via presigned URL,
      * then save image record.
      */
-    async uploadImageFile(file, { category = 'All', altText = '', displayOrder = 0 } = {}) {
+    async uploadImageFile(file, categoryOrOpts = 'All', title = '') {
+      const opts = typeof categoryOrOpts === 'string'
+        ? { category: categoryOrOpts, altText: title }
+        : (categoryOrOpts || {});
+      const { category = 'All', altText = '', displayOrder = 0, isFeatured = false } = opts;
+
       // 1. Get presigned upload URL from backend
-      const { uploadUrl, key } = await this.getUploadUrl(file.name, file.type);
-      
+      const { uploadUrl, key, publicUrl } = await this.getUploadUrl(file.name, file.type);
+
       // 2. Upload file directly to R2
       await fetch(uploadUrl, {
         method: 'PUT',
@@ -59,19 +64,34 @@
       });
 
       // 3. Save portfolio database entry
-      await this.saveImageRecord({
+      const saved = await this.saveImageRecord({
         r2ObjectKey: key,
         category,
         altText: altText || file.name.replace(/\.[^.]+$/, ''),
-        displayOrder
+        displayOrder,
+        isFeatured
       });
 
-      return { key, filename: file.name };
+      const resolvedUrl = publicUrl || saved?.url || saved?.public_url || (key ? `/api/media/${String(key).replace(/^\/+/, '')}` : '');
+      return {
+        id: saved?.id,
+        key,
+        url: resolvedUrl,
+        src: resolvedUrl,
+        filename: file.name
+      };
+    },
+
+    /**
+     * Update an existing portfolio image metadata record.
+     */
+    async updateImage(imageId, data) {
+      return await window.R59.apiClient.put(`/portfolio/${imageId}`, data);
     },
 
     /**
      * Delete an image.
-     * Note: [Pending Agreement] DELETE /portfolio/:id
+     * Established backend endpoint: DELETE /portfolio/:id
      */
     async deleteImage(id) {
       return await window.R59.apiClient.delete(`/portfolio/${id}`);
@@ -79,7 +99,7 @@
 
     /**
      * Reorder images.
-     * Note: [Pending Agreement] PUT /portfolio/order
+     * Established backend endpoint: PUT /portfolio/order
      */
     async updateImageOrder(orderMappings) {
       return await window.R59.apiClient.put('/portfolio/order', { order: orderMappings });
@@ -87,7 +107,7 @@
 
     /**
      * Fetch studio profile information (bio, contact, location).
-     * Note: [Pending Agreement] GET /admin/profile
+     * Established backend endpoint: GET /admin/profile
      */
     async getProfile() {
       try {
@@ -99,7 +119,7 @@
 
     /**
      * Save studio profile information.
-     * Note: [Pending Agreement] PUT /admin/profile
+     * Established backend endpoint: PUT /admin/profile
      */
     async saveProfile(profileData) {
       return await window.R59.apiClient.put('/admin/profile', profileData);
@@ -108,4 +128,6 @@
 
   window.R59 = window.R59 || {};
   window.R59.photographyApi = photographyApi;
+  window.R59.api = window.R59.api || {};
+  window.R59.api.photography = photographyApi;
 })();

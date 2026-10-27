@@ -9,35 +9,60 @@
 (function () {
   'use strict';
 
-  // Configurable base URL: can be overridden via window.APP_CONFIG.apiBaseUrl,
-  // localStorage 'r59_api_url', or defaults to standard backend development URL.
+  let isTabAuthenticated = false;
+  try {
+    localStorage.removeItem('r59_admin_token');
+    sessionStorage.removeItem('r59_admin_token');
+    isTabAuthenticated = sessionStorage.getItem('r59_admin_logged_in') === '1';
+  } catch {
+    // ignore storage errors
+  }
+
+  // Configurable base URL: can be overridden via window.R59_API_URL or
+  // window.APP_CONFIG.apiBaseUrl; defaults to '/api' (or localhost:8787/api on file://).
   const DEFAULT_BASE_URL = 'http://localhost:8787/api';
 
   function getBaseUrl() {
+    if (window.R59_API_URL) {
+      return String(window.R59_API_URL).replace(/\/+$/, '');
+    }
     if (window.APP_CONFIG && window.APP_CONFIG.apiBaseUrl) {
       return window.APP_CONFIG.apiBaseUrl.replace(/\/+$/, '');
     }
-    const isLocal = window.location && (window.location.hostname.includes('localhost') || window.location.hostname.includes('127.0.0.1') || window.location.protocol.startsWith('file'));
-    if (isLocal) {
-      const stored = localStorage.getItem('r59_api_url');
-      if (stored && /^https?:\/\//i.test(stored)) {
-        return stored.replace(/\/+$/, '');
-      }
+    if (window.location && window.location.protocol.startsWith('file')) {
       return DEFAULT_BASE_URL;
     }
-    return `${window.location.origin}/api`;
+    const isSeparateLocalServer = window.location &&
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') &&
+      window.location.port !== '8787' &&
+      window.location.port !== '';
+    if (isSeparateLocalServer) {
+      return DEFAULT_BASE_URL;
+    }
+    return '/api';
   }
 
   function getAuthToken() {
-    return localStorage.getItem('r59_admin_token') || '';
+    return isTabAuthenticated ? 'cookie' : '';
   }
 
   function setAuthToken(token) {
-    if (token) {
-      localStorage.setItem('r59_admin_token', token);
-    } else {
+    isTabAuthenticated = Boolean(token);
+    try {
       localStorage.removeItem('r59_admin_token');
+      sessionStorage.removeItem('r59_admin_token');
+      if (isTabAuthenticated) {
+        sessionStorage.setItem('r59_admin_logged_in', '1');
+      } else {
+        sessionStorage.removeItem('r59_admin_logged_in');
+      }
+    } catch {
+      // ignore storage errors
     }
+  }
+
+  function clearAuthToken() {
+    setAuthToken('');
   }
 
   /**
@@ -50,7 +75,7 @@
   async function request(endpoint, options = {}) {
     const {
       method = 'GET',
-      headers = {},
+      headers: optHeaders = {},
       body = null,
       params = null
     } = options;
@@ -72,28 +97,36 @@
       }
     }
 
-    const requestHeaders = {
+    const headers = {
       'Accept': 'application/json',
-      ...headers
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
+      ...(optHeaders || {}),
     };
 
+    if (options.body instanceof FormData || body instanceof FormData) {
+      delete headers['Content-Type'];
+    }
+
     const token = getAuthToken();
-    if (token && !requestHeaders['Authorization']) {
-      requestHeaders['Authorization'] = `Bearer ${token}`;
+    if (token && token !== 'cookie' && !headers['Authorization']) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
     const fetchConfig = {
       method,
-      headers: requestHeaders
+      credentials: 'same-origin',
+      headers
     };
 
     if (body !== null && body !== undefined && method !== 'GET' && method !== 'HEAD') {
       if (typeof body === 'string' || body instanceof FormData || body instanceof Blob) {
         fetchConfig.body = body;
       } else {
-        requestHeaders['Content-Type'] = 'application/json';
         fetchConfig.body = JSON.stringify(body);
       }
+    } else if (method === 'GET' || method === 'HEAD') {
+      delete headers['Content-Type'];
     }
 
     try {
@@ -114,7 +147,7 @@
 
       if (!response.ok) {
         if (response.status === 401 && !url.includes('/admin/login')) {
-          setAuthToken(null);
+          clearAuthToken();
           window.dispatchEvent(new CustomEvent('r59:unauthorized', {
             detail: {
               message: (responseData && responseData.error && responseData.error.message) || 'Session expired. Please sign in again.'
@@ -148,16 +181,33 @@
     }
   }
 
+  async function login(email, password) {
+    const data = await request('/admin/login', {
+      method: 'POST',
+      body: { email, password }
+    });
+    if (data && (data.authenticated || data.status === 'success' || data.token)) {
+      setAuthToken('1');
+      return data;
+    }
+    throw new Error((data && (data.message || (data.error && data.error.message))) || 'Authentication failed: Invalid credentials.');
+  }
+
   async function verifySession() {
     const token = getAuthToken();
     if (!token) return false;
     try {
       const res = await request('/admin/verify');
-      return !!(res && res.authenticated);
+      return !!(res && (res.authenticated || res.status === 'success'));
     } catch {
-      setAuthToken(null);
+      clearAuthToken();
       return false;
     }
+  }
+
+  async function logout() {
+    await request('/admin/logout', { method: 'POST', body: {} }).catch(() => {});
+    clearAuthToken();
   }
 
   // HTTP method convenience helpers
@@ -165,7 +215,10 @@
     getBaseUrl,
     getAuthToken,
     setAuthToken,
+    clearAuthToken,
+    login,
     verifySession,
+    logout,
     request,
     get: (endpoint, params = null, headers = {}) => request(endpoint, { method: 'GET', params, headers }),
     post: (endpoint, body = null, headers = {}) => request(endpoint, { method: 'POST', body, headers }),
@@ -176,4 +229,6 @@
 
   window.R59 = window.R59 || {};
   window.R59.apiClient = apiClient;
+  window.R59.api = window.R59.api || {};
+  window.R59.api.client = apiClient;
 })();

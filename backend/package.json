@@ -11,7 +11,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
     "sync-admin": "node -e \"const fs=require('fs'); fs.mkdirSync('public/admin', {recursive:true}); fs.cpSync('../admin', 'public/admin', {recursive:true, filter: (src) => !src.endsWith('.md')});\"",
-    "build": "node -e \"const fs=require('fs'); fs.mkdirSync('public/admin', {recursive:true}); fs.cpSync('../admin', 'public/admin', {recursive:true, filter: (src) => !src.endsWith('.md')});\"",
+    "sync-frontend": "node -e \"const fs=require('fs'), cp=require('child_process'); cp.execSync('pnpm --dir ../frontend install', {stdio:'inherit'}); cp.execSync('pnpm --dir ../frontend run build', {stdio:'inherit'}); if (fs.existsSync('../frontend/dist')) { if (fs.existsSync('public/assets')) { fs.rmSync('public/assets', {recursive:true, force:true}); } fs.mkdirSync('public', {recursive:true}); fs.cpSync('../frontend/dist', 'public', {recursive:true}); }\"",
+    "build": "pnpm run sync-frontend && pnpm run sync-admin",
     "db:init": "wrangler d1 create r59_db",
     "db:reset": "wrangler d1 execute r59_db --local --file=./schema.sql",
     "typecheck": "tsc --noEmit"
@@ -19,12 +20,12 @@
   "dependencies": {
     "@aws-sdk/client-s3": "3.1132.0",
     "@aws-sdk/s3-request-presigner": "3.1132.0",
-    "hono": "4.13.7",
+    "hono": "4.13.13",
     "square": "45.1.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20240222.0",
-    "typescript": "^5.0.0",
-    "wrangler": "^4.0.0"
+    "@cloudflare/workers-types": "4.20260702.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.151.1"
   }
 }

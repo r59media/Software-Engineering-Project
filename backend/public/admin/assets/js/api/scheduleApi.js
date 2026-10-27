@@ -91,4 +91,6 @@
 
   window.R59 = window.R59 || {};
   window.R59.scheduleApi = scheduleApi;
+  window.R59.api = window.R59.api || {};
+  window.R59.api.schedule = scheduleApi;
 })();

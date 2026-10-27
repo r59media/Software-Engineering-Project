@@ -63,6 +63,21 @@
     `).join('');
   }
 
+  function safeImgSrc(url) {
+    if (!url || typeof url !== 'string') return '';
+    const trimmed = url.trim();
+    if (
+      trimmed.startsWith('https://') ||
+      trimmed.startsWith('http://') ||
+      trimmed.startsWith('/') ||
+      trimmed.startsWith('data:image/') ||
+      trimmed.startsWith('blob:')
+    ) {
+      return trimmed;
+    }
+    return '';
+  }
+
   function renderImages() {
     const grid = $('#imgGrid');
     if (!grid) return;
@@ -94,7 +109,7 @@
     const cardsHtml = shown.map(({ it, i }) => `
       <div class="img-card" data-idx="${i}">
         <div class="thumb">
-          <img src="${esc(it.src)}" alt="${esc(it.alt || it.label)}">
+          <img src="${esc(safeImgSrc(it.src))}" alt="${esc(it.alt || it.label)}">
           ${it.slot ? `<span class="slot">${esc(it.slot)}</span>` : ''}
           <div class="actions">
             <button class="icon-btn" data-act="replace" aria-label="Replace ${esc(it.label || 'image')}">
@@ -146,8 +161,24 @@
     const currentState = window.R59.state.getState();
     const it = currentState.images[currentTab][idx];
     if (!it) return;
-    it.src = await readFile(file);
-    it.label = file.name.replace(/\.[^.]+$/, '');
+    const localDataUrl = await readFile(file);
+    const label = file.name.replace(/\.[^.]+$/, '');
+    let finalSrc = localDataUrl;
+
+    if (window.R59?.api?.photography?.uploadImageFile && window.R59.apiClient?.getAuthToken()) {
+      try {
+        const uploaded = await window.R59.api.photography.uploadImageFile(file, it.cat || 'Portrait', label);
+        if (uploaded?.id) it.id = uploaded.id;
+        if (safeImgSrc(uploaded?.src || uploaded?.url)) {
+          finalSrc = safeImgSrc(uploaded.src || uploaded.url);
+        }
+      } catch {
+        // Graceful fallback to local data URL when R2 is not configured
+      }
+    }
+
+    it.src = finalSrc;
+    it.label = label;
     renderImages();
     window.R59.state.markDirty();
     window.toast('Image replaced');
@@ -160,13 +191,34 @@
 
     for (const f of imgs) {
       const label = f.name.replace(/\.[^.]+$/, '');
-      currentState.images[currentTab].push({
-        id: ++uid,
-        src: await readFile(f),
+      const category = currentTab === 'gallery' ? (currentFilter === 'All' ? 'Portrait' : currentFilter) : 'Portrait';
+      const localDataUrl = await readFile(f);
+      let newId = ++uid;
+      let finalSrc = localDataUrl;
+
+      if (window.R59?.api?.photography?.uploadImageFile && window.R59.apiClient?.getAuthToken()) {
+        try {
+          const uploaded = await window.R59.api.photography.uploadImageFile(f, category, f.name);
+          if (uploaded?.id) newId = uploaded.id;
+          if (safeImgSrc(uploaded?.src || uploaded?.url)) {
+            finalSrc = safeImgSrc(uploaded.src || uploaded.url);
+          }
+        } catch {
+          // Graceful fallback to FileReader data URL when R2 is not configured
+        }
+      }
+
+      const item = {
+        id: newId,
+        src: finalSrc,
         label,
         alt: label,
-        ...(currentTab === 'gallery' ? { cat: currentFilter === 'All' ? 'Portrait' : currentFilter } : {})
-      });
+        ...(currentTab === 'gallery' ? { cat: category } : {})
+      };
+      currentState.images[currentTab].push(item);
+      if (currentTab === 'gallery') {
+        currentState.photos = currentState.images.gallery;
+      }
     }
 
     if (imgs.length) {
@@ -176,10 +228,39 @@
     }
   }
 
+  function deletePhoto(idx) {
+    const currentState = window.R59.state.getState();
+    const list = currentState.images[currentTab] || [];
+    const item = list[idx];
+    if (!item) return;
+    const label = item.label || 'image';
+    window.R59.confirmation.confirmRemoveImage(label, () => {
+      list.splice(idx, 1);
+      if (item.id && window.R59?.api?.photography?.deleteImage) {
+        window.R59.api.photography.deleteImage(item.id).catch(() => {});
+      }
+      renderImages();
+      window.R59.state.markDirty();
+      window.toast('Image removed');
+    });
+  }
+
   function initPhotographyListeners() {
-    // Tabs
-    $$('.tab').forEach(t => {
+    // Tabs & ArrowLeft / ArrowRight keyboard navigation
+    const tabEls = $$('.tabs [role="tab"]');
+    tabEls.forEach((t, index) => {
       t.onclick = () => window.go('images', { tab: t.dataset.tab });
+      t.addEventListener('keydown', e => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const nextIndex = e.key === 'ArrowRight'
+            ? (index + 1) % tabEls.length
+            : (index - 1 + tabEls.length) % tabEls.length;
+          const nextTab = tabEls[nextIndex];
+          nextTab.focus();
+          window.go('images', { tab: nextTab.dataset.tab });
+        }
+      });
     });
 
     // Social list listeners
@@ -191,6 +272,15 @@
         const currentState = window.R59.state.getState();
         currentState.social[t.dataset.s][t.dataset.k] = t.value;
         window.R59.state.markDirty();
+      });
+
+      socialList.addEventListener('change', e => {
+        const t = e.target;
+        if (t.dataset.s === undefined || t.dataset.k !== 'url') return;
+        const val = t.value.trim();
+        if (val && !window.R59.formValidation?.isValidUrl(val)) {
+          window.toast?.('Please enter a valid URL (starting with http:// or https://)');
+        }
       });
 
       socialList.addEventListener('click', e => {
@@ -239,18 +329,16 @@
         const act = e.target.closest('[data-act]')?.dataset.act;
 
         if (act === 'delete') {
-          const item = list[idx];
-          const label = item?.label || 'image';
-          window.R59.confirmation.confirmRemoveImage(label, () => {
-            list.splice(idx, 1);
-            renderImages();
-            window.R59.state.markDirty();
-            window.toast('Image removed');
-          });
+          deletePhoto(idx);
         } else if (act === 'left' || act === 'right') {
           const j = idx + (act === 'left' ? -1 : 1);
           if (j >= 0 && j < list.length) {
             [list[idx], list[j]] = [list[j], list[idx]];
+            if (window.R59?.api?.photography?.updateImageOrder) {
+              window.R59.api.photography.updateImageOrder(
+                list.map((img, orderIdx) => ({ id: img.id, display_order: orderIdx }))
+              ).catch(() => {});
+            }
             renderImages();
             window.R59.state.markDirty();
           }
@@ -266,7 +354,16 @@
         const card = e.target.closest('.img-card');
         if (!card) return;
         const currentState = window.R59.state.getState();
-        currentState.images[currentTab][card.dataset.idx][f] = e.target.value;
+        const item = currentState.images[currentTab][card.dataset.idx];
+        if (!item) return;
+        item[f] = e.target.value;
+        if (item.id && window.R59?.api?.photography?.updateImage) {
+          window.R59.api.photography.updateImage(item.id, {
+            category: item.cat || 'Portrait',
+            alt_text: item.alt || item.label || '',
+            title: item.label || ''
+          }).catch(() => {});
+        }
         window.R59.state.markDirty();
         if (f === 'cat' && currentFilter !== 'All') renderImages();
       });
@@ -339,6 +436,9 @@
     updateBioCount,
     renderSocial,
     renderImages,
+    handleFiles: addFiles,
+    deletePhoto,
+    safeImgSrc,
     initPhotographyListeners
   };
   window.setTab = setTab;
