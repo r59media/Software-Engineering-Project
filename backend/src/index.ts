@@ -86,7 +86,7 @@ app.get('/admin', (c) => {
   return c.redirect('/admin/', 301)
 })
 
-const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|map)$/i
+const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|map|glb)$/i
 const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|api\/(bookingsApi|packagesApi|paymentsApi|photographyApi|scheduleApi)\.js)/i
 
 app.get('/admin/*', async (c) => {
