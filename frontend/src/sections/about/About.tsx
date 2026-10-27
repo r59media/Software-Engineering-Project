@@ -3,6 +3,7 @@ import type { AboutContent } from '../../types/about'
 import { AboutArtwork } from './AboutArtwork'
 import { AboutDecorations } from './AboutDecorations'
 import { AboutPortrait } from './AboutPortrait'
+import { AboutLens } from './AboutLens'
 import './About.css'
 
 export function About({ content = aboutContent }: { content?: AboutContent }) {
@@ -18,15 +19,7 @@ export function About({ content = aboutContent }: { content?: AboutContent }) {
           <span className="about__subheading" data-about-part="subheading">{content.subheading}</span>
         </h2>
         <p className="about__biography" data-about-part="biography">{content.biography}</p>
-        {/* Static transition artwork. Future scroll motion connects to the next section. */}
-        <div className="about__lens" data-about-part="lens-transition" aria-hidden="true">
-          <div className="about__motion" data-about-motion="lens-transition">
-            <AboutArtwork image={aboutImages.frontLens} />
-            <div className="about__lens-center" data-about-part="lens-center">
-              <AboutArtwork image={aboutImages.lensInset} />
-            </div>
-          </div>
-        </div>
+        <AboutLens />
       </div>
     </div>
   </section>

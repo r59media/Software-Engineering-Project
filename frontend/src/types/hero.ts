@@ -15,6 +15,7 @@ export interface HeroDestinations {
   about?: string
   portfolio?: string
   booking?: string
+  faq?: string
   contact?: string
   explore?: string
   discover?: string
