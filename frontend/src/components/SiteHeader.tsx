@@ -27,7 +27,8 @@ export function SiteHeader({ destinations }: { destinations: HeroDestinations })
   }, [])
   const links = [
     ['About Me', destinations.about], ['Portfolio', destinations.portfolio],
-    ['Booking', destinations.booking], ['Get In Touch', destinations.contact],
+    ['Booking', destinations.booking], ['FAQ', destinations.faq],
+    ['Get In Touch', destinations.contact],
   ] as const
   const navigation = <>
     {links.map(([label, href]) => <ActionLink key={label} href={href} className="site-header__link" onNavigate={closeMenu}>{label}</ActionLink>)}

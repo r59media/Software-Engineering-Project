@@ -10,9 +10,7 @@ import flash from '../assets/aboutMeImages/speedlight_IMG.webp'
 import leftCard from '../assets/aboutMeImages/128MmrCard_IMG.webp'
 import topCard from '../assets/aboutMeImages/32MmrCard_IMG.webp'
 import bottomCard from '../assets/aboutMeImages/1TMmrCard_IMG.webp'
-import frontLens from '../assets/aboutMeImages/smallerLense_IMG.webp'
 import paper from '../assets/aboutMeImages/about-paper.png'
-import lensInset from '../assets/aboutMeImages/about-lens-inset.png'
 import type { AboutContent, AboutImage } from '../types/about'
 
 export const aboutContent: AboutContent = {
@@ -29,9 +27,7 @@ export const aboutImages = {
   portrait: { id: 'portrait', imageUrl: portrait, alt: 'Kevin D Gonzalez holding his camera at an event.', width: 1199, height: 1318 },
   portraitFrame: { id: 'portrait-frame', imageUrl: portraitFrame, alt: '', width: 1158, height: 1358 },
   signature: { id: 'signature-seal', imageUrl: signature, alt: '', width: 1030, height: 1034 },
-  frontLens: { id: 'front-lens', imageUrl: frontLens, alt: '', width: 813, height: 814 },
   paper: { id: 'paper-background', imageUrl: paper, alt: '', width: 2926, height: 4096 },
-  lensInset: { id: 'lens-inset', imageUrl: lensInset, alt: '', width: 1440, height: 780 },
 } satisfies Record<string, AboutImage>
 
 export const aboutDecorations: readonly AboutImage[] = [
