@@ -42,7 +42,7 @@ scheduleRouter.get('/', async (c) => {
     const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
 
     const { results } = await c.env.DB.prepare(
-      `SELECT id, date, start_time, end_time FROM Schedule_Slots 
+      `SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots 
        WHERE is_booked = 0 
        AND (date > ? OR (date = ? AND start_time > ?))
        AND date NOT IN (SELECT date FROM Blocked_Dates)
@@ -50,7 +50,7 @@ scheduleRouter.get('/', async (c) => {
        LIMIT ? OFFSET ?`
     ).bind(currentDate, currentDate, currentTime, limit, offset).all()
     
-    return c.json({ slots: results, limit, offset })
+    return c.json({ slots: results, limit, offset, status: 'success', data: results })
   } catch (e: any) {
     return c.json({
       error: {

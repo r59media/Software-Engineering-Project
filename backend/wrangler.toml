@@ -4,6 +4,9 @@ compatibility_date = "2026-10-15"
 compatibility_flags = [ "nodejs_compat" ]
 preview_urls = false
 
+[build]
+command = "pnpm run build"
+
 [vars]
 ADMIN_EMAIL = "r59mediatesting@gmail.com"
 

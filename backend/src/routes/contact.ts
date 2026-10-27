@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
+import { getTrustedClientIp, hasForbiddenPaymentFields } from '../middleware/auth'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const PHONE_REGEX = /^[\d+()\s-]{7,25}$/
@@ -38,8 +39,9 @@ export const contactRouter = new Hono<{ Bindings: Bindings }>()
 
 contactRouter.post('/', async (c) => {
   try {
-    const clientIp = c.req.header('cf-connecting-ip') || 'unknown'
+    const clientIp = getTrustedClientIp(c)
     if (!checkContactRateLimit(clientIp)) {
+      c.header('Retry-After', '60')
       return c.json({
         error: {
           code: 'TOO_MANY_REQUESTS',
@@ -50,6 +52,17 @@ contactRouter.post('/', async (c) => {
     }
 
     const body = await c.req.json()
+
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account details are prohibited.',
+          target: 'contact_form',
+          details: []
+        }
+      }, 400)
+    }
     const rawName = typeof body.name === 'string' ? body.name.trim() : ''
     const rawEmail = typeof body.email === 'string' ? body.email.trim() : ''
     const rawPhone = typeof body.phone === 'string' ? body.phone.trim() : ''
@@ -92,11 +105,11 @@ contactRouter.post('/', async (c) => {
       }, 400)
     }
 
-    await c.env.DB.prepare(
+    const insertRes = await c.env.DB.prepare(
       'INSERT INTO Leads (name, email, phone, session_type, message) VALUES (?, ?, ?, ?, ?)'
     ).bind(rawName, rawEmail, rawPhone || null, session_type || null, rawMessage).run()
 
-    return c.json({ success: true })
+    return c.json({ success: true, status: 'success', id: insertRes.meta?.last_row_id, data: { id: insertRes.meta?.last_row_id } })
   } catch (e: any) {
     return c.json({
       error: {

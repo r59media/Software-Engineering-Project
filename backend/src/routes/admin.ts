@@ -1,6 +1,23 @@
 import { Hono, Context } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth, timingSafeEqual, createSessionToken, extractSessionToken, revokeSessionToken, revokeTokenInDb, isTokenRevokedInDb } from '../middleware/auth'
+import {
+  adminAuth,
+  timingSafeEqual,
+  createSessionToken,
+  extractSessionToken,
+  revokeSessionToken,
+  revokeTokenInDb,
+  hashPassword,
+  verifyPassword,
+  getTrustedClientIp,
+  hasForbiddenPaymentFields
+} from '../middleware/auth'
+
+function isValidId(id: string | undefined): boolean {
+  return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
+}
+
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export const adminRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -138,10 +155,15 @@ adminRouter.post('/login', async (c) => {
       }, 500)
     }
 
+    if (c.env.DB) {
+      await ensureSchemaReady(c.env.DB)
+    }
+
     const expectedEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
 
-    const clientIp = c.req.header('cf-connecting-ip') || 'unknown'
+    const clientIp = getTrustedClientIp(c)
     if (isLoginRateLimited(clientIp)) {
+      c.header('Retry-After', '60')
       return c.json({
         error: {
           code: 'TOO_MANY_REQUESTS',
@@ -167,9 +189,21 @@ adminRouter.post('/login', async (c) => {
       }, 401)
     }
 
-    // Timing-safe constant-time credential comparison
+    let storedPasswordSource = expectedSecret
+    if (c.env.DB) {
+      try {
+        const row = await c.env.DB.prepare(
+          "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'admin_password_hash'"
+        ).first<{ setting_value: string }>()
+        if (row?.setting_value && row.setting_value.startsWith('pbkdf2_sha256$')) {
+          storedPasswordSource = row.setting_value
+        }
+      } catch {}
+    }
+
+    // Timing-safe constant-time credential comparison with PBKDF2-SHA256 support
     const emailMatches = timingSafeEqual(email, expectedEmail)
-    const passwordMatches = timingSafeEqual(password, expectedSecret)
+    const { matches: passwordMatches, needsHashUpgrade } = await verifyPassword(password, storedPasswordSource)
 
     if (!emailMatches || !passwordMatches) {
       recordFailedLoginAttempt(clientIp)
@@ -184,6 +218,16 @@ adminRouter.post('/login', async (c) => {
       }, 401)
     }
 
+    // If legacy secret was used and validated, upgrade to salted PBKDF2 hash in D1
+    if (needsHashUpgrade && c.env.DB) {
+      try {
+        const saltedHash = await hashPassword(password)
+        await c.env.DB.prepare(
+          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('admin_password_hash', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+        ).bind(saltedHash).run()
+      } catch {}
+    }
+
     // Clear failed attempts on successful login
     loginAttempts.delete(clientIp)
 
@@ -191,20 +235,24 @@ adminRouter.post('/login', async (c) => {
     const signingSecret = c.env.SESSION_SECRET || expectedSecret
     const token = await createSessionToken(signingSecret, expectedEmail)
 
-    // Clear any legacy r59_session cookie so browser removes lingering cookies from older versions
+    // Set the HttpOnly session cookie r59_session
+    const isHttps = c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https'
     c.header(
       'Set-Cookie',
-      `r59_session=; Path=/; HttpOnly; SameSite=Strict${c.req.url.startsWith('https://') ? '; Secure' : ''}; Max-Age=0`
+      `r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}`
     )
 
+    const returnToken = c.req.header('X-Return-Token') === 'true'
     return c.json({
       success: true,
       status: 'success',
-      token,
+      authenticated: true,
       email: expectedEmail,
+      ...(returnToken ? { token } : {}),
       data: {
-        token,
-        email: expectedEmail
+        authenticated: true,
+        email: expectedEmail,
+        ...(returnToken ? { token } : {})
       }
     })
   } catch (e: any) {
@@ -225,9 +273,10 @@ adminRouter.post('/logout', async (c) => {
     revokeSessionToken(token)
     await revokeTokenInDb(c.env.DB, token)
   }
+  const isHttps = c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https'
   c.header(
     'Set-Cookie',
-    `r59_session=; Path=/; HttpOnly; SameSite=Strict${c.req.url.startsWith('https://') ? '; Secure' : ''}; Max-Age=0`
+    `r59_session=; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}; Max-Age=0`
   )
   return c.json({
     success: true,
@@ -258,6 +307,97 @@ adminRouter.get('/verify', async (c) => {
       email: expectedEmail
     }
   })
+})
+
+// PUT: Update admin password with salted PBKDF2-SHA256 hash
+adminRouter.put('/password', async (c) => {
+  try {
+    const clientIp = getTrustedClientIp(c)
+    if (isLoginRateLimited(clientIp)) {
+      c.header('Retry-After', '60')
+      return c.json({
+        error: {
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Too many password update attempts. Please wait 1 minute before trying again.',
+          details: []
+        }
+      }, 429)
+    }
+
+    const body = await c.req.json().catch(() => ({}))
+    const currentPassword = typeof body.currentPassword === 'string' ? body.currentPassword : (typeof body.current_password === 'string' ? body.current_password : '')
+    const newPassword = typeof body.newPassword === 'string' ? body.newPassword : (typeof body.new_password === 'string' ? body.new_password : '')
+
+    if (!currentPassword) {
+      recordFailedLoginAttempt(clientIp)
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Current password is required.',
+          details: [{ field: 'currentPassword', message: 'Current password is required.', code: 'REQUIRED_FIELD' }]
+        }
+      }, 400)
+    }
+
+    if (!newPassword || newPassword.length < 8) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'New password must be at least 8 characters long.',
+          details: [{ field: 'newPassword', message: 'New password must be at least 8 characters long.', code: 'TOO_SHORT' }]
+        }
+      }, 400)
+    }
+
+    const expectedSecret = c.env.ADMIN_SECRET || ''
+    let storedPasswordSource = expectedSecret
+    if (c.env.DB) {
+      try {
+        const row = await c.env.DB.prepare(
+          "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'admin_password_hash'"
+        ).first<{ setting_value: string }>()
+        if (row?.setting_value && row.setting_value.startsWith('pbkdf2_sha256$')) {
+          storedPasswordSource = row.setting_value
+        }
+      } catch {}
+    }
+
+    const { matches: currentMatches } = await verifyPassword(currentPassword, storedPasswordSource)
+    if (!currentMatches) {
+      recordFailedLoginAttempt(clientIp)
+      return c.json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Incorrect current password.',
+          details: [{ field: 'currentPassword', message: 'Current password does not match.', code: 'INVALID_CREDENTIALS' }]
+        }
+      }, 401)
+    }
+
+    loginAttempts.delete(clientIp)
+
+    const saltedHash = await hashPassword(newPassword)
+    if (c.env.DB) {
+      await c.env.DB.prepare(
+        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('admin_password_hash', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+      ).bind(saltedHash).run()
+    }
+
+    return c.json({
+      success: true,
+      status: 'success',
+      message: 'Password updated with salted PBKDF2-SHA256 hash.',
+      data: { message: 'Password updated with salted PBKDF2-SHA256 hash.' }
+    })
+  } catch (e: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Could not update password.',
+        details: []
+      }
+    }, 500)
+  }
 })
 
 // ── Schedule Management ──────────────────────────────────────────
@@ -360,6 +500,9 @@ adminRouter.post('/schedule', async (c) => {
 adminRouter.delete('/schedule/:id', async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const result = await c.env.DB.prepare(
       'DELETE FROM Schedule_Slots WHERE id = ? AND is_booked = 0'
     ).bind(id).run()
@@ -489,6 +632,9 @@ adminRouter.post('/blocked-dates', async (c) => {
 adminRouter.delete('/blocked-dates/:id', async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const result = await c.env.DB.prepare('DELETE FROM Blocked_Dates WHERE id = ?').bind(id).run()
 
     if (result.meta.changes === 0) {
@@ -562,6 +708,15 @@ adminRouter.get('/bookings', async (c) => {
 adminRouter.post('/bookings', async (c) => {
   try {
     const body = await c.req.json()
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
     const client_name = String(body.client_name || body.customer_name || body.customer || body.client || '').trim()
     const client_email = String(body.client_email || body.customer_email || body.email || '').trim()
     const customer_phone = String(body.customer_phone || body.phone || '').trim()
@@ -681,7 +836,19 @@ adminRouter.post('/bookings', async (c) => {
 adminRouter.put('/bookings/:id', async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const body = await c.req.json()
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
 
     const existing = await c.env.DB.prepare('SELECT * FROM Bookings WHERE id = ?').bind(id).first<any>()
     if (!existing) {
@@ -692,7 +859,31 @@ adminRouter.put('/bookings/:id', async (c) => {
     const client_name = rawName !== undefined ? String(rawName).trim() : existing.client_name
 
     const rawEmail = body.client_email ?? body.customer_email ?? body.email
+    if (rawEmail !== undefined && rawEmail !== null && String(rawEmail).trim() !== '') {
+      if (!EMAIL_REGEX.test(String(rawEmail).trim())) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Please enter a valid client email address.',
+            details: [{ field: 'client_email', message: 'Invalid email format.', code: 'INVALID_FORMAT' }]
+          }
+        }, 400)
+      }
+    }
     const client_email = rawEmail !== undefined ? String(rawEmail).trim() : existing.client_email
+
+    const newDate = body.date
+    if (newDate !== undefined && newDate !== null && String(newDate).trim() !== '') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(newDate).trim())) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Date must be in YYYY-MM-DD format.',
+            details: [{ field: 'date', message: 'Invalid date format.', code: 'INVALID_FORMAT' }]
+          }
+        }, 400)
+      }
+    }
 
     const rawPhone = body.customer_phone ?? body.phone
     const customer_phone = rawPhone !== undefined ? String(rawPhone).trim() : (existing.customer_phone || '')
@@ -773,7 +964,6 @@ adminRouter.put('/bookings/:id', async (c) => {
     ).run()
 
     // Update associated Schedule_Slots row if date/startTime/endTime changed
-    const newDate = body.date
     const newStartTime = body.start_time ?? body.startTime
     const newEndTime = body.end_time ?? body.endTime
     if (existing.slot_id && (newDate !== undefined || newStartTime !== undefined || newEndTime !== undefined)) {
@@ -802,6 +992,9 @@ adminRouter.put('/bookings/:id', async (c) => {
 adminRouter.patch('/bookings/:id/cancel', async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
 
     const booking = await c.env.DB.prepare('SELECT slot_id FROM Bookings WHERE id = ?').bind(id).first<{ slot_id: number }>()
     if (!booking) {
@@ -824,6 +1017,9 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
 adminRouter.delete('/bookings/:id', async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
 
     const booking = await c.env.DB.prepare('SELECT slot_id FROM Bookings WHERE id = ?').bind(id).first<{ slot_id: number }>()
     if (!booking) {
@@ -859,7 +1055,16 @@ async function handleGetPricing(c: Context<{ Bindings: Bindings }>) {
 
 async function handleUpdatePricing(c: Context<{ Bindings: Bindings }>) {
   try {
-    const body = await c.req.json()
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
     const parsedDeposit = Number(body.depositPercent)
     const depositPercent =
       Number.isFinite(parsedDeposit) && parsedDeposit >= 0 && parsedDeposit <= 100
@@ -916,6 +1121,7 @@ adminRouter.get('/pricing', handleGetPricing)
 adminRouter.put('/pricing', handleUpdatePricing)
 adminRouter.get('/payments/settings', handleGetPricing)
 adminRouter.put('/payments/settings', handleUpdatePricing)
+adminRouter.put('/settings', handleUpdatePricing)
 
 // ── Coupons ──────────────────────────────────────────────────────
 
@@ -954,6 +1160,16 @@ adminRouter.post('/coupons', async (c) => {
     const discountVal = Number(body.discount ?? body.amount ?? body.discount_value)
     const description = String(body.description || '').trim()
     const isActive = body.active !== undefined ? (body.active ? 1 : 0) : (body.is_active !== undefined ? (body.is_active ? 1 : 0) : 1)
+
+    if (!['percent', 'amount'].includes(discountType)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Discount type must be either "percent" or "amount".',
+          details: [{ field: 'discount_type', message: 'Must be "percent" or "amount".', code: 'INVALID_VALUE' }]
+        }
+      }, 400)
+    }
 
     if (!code || !Number.isFinite(discountVal) || discountVal <= 0) {
       return c.json({
@@ -999,7 +1215,19 @@ adminRouter.post('/coupons', async (c) => {
 adminRouter.put('/coupons/:id', async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const body = await c.req.json()
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
 
     const existing = await c.env.DB.prepare('SELECT * FROM Coupons WHERE id = ?').bind(id).first<any>()
     if (!existing) {
@@ -1011,6 +1239,16 @@ adminRouter.put('/coupons/:id', async (c) => {
 
     const rawDiscount = body.discount ?? body.amount ?? body.discount_value
     const discountVal = rawDiscount !== undefined ? Number(rawDiscount) : Number(existing.discount_value)
+
+    if (!['percent', 'amount'].includes(discountType)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Discount type must be either "percent" or "amount".',
+          details: [{ field: 'discount_type', message: 'Must be "percent" or "amount".', code: 'INVALID_VALUE' }]
+        }
+      }, 400)
+    }
 
     if (!code || !Number.isFinite(discountVal) || discountVal <= 0) {
       return c.json({
@@ -1064,6 +1302,9 @@ adminRouter.put('/coupons/:id', async (c) => {
 adminRouter.delete('/coupons/:id', async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const result = await c.env.DB.prepare('DELETE FROM Coupons WHERE id = ?').bind(id).run()
 
     if (result.meta.changes === 0) {
@@ -1073,6 +1314,204 @@ adminRouter.delete('/coupons/:id', async (c) => {
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete coupon.', details: [] } }, 500)
+  }
+})
+
+// ── Packages (Services) Aliases for Admin ─────────────────────────
+adminRouter.put('/packages/:id', async (c) => {
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
+
+    const existing = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(id).first<any>()
+    if (!existing) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
+    }
+
+    const rawName = body.name ?? body.title
+    const name = rawName !== undefined ? String(rawName).trim() : String(existing.name || '').trim()
+    const description = body.description !== undefined ? (body.description === null ? null : String(body.description)) : existing.description
+    const rawPrice = body.price !== undefined ? body.price : existing.price
+    const numPrice = Number(rawPrice)
+    const rawDuration = body.duration_minutes ?? body.durationMinutes ?? existing.duration_minutes ?? 60
+    const numDuration = Number(rawDuration)
+    const isActive =
+      body.is_active !== undefined
+        ? (body.is_active ? 1 : 0)
+        : body.active !== undefined
+          ? (body.active ? 1 : 0)
+          : existing.is_active
+
+    const errors = []
+    if (!name) {
+      errors.push({ field: 'name', message: 'Service name/title cannot be empty.', code: 'REQUIRED_FIELD' })
+    }
+    if (!Number.isFinite(numPrice) || numPrice < 0) {
+      errors.push({ field: 'price', message: 'Price must be a valid number >= 0.', code: 'INVALID_VALUE' })
+    }
+    if (!Number.isFinite(numDuration) || numDuration < 0) {
+      errors.push({ field: 'duration_minutes', message: 'Duration in minutes must be >= 0.', code: 'INVALID_VALUE' })
+    }
+
+    if (errors.length > 0) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not update service.', details: errors } }, 400)
+    }
+
+    const cleanPrice = Math.round(numPrice)
+    const cleanDuration = Math.round(numDuration)
+
+    await c.env.DB.prepare(
+      'UPDATE Services SET name = ?, description = ?, price = ?, duration_minutes = ?, is_active = ? WHERE id = ?'
+    ).bind(name, description, cleanPrice, cleanDuration, isActive, id).run()
+
+    return c.json({
+      success: true,
+      status: 'success',
+      data: {
+        id: Number(id),
+        name,
+        title: name,
+        description,
+        price: cleanPrice,
+        duration_minutes: cleanDuration,
+        is_active: isActive
+      }
+    })
+  } catch (e: any) {
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not update service.', details: [] } }, 500)
+  }
+})
+
+adminRouter.delete('/packages/:id', async (c) => {
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
+
+    const existing = await c.env.DB.prepare('SELECT id FROM Services WHERE id = ?').bind(id).first()
+    if (!existing) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
+    }
+
+    const bookingCheck = await c.env.DB.prepare(
+      'SELECT id FROM Bookings WHERE service_id = ? LIMIT 1'
+    ).bind(id).first()
+
+    if (bookingCheck) {
+      await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
+      return c.json({
+        success: true,
+        status: 'success',
+        deactivated: true,
+        message: 'Service has existing bookings and was deactivated instead of deleted.',
+        data: { id: Number(id), deactivated: true }
+      })
+    }
+
+    await c.env.DB.prepare('DELETE FROM Services WHERE id = ?').bind(id).run()
+    return c.json({ success: true, status: 'success', data: { id: Number(id), deleted: true } })
+  } catch (e: any) {
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete service.', details: [] } }, 500)
+  }
+})
+
+// ── Portfolio Aliases for Admin ──────────────────────────────────
+adminRouter.put('/portfolio/:id', async (c) => {
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
+
+    const existing = await c.env.DB.prepare('SELECT * FROM Portfolio_Images WHERE id = ?').bind(id).first<any>()
+    if (!existing) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
+    }
+
+    const category = body.category !== undefined ? String(body.category) : existing.category
+    const alt_text = body.alt_text !== undefined ? (body.alt_text === null ? null : String(body.alt_text)) : existing.alt_text
+    const is_active =
+      body.is_active !== undefined
+        ? (body.is_active ? 1 : 0)
+        : body.active !== undefined
+          ? (body.active ? 1 : 0)
+          : existing.is_active
+    const is_featured = body.is_featured !== undefined ? (body.is_featured ? 1 : 0) : existing.is_featured
+    const display_order = body.display_order !== undefined ? Number(body.display_order) : existing.display_order
+
+    await c.env.DB.prepare(
+      'UPDATE Portfolio_Images SET category = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
+    ).bind(category, alt_text, is_active, is_featured, display_order, id).run()
+
+    return c.json({
+      success: true,
+      status: 'success',
+      data: { id: Number(id), category, alt_text, is_active, is_featured, display_order }
+    })
+  } catch (e: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Could not update portfolio image.',
+        details: []
+      }
+    }, 500)
+  }
+})
+
+adminRouter.delete('/portfolio/:id', async (c) => {
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
+
+    const existing = await c.env.DB.prepare(
+      'SELECT id, r2_object_key FROM Portfolio_Images WHERE id = ?'
+    ).bind(id).first<{ id: number; r2_object_key: string }>()
+
+    if (!existing) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
+    }
+
+    await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
+
+    if (c.env.BUCKET && existing.r2_object_key && existing.r2_object_key.startsWith('portfolio/')) {
+      await c.env.BUCKET.delete(existing.r2_object_key).catch(() => {})
+    }
+
+    return c.json({ success: true, status: 'success' })
+  } catch (e: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Could not delete portfolio image.',
+        details: []
+      }
+    }, 500)
   }
 })
 

@@ -9,10 +9,11 @@
 (function () {
   'use strict';
 
-  let activeAuthToken = '';
+  let isTabAuthenticated = false;
   try {
     localStorage.removeItem('r59_admin_token');
     sessionStorage.removeItem('r59_admin_token');
+    isTabAuthenticated = sessionStorage.getItem('r59_admin_logged_in') === '1';
   } catch {
     // ignore storage errors
   }
@@ -42,21 +43,26 @@
   }
 
   function getAuthToken() {
-    return activeAuthToken || '';
+    return isTabAuthenticated ? 'cookie' : '';
   }
 
   function setAuthToken(token) {
-    activeAuthToken = token ? String(token) : '';
+    isTabAuthenticated = Boolean(token);
     try {
       localStorage.removeItem('r59_admin_token');
       sessionStorage.removeItem('r59_admin_token');
+      if (isTabAuthenticated) {
+        sessionStorage.setItem('r59_admin_logged_in', '1');
+      } else {
+        sessionStorage.removeItem('r59_admin_logged_in');
+      }
     } catch {
       // ignore storage errors
     }
   }
 
   function clearAuthToken() {
-    setAuthToken(null);
+    setAuthToken('');
   }
 
   /**
@@ -69,7 +75,7 @@
   async function request(endpoint, options = {}) {
     const {
       method = 'GET',
-      headers = {},
+      headers: optHeaders = {},
       body = null,
       params = null
     } = options;
@@ -91,28 +97,36 @@
       }
     }
 
-    const requestHeaders = {
+    const headers = {
       'Accept': 'application/json',
-      ...headers
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'XMLHttpRequest',
+      ...(optHeaders || {}),
     };
 
+    if (options.body instanceof FormData || body instanceof FormData) {
+      delete headers['Content-Type'];
+    }
+
     const token = getAuthToken();
-    if (token && !requestHeaders['Authorization']) {
-      requestHeaders['Authorization'] = `Bearer ${token}`;
+    if (token && token !== 'cookie' && !headers['Authorization']) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
     const fetchConfig = {
       method,
-      headers: requestHeaders
+      credentials: 'same-origin',
+      headers
     };
 
     if (body !== null && body !== undefined && method !== 'GET' && method !== 'HEAD') {
       if (typeof body === 'string' || body instanceof FormData || body instanceof Blob) {
         fetchConfig.body = body;
       } else {
-        requestHeaders['Content-Type'] = 'application/json';
         fetchConfig.body = JSON.stringify(body);
       }
+    } else if (method === 'GET' || method === 'HEAD') {
+      delete headers['Content-Type'];
     }
 
     try {
@@ -133,7 +147,7 @@
 
       if (!response.ok) {
         if (response.status === 401 && !url.includes('/admin/login')) {
-          setAuthToken(null);
+          clearAuthToken();
           window.dispatchEvent(new CustomEvent('r59:unauthorized', {
             detail: {
               message: (responseData && responseData.error && responseData.error.message) || 'Session expired. Please sign in again.'
@@ -167,14 +181,26 @@
     }
   }
 
+  async function login(email, password) {
+    const data = await request('/admin/login', {
+      method: 'POST',
+      body: { email, password }
+    });
+    if (data && (data.authenticated || data.status === 'success' || data.token)) {
+      setAuthToken('1');
+      return data;
+    }
+    throw new Error((data && (data.message || (data.error && data.error.message))) || 'Authentication failed: Invalid credentials.');
+  }
+
   async function verifySession() {
     const token = getAuthToken();
     if (!token) return false;
     try {
       const res = await request('/admin/verify');
-      return !!(res && res.authenticated);
+      return !!(res && (res.authenticated || res.status === 'success'));
     } catch {
-      setAuthToken(null);
+      clearAuthToken();
       return false;
     }
   }
@@ -190,6 +216,7 @@
     getAuthToken,
     setAuthToken,
     clearAuthToken,
+    login,
     verifySession,
     logout,
     request,

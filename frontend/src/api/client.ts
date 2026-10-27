@@ -2,9 +2,11 @@ import type { HeroSlide } from '../types/hero'
 
 export interface PortfolioApiItem {
   id: number
-  category: string
-  r2_object_key: string
-  public_url: string
+  category?: string
+  r2_object_key?: string
+  url?: string
+  public_url?: string
+  is_featured?: number | boolean
   alt_text?: string | null
   display_order?: number
   is_active?: number
@@ -12,12 +14,14 @@ export interface PortfolioApiItem {
 
 export interface ServicePackageItem {
   id: number
+  name?: string
   title: string
-  description: string | null
+  description?: string | null
   price: number
-  duration_minutes: number
-  category: string | null
-  is_active: number
+  price_cents?: number
+  duration_minutes?: number
+  category?: string | null
+  is_active?: number
 }
 
 export interface ScheduleSlotItem {
@@ -33,6 +37,7 @@ export interface ContactLeadPayload {
   email: string
   phone?: string
   message: string
+  session_type?: string
 }
 
 export interface CheckoutPayload {
@@ -45,11 +50,15 @@ export interface CheckoutPayload {
   coupon_code?: string
 }
 
-interface ApiResponse<T> {
+export interface ApiResponse<T = unknown> {
   status: 'success' | 'error'
   data?: T
   message?: string
   code?: string
+  id?: number
+  booking_id?: number
+  payment_id?: string
+  order_id?: string
 }
 
 const API_BASE = '/api'
@@ -62,8 +71,26 @@ async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T | null> 
       signal,
     })
     if (!res.ok) return null
-    const json = (await res.json()) as ApiResponse<T>
-    return json.status === 'success' && json.data !== undefined ? json.data : null
+    const json = (await res.json()) as Record<string, unknown>
+    if (json.status === 'success' && json.data !== undefined) {
+      return json.data as T
+    }
+    if (Array.isArray(json)) {
+      return json as unknown as T
+    }
+    if (json.slots !== undefined) {
+      return json.slots as T
+    }
+    if (json.images !== undefined) {
+      return json.images as T
+    }
+    if (json.services !== undefined) {
+      return json.services as T
+    }
+    if (json.data !== undefined) {
+      return json.data as T
+    }
+    return null
   } catch {
     return null
   }
@@ -77,13 +104,18 @@ export async function fetchPortfolio(category?: string, signal?: AbortSignal): P
 
 export async function fetchHeroSlides(fallbackSlides: readonly HeroSlide[], signal?: AbortSignal): Promise<readonly HeroSlide[]> {
   const items = await fetchPortfolio('hero', signal)
-  const validItems = items.filter(
-    item => typeof item.public_url === 'string' && (item.public_url.startsWith('https://') || item.public_url.startsWith('/'))
-  )
+  const validItems = items
+    .map(item => {
+      const rawUrl = item.url || item.public_url || (item.r2_object_key ? '/api/media/' + item.r2_object_key.replace(/^\/+/, '') : '')
+      return { item, rawUrl }
+    })
+    .filter(
+      ({ rawUrl }) => typeof rawUrl === 'string' && (rawUrl.startsWith('https://') || rawUrl.startsWith('/'))
+    )
   if (validItems.length === 0) return fallbackSlides
-  return validItems.map((item, index) => ({
+  return validItems.map(({ item, rawUrl }, index) => ({
     id: `api-hero-${item.id ?? index}`,
-    imageUrl: item.public_url,
+    imageUrl: rawUrl,
     alt: item.alt_text?.trim() || 'R59 Media featured photography',
     width: 1440,
     height: 528,
@@ -104,19 +136,35 @@ export async function fetchAvailableSlots(signal?: AbortSignal): Promise<Schedul
 }
 
 export async function submitContactLead(payload: ContactLeadPayload): Promise<ApiResponse<{ id?: number }>> {
-  const res = await fetch(`${API_BASE}/contact`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return (await res.json()) as ApiResponse<{ id?: number }>
+  try {
+    const res = await fetch(`${API_BASE}/contact`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    return (await res.json()) as ApiResponse<{ id?: number }>
+  } catch {
+    return {
+      status: 'error',
+      code: 'NETWORK_ERROR',
+      message: 'Unable to complete request. Please try again.',
+    }
+  }
 }
 
-export async function submitCheckout(payload: CheckoutPayload): Promise<ApiResponse<{ booking_id?: number; payment_id?: string }>> {
-  const res = await fetch(`${API_BASE}/checkout`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  return (await res.json()) as ApiResponse<{ booking_id?: number; payment_id?: string }>
+export async function submitCheckout(payload: CheckoutPayload): Promise<ApiResponse<{ booking_id?: number; payment_id?: string; order_id?: string }>> {
+  try {
+    const res = await fetch(`${API_BASE}/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    return (await res.json()) as ApiResponse<{ booking_id?: number; payment_id?: string; order_id?: string }>
+  } catch {
+    return {
+      status: 'error',
+      code: 'NETWORK_ERROR',
+      message: 'Unable to complete request. Please try again.',
+    }
+  }
 }

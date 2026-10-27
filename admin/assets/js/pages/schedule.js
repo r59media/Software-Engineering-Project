@@ -187,7 +187,7 @@
           ? `data-open-booking="${esc(b.id)}"`
           : `data-select-day="${esc(b.date)}"`;
         return `
-          <div class="cal-event-chip ${safeStatus === 'cancelled' ? 'cancelled' : ''}" ${chipAttr} title="${esc(b.customer)} (${esc(b.package)})">
+          <div class="cal-event-chip ${safeStatus === 'cancelled' ? 'cancelled' : ''}" role="button" tabindex="0" ${chipAttr} title="${esc(b.customer)} (${esc(b.package)})">
             <span class="cal-event-time">${esc(b.time)}</span>
             <strong class="cal-event-name">${esc(b.customer)}</strong>
             <span class="cal-event-pkg">${esc(b.package)}</span>
@@ -201,7 +201,7 @@
       ` : '';
 
       html += `
-        <div class="cal-day-cell ${!isCurrentMonth ? 'other-month' : ''} ${hasBookings ? 'has-booking' : ''} ${blocked ? 'cal-blocked' : ''} ${isSelected ? 'cal-selected' : ''}"${cellAttr}>
+        <div class="cal-day-cell ${!isCurrentMonth ? 'other-month' : ''} ${hasBookings ? 'has-booking' : ''} ${blocked ? 'cal-blocked' : ''} ${isSelected ? 'cal-selected' : ''}" role="button" tabindex="0"${cellAttr}>
           <div style="display: flex; justify-content: space-between; align-items: center;">
             <span class="cal-day-num">${cellDate.getDate()}</span>
             ${isToday ? '<span class="status-badge status-available" style="font-size:9px;padding:1px 5px;">Today</span>' : ''}
@@ -251,7 +251,7 @@
           const rawStatus = String(b.status || 'pending').toLowerCase();
           const safeStatus = ['confirmed', 'cancelled', 'pending'].includes(rawStatus) ? rawStatus : 'pending';
           return `
-            <div class="cal-event-chip ${safeStatus === 'cancelled' ? 'cancelled' : ''}" data-select-day="${esc(b.date)}" style="padding: 8px;">
+            <div class="cal-event-chip ${safeStatus === 'cancelled' ? 'cancelled' : ''}" role="button" tabindex="0" data-select-day="${esc(b.date)}" style="padding: 8px;">
               <span class="cal-event-time">${esc(b.timeRange || b.time)}</span>
               <strong class="cal-event-name" style="font-size: 13px;">${esc(b.customer)}</strong>
               <span class="cal-event-pkg" style="font-size: 11px;">${esc(b.package)}</span>
@@ -266,7 +266,7 @@
           : '<span class="hint" style="font-size: 12px; text-align: center; margin-top: 20px;">No bookings</span>';
 
       html += `
-        <div class="cal-week-col ${blocked ? 'cal-blocked' : ''} ${isSelected ? 'cal-selected' : ''}" data-select-cal-date="${esc(wd.dateStr)}">
+        <div class="cal-week-col ${blocked ? 'cal-blocked' : ''} ${isSelected ? 'cal-selected' : ''}" role="button" tabindex="0" data-select-cal-date="${esc(wd.dateStr)}">
           <div class="cal-week-col-head">
             <div class="cal-week-col-name">${wd.name}</div>
             <div class="cal-week-col-date">${wd.dateNum}</div>
@@ -433,11 +433,11 @@
           <div class="row" style="gap: 10px; flex-wrap: wrap;">
             <div>
               <label class="f" style="margin: 0 0 4px; font-size: 11px;">Start Time</label>
-              <input type="time" class="input" id="tfStart" style="width: auto; padding: 6px 8px;" value="${currentStart}">
+              <input type="time" class="input" id="tfStart" style="width: auto; padding: 6px 8px;" value="${esc(currentStart)}">
             </div>
             <div>
               <label class="f" style="margin: 0 0 4px; font-size: 11px;">End Time</label>
-              <input type="time" class="input" id="tfEnd" style="width: auto; padding: 6px 8px;" value="${currentEnd}">
+              <input type="time" class="input" id="tfEnd" style="width: auto; padding: 6px 8px;" value="${esc(currentEnd)}">
             </div>
           </div>
           <div>
@@ -595,8 +595,8 @@
   function addBlockedDate() {
     const dateVal = $('#blockDateInput')?.value;
     const reasonVal = $('#blockReasonInput')?.value.trim();
-    if (!dateVal) {
-      window.toast('Please choose a date to block');
+    if (!dateVal || !window.R59.formValidation?.isValidISODate(dateVal)) {
+      window.toast('Please choose a valid date to block');
       return;
     }
 
@@ -803,7 +803,7 @@
     $('#bkAttendees').value = b.attendees || '';
     $('#bkDate').value = b.date || '';
     $('#bkStart').value = to24(b.time);
-    $('#bkEnd').value = to24((b.timeRange || '').split('–')[1] || '');
+    $('#bkEnd').value = to24(b.end_time || (b.timeRange || '').split(/[-–]/)[1] || '');
     $('#bkPrice').value = b.price || 0;
     $('#bkDeposit').value = b.deposit || 0;
     $('#bkStatus').value = b.status || 'Pending';
@@ -838,12 +838,13 @@
     if (!customer) return err('Please enter the customer name.');
     if (!pkg) return err('Please enter a package.');
     const email = $('#bkEmail').value.trim();
-    const phone = $('#bkPhone').value.trim();
+    const rawPhone = $('#bkPhone').value.trim();
+    const phone = rawPhone && window.R59.formValidation?.cleanPhone ? window.R59.formValidation.cleanPhone(rawPhone) : rawPhone;
     const attendeesRaw = $('#bkAttendees').value.trim();
     if (email && !window.R59.formValidation.isValidEmail(email)) return err('Please enter a valid email address.');
     if (phone && !window.R59.formValidation.isValidPhone(phone)) return err('Please enter a valid phone number (10+ digits).');
     if (attendeesRaw && !(parseInt(attendeesRaw, 10) >= 1)) return err('Attendees must be at least 1.');
-    if (!date) return err('Please choose a date.');
+    if (!date || !window.R59.formValidation.isValidISODate(date)) return err('Please choose a valid date.');
 
     const blockedList = window.R59.state.getBlockedDates();
     const blockedDay = blockedList.find(x => x.dateStr === date);
@@ -1002,7 +1003,7 @@
     const pkgs = getAvailablePackages();
     const pkgSelect = $('#nbPackage');
     if (pkgSelect) {
-      pkgSelect.innerHTML = pkgs.map(p => `<option value="${p.id}">${esc(p.name)} — ${money(p.price)}</option>`).join('')
+      pkgSelect.innerHTML = pkgs.map(p => `<option value="${esc(p.id)}">${esc(p.name)} — ${money(p.price)}</option>`).join('')
         + '<option value="none">No package</option>';
     }
 
@@ -1022,7 +1023,8 @@
     const first = $('#nbFirst').value.trim();
     const last = $('#nbLast').value.trim();
     const email = $('#nbEmail').value.trim();
-    const phone = $('#nbPhone').value.trim();
+    const rawPhone = $('#nbPhone').value.trim();
+    const phone = rawPhone && window.R59.formValidation?.cleanPhone ? window.R59.formValidation.cleanPhone(rawPhone) : rawPhone;
     const attendees = parseInt($('#nbAttendees').value, 10);
     const date = $('#nbDate').value;
     const start = $('#nbStart').value;
@@ -1035,7 +1037,7 @@
     if (!window.R59.formValidation.isValidEmail(email)) return err('Please enter a valid email address.');
     if (!window.R59.formValidation.isValidPhone(phone)) return err('Please enter a valid phone number (10+ digits).');
     if (!(attendees >= 1)) return err('Number of attendees must be at least 1.');
-    if (!date) return err('Please choose the date of the booking.');
+    if (!date || !window.R59.formValidation.isValidISODate(date)) return err('Please choose a valid date for the booking.');
     if (!start) return err('Please choose a start time.');
     if (end && end <= start) return err('End time must be after the start time.');
     if (couponText && (!nbCoupon || nbCoupon.code !== couponText.toUpperCase())) {
@@ -1263,6 +1265,34 @@
       if (rmBlock) {
         e.preventDefault();
         removeBlockedDate(rmBlock.dataset.removeBlock);
+        return;
+      }
+    });
+
+    // Keyboard activation for calendar day cells, chips, and day selectors
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      const target = e.target instanceof Element ? e.target : e.target?.parentElement;
+      if (!target) return;
+
+      const openBk = target.closest('[data-open-booking]');
+      if (openBk) {
+        e.preventDefault();
+        openBookingEditor(openBk.dataset.openBooking);
+        return;
+      }
+
+      const selDay = target.closest('[data-select-day]');
+      if (selDay) {
+        e.preventDefault();
+        window.R59.schedule.selectDayView(selDay.dataset.selectDay);
+        return;
+      }
+
+      const selCalDate = target.closest('[data-select-cal-date]');
+      if (selCalDate) {
+        e.preventDefault();
+        window.R59.schedule.selectCalendarDate(selCalDate.dataset.selectCalDate);
         return;
       }
     });

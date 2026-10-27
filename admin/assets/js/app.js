@@ -11,8 +11,96 @@
   const $ = s => document.querySelector(s);
   const $$ = s => [...document.querySelectorAll(s)];
 
+  const GATED_ADMIN_SCRIPTS = [
+    'assets/js/api/bookingsApi.js',
+    'assets/js/api/packagesApi.js',
+    'assets/js/api/paymentsApi.js',
+    'assets/js/api/photographyApi.js',
+    'assets/js/api/scheduleApi.js',
+    'assets/js/pages/dashboard.js',
+    'assets/js/pages/schedule.js',
+    'assets/js/pages/payments.js',
+    'assets/js/pages/photography.js'
+  ];
+  let adminModulesLoaded = false;
+  let adminModulesPromise = null;
+
+  function setWorkspaceAuthenticated(isAuth) {
+    document.body.classList.toggle('authenticated', Boolean(isAuth));
+    const appEl = document.querySelector('.app');
+    if (appEl) {
+      if (isAuth) {
+        appEl.removeAttribute('inert');
+        appEl.removeAttribute('aria-hidden');
+      } else {
+        appEl.setAttribute('inert', '');
+        appEl.setAttribute('aria-hidden', 'true');
+      }
+    }
+  }
+
+  function loadScriptSequential(src) {
+    return new Promise((resolve, reject) => {
+      if (document.querySelector(`script[data-gated-src="${src}"]`)) {
+        resolve();
+        return;
+      }
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = false;
+      s.setAttribute('data-gated-src', src);
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error(`Failed to load ${src}`));
+      document.body.appendChild(s);
+    });
+  }
+
+  async function ensureAdminModulesLoaded() {
+    if (adminModulesLoaded) return true;
+    if (adminModulesPromise) return adminModulesPromise;
+    adminModulesPromise = (async () => {
+      try {
+        for (const src of GATED_ADMIN_SCRIPTS) {
+          await loadScriptSequential(src);
+        }
+
+        // Hook up pages namespace & event aliases for compatibility
+        window.R59.pages = window.R59.pages || {};
+        if (window.R59.schedule) {
+          window.R59.pages.schedule = window.R59.schedule;
+          window.R59.pages.schedule.initScheduleEvents = window.R59.schedule.initScheduleListeners;
+        }
+        if (window.R59.payments) {
+          window.R59.pages.payments = window.R59.payments;
+          window.R59.pages.payments.initPaymentEvents = window.R59.payments.initPaymentsListeners;
+        }
+        if (window.R59.photography) {
+          window.R59.pages.photography = window.R59.photography;
+          window.R59.pages.photography.initPhotographyEvents = window.R59.photography.initPhotographyListeners;
+        }
+        if (window.R59.dashboard) {
+          window.R59.pages.dashboard = window.R59.dashboard;
+          window.R59.pages.dashboard.initDashboardEvents = window.R59.dashboard.initDashboardListeners;
+        }
+
+        window.R59.pages?.schedule?.initScheduleEvents?.();
+        window.R59.pages?.payments?.initPaymentEvents?.();
+        window.R59.pages?.photography?.initPhotographyEvents?.();
+        window.R59.pages?.dashboard?.initDashboardEvents?.();
+
+        adminModulesLoaded = true;
+        return true;
+      } catch (err) {
+        console.error('[R59 Admin] Failed to load gated admin modules:', err);
+        adminModulesPromise = null;
+        return false;
+      }
+    })();
+    return adminModulesPromise;
+  }
+
   function renderAll() {
-    const currentState = window.R59.state.getState();
+    const currentState = window.R59.state ? window.R59.state.getState() : {};
 
     // Bind basic text fields
     $$('[data-bind]').forEach(el => {
@@ -23,33 +111,35 @@
 
     // Render each domain
     if (window.R59.photography) {
-      window.R59.photography.updateBioCount();
-      window.R59.photography.renderSocial();
-      window.R59.photography.renderImages();
+      window.R59.photography.updateBioCount?.();
+      window.R59.photography.renderSocial?.();
+      window.R59.photography.renderImages?.();
     }
 
     if (window.R59.payments) {
-      window.R59.payments.renderPricing();
-      window.R59.payments.renderPackages();
-      window.R59.payments.resetCouponForm();
-      window.R59.payments.renderCoupons();
+      window.R59.payments.renderPricing?.();
+      window.R59.payments.renderPackages?.();
+      window.R59.payments.resetCouponForm?.();
+      window.R59.payments.renderCoupons?.();
     }
 
     if (window.R59.schedule) {
-      window.R59.schedule.renderCalendar();
-      window.R59.schedule.renderAvailability();
-      window.R59.schedule.renderBookings();
-      window.R59.schedule.renderBlockedDates();
+      window.R59.schedule.renderCalendar?.();
+      window.R59.schedule.renderAvailability?.();
+      window.R59.schedule.renderBookings?.();
+      window.R59.schedule.renderBlockedDates?.();
     }
 
-    if (window.R59.dashboard) {
+    if (window.R59.pages?.dashboard?.renderOverview) {
+      window.R59.pages.dashboard.renderOverview();
+    } else if (window.R59.dashboard?.renderOverview) {
       window.R59.dashboard.renderOverview();
     }
   }
 
   function initSaveBar() {
     $('#save')?.addEventListener('click', () => {
-      if (window.R59.payments?.pricingIsInvalid()) {
+      if (window.R59.payments?.pricingIsInvalid?.()) {
         window.toast('Please enter valid amounts (prices 0 or more, down payment 0–100%) before saving');
         return;
       }
@@ -60,7 +150,7 @@
       window.R59.state.setLastSaved(new Date());
 
       // Re-lock pricing fields
-      window.R59.payments?.renderPricing();
+      window.R59.payments?.renderPricing?.();
       window.R59.state.syncStatus();
       if (window.R59.dashboard?.refreshOverview) window.R59.dashboard.refreshOverview();
 
@@ -101,7 +191,7 @@
     });
 
     window.addEventListener('beforeunload', e => {
-      if (window.R59.state.isDirty()) {
+      if (window.R59.state?.isDirty && window.R59.state.isDirty()) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -129,17 +219,17 @@
     function logout() {
       const drawer = $('#drawer');
       if (drawer && drawer.classList.contains('open')) {
-        window.R59.navigation.setDrawer(false);
+        window.R59.navigation?.setDrawer?.(false);
       }
 
       const doLogout = () => {
-        window.R59?.api?.client?.logout?.();
-        window.R59.apiClient?.setAuthToken(null);
-        document.body.classList.remove('authenticated');
+        window.R59.apiClient?.logout?.();
+        window.R59.apiClient?.clearAuthToken?.();
+        setWorkspaceAuthenticated(false);
         $('#login')?.classList.add('open');
         resetLoginForm();
-        window.R59.state.setDirty(false);
-        window.R59.state.syncStatus();
+        window.R59.state?.setDirty?.(false);
+        window.R59.state?.syncStatus?.();
         window.toast('Logged out');
         setTimeout(() => {
           const u = $('#lu');
@@ -156,8 +246,8 @@
     }
 
     window.addEventListener('r59:unauthorized', (e) => {
-      window.R59.apiClient?.setAuthToken(null);
-      document.body.classList.remove('authenticated');
+      window.R59.apiClient?.clearAuthToken?.();
+      setWorkspaceAuthenticated(false);
       $('#login')?.classList.add('open');
       resetLoginForm();
       const errEl = $('#loginError');
@@ -196,12 +286,8 @@
         submitBtn.textContent = 'Signing in...';
       }
 
-      let res;
       try {
-        res = await window.R59.apiClient.post('/admin/login', { email, password });
-        if (!res || !res.token) {
-          throw new Error('Authentication failed: No session token received.');
-        }
+        await window.R59.apiClient.login(email, password);
       } catch (err) {
         if (errEl) {
           errEl.textContent = err.message || 'Invalid email address or password.';
@@ -215,17 +301,32 @@
         return;
       }
 
+      const modulesLoaded = await ensureAdminModulesLoaded();
+      if (!modulesLoaded) {
+        if (errEl) {
+          errEl.textContent = 'Failed to load administrative modules. Please refresh and try again.';
+          errEl.style.display = 'block';
+        }
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Sign in';
+        }
+        return;
+      }
+
       // Login succeeded: transition UI immediately
-      window.R59.apiClient.setAuthToken(res.token);
-      document.body.classList.add('authenticated');
+      setWorkspaceAuthenticated(true);
       $('#login')?.classList.remove('open');
       resetLoginForm();
       renderAll();
-      window.R59.navigation.go('overview');
+      if (window.R59.pages?.dashboard?.renderOverview) {
+        window.R59.pages.dashboard.renderOverview();
+      }
+      window.R59.navigation?.go?.('overview');
       window.toast('Signed in');
 
       // Fetch dashboard data concurrently in background without blocking UI
-      loadInitialBackendData();
+      loadBackendData();
     });
   }
 
@@ -252,7 +353,7 @@
               category: s.category || 'General',
               active: s.is_active !== 0
             }));
-            window.R59.payments?.renderPackages();
+            window.R59.payments?.renderPackages?.();
           }
         })(),
 
@@ -302,9 +403,9 @@
               };
             });
             window.R59.state.setBookings(bookings);
-            window.R59.schedule?.renderBookings();
-            window.R59.schedule?.renderCalendar();
-            window.R59.dashboard?.renderOverview();
+            window.R59.schedule?.renderBookings?.();
+            window.R59.schedule?.renderCalendar?.();
+            window.R59.dashboard?.renderOverview?.();
           }
         })(),
 
@@ -313,9 +414,14 @@
           if (!window.R59.paymentsApi) return;
           const pricing = await window.R59.paymentsApi.getPricingSettings().catch(() => null);
           if (pricing && typeof pricing === 'object') {
+            const cleanPricing = pricing.data || pricing;
             const currentState = window.R59.state.getState();
-            currentState.pricing = { ...currentState.pricing, ...pricing };
-            window.R59.payments?.renderPricing();
+            currentState.pricing = {
+              baseFee: Number(cleanPricing.baseFee ?? currentState.pricing.baseFee ?? 0),
+              perPerson: Number(cleanPricing.perPerson ?? currentState.pricing.perPerson ?? 0),
+              depositPercent: Number(cleanPricing.depositPercent ?? currentState.pricing.depositPercent ?? 50)
+            };
+            window.R59.payments?.renderPricing?.();
           }
         })(),
 
@@ -334,7 +440,7 @@
               description: c.description || '',
               active: c.active !== undefined ? Boolean(c.active) : c.is_active !== 0
             }));
-            window.R59.payments?.renderCoupons();
+            window.R59.payments?.renderCoupons?.();
           }
         })(),
 
@@ -344,7 +450,7 @@
           const avail = await window.R59.scheduleApi.getWeeklyAvailability().catch(() => null);
           if (Array.isArray(avail) && avail.length > 0) {
             window.R59.state.setAvailability(avail);
-            window.R59.schedule?.renderAvailability();
+            window.R59.schedule?.renderAvailability?.();
           }
         })(),
 
@@ -363,8 +469,8 @@
               return { id: d.id, date: dateStr, dateStr, dateFormatted, reason: d.reason || '' };
             });
             window.R59.state.setBlockedDates(normalizedBlocked);
-            window.R59.schedule?.renderBlockedDates();
-            window.R59.schedule?.renderCalendar();
+            window.R59.schedule?.renderBlockedDates?.();
+            window.R59.schedule?.renderCalendar?.();
           }
         })(),
 
@@ -391,20 +497,24 @@
             : Promise.resolve(null)).catch(() => null);
           if (Array.isArray(photosRes) && photosRes.length > 0) {
             const currentState = window.R59.state.getState();
-            const mappedPhotos = photosRes.map((p, idx) => ({
-              id: p.id ?? idx + 1,
-              src: p.url || p.src || p.r2_object_key || '',
-              r2_object_key: p.r2_object_key || '',
-              label: p.title || p.label || p.alt_text || 'Photo',
-              alt: p.alt_text || p.alt || p.title || 'Photo',
-              cat: p.category || p.cat || 'Portrait',
-              display_order: p.display_order ?? idx,
-              is_featured: Boolean(p.is_featured)
-            }));
+            const mappedPhotos = photosRes.map((p, idx) => {
+              const rawUrl = p.url || p.public_url || p.src || (p.r2_object_key ? `/api/media/${String(p.r2_object_key).replace(/^\/+/, '')}` : '');
+              return {
+                id: p.id ?? idx + 1,
+                src: rawUrl,
+                url: rawUrl,
+                r2_object_key: p.r2_object_key || '',
+                label: p.title || p.label || p.alt_text || 'Photo',
+                alt: p.alt_text || p.alt || p.title || 'Photo',
+                cat: p.category || p.cat || 'Portrait',
+                display_order: p.display_order ?? idx,
+                is_featured: Boolean(p.is_featured)
+              };
+            });
             currentState.photos = mappedPhotos;
             currentState.images = currentState.images || { main: [], gallery: [], about: [] };
             currentState.images.gallery = mappedPhotos;
-            window.R59.photography?.renderImages();
+            window.R59.photography?.renderImages?.();
           }
         })()
       ]);
@@ -416,24 +526,41 @@
     }
   }
 
+  const loadBackendData = loadInitialBackendData;
   const initLogin = initAuth;
   const initGlobalActions = initSaveBar;
 
   // App initialization
-  document.addEventListener('DOMContentLoaded', () => {
-    // 1. Initialize component listeners
+  document.addEventListener('DOMContentLoaded', async () => {
+    // 1. Initialize static shell component listeners only
     window.R59.modal?.initModalListeners?.();
     window.R59.navigation?.initNavigation?.();
-    window.R59.payments?.initPaymentsListeners?.();
-    window.R59.photography?.initPhotographyListeners?.();
-    window.R59.schedule?.initScheduleListeners?.();
-    window.R59.dashboard?.initDashboardListeners?.();
 
-    document.body.classList.remove('authenticated');
-    window.R59.apiClient?.clearAuthToken?.();
     initLogin();
     initGlobalActions();
 
+    if (window.R59.apiClient?.getAuthToken()) {
+      const valid = await window.R59.apiClient.verifySession();
+      if (valid) {
+        const modulesLoaded = await ensureAdminModulesLoaded();
+        if (modulesLoaded) {
+          setWorkspaceAuthenticated(true);
+          $('#login')?.classList.remove('open');
+          renderAll();
+          if (window.R59.pages?.dashboard?.renderOverview) {
+            window.R59.pages.dashboard.renderOverview();
+          }
+          window.R59.navigation?.go?.('overview');
+          loadBackendData();
+          return;
+        }
+      }
+    }
+
+    // Not authenticated (new tab, invalid session, or modules failed)
+    window.R59.apiClient?.clearAuthToken?.();
+    window.R59.apiClient?.logout?.();
+    setWorkspaceAuthenticated(false);
     const loginEl = $('#login');
     if (loginEl) loginEl.classList.add('open');
     const luEl = $('#lu');
@@ -448,7 +575,10 @@
   window.R59 = window.R59 || {};
   window.R59.app = {
     renderAll,
-    loadInitialBackendData
+    loadInitialBackendData,
+    loadBackendData,
+    ensureAdminModulesLoaded,
+    setWorkspaceAuthenticated
   };
   window.renderAll = renderAll;
 })();

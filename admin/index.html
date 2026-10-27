@@ -23,6 +23,7 @@
 
 <body>
 
+  <div class="app" inert aria-hidden="true">
   <header class="topbar">
     <button class="burger" id="burger" aria-label="Open menu" aria-expanded="false"
       aria-controls="drawer"><span></span></button>
@@ -207,7 +208,7 @@
       <div class="preview-bio" aria-label="About section preview">
         <img id="previewImg" alt="">
         <div>
-          <div class="hint" style="color:#666">Live preview · About me</div>
+          <div class="hint">Live preview · About me</div>
           <h3>The face <em>behind the camera</em></h3>
           <p id="previewBio"></p>
         </div>
@@ -674,6 +675,7 @@
       </div>
     </div>
   </div>
+  </div>
 
   <!-- Login -->
   <div class="login" id="login" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
@@ -690,27 +692,18 @@
     </form>
   </div>
 
-
-
-
-
-  <!-- Application Scripts -->
+  <!-- Core State & API Client -->
+  <script src="assets/js/state.js"></script>
   <script src="assets/js/api/apiClient.js"></script>
-  <script src="assets/js/api/bookingsApi.js"></script>
-  <script src="assets/js/api/paymentsApi.js"></script>
-  <script src="assets/js/api/packagesApi.js"></script>
-  <script src="assets/js/api/photographyApi.js"></script>
-  <script src="assets/js/api/scheduleApi.js"></script>
+
+  <!-- UI Components -->
+  <script src="assets/js/components/notifications.js"></script>
   <script src="assets/js/components/modal.js"></script>
   <script src="assets/js/components/confirmation.js"></script>
-  <script src="assets/js/components/notifications.js"></script>
   <script src="assets/js/components/formValidation.js"></script>
-  <script src="assets/js/state.js"></script>
+
+  <!-- Navigation & Bootstrapper (Protected API & Page modules load dynamically after authentication) -->
   <script src="assets/js/navigation.js"></script>
-  <script src="assets/js/pages/dashboard.js"></script>
-  <script src="assets/js/pages/payments.js"></script>
-  <script src="assets/js/pages/photography.js"></script>
-  <script src="assets/js/pages/schedule.js"></script>
   <script src="assets/js/app.js"></script>
 </body>
 

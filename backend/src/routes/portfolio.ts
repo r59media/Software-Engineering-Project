@@ -1,6 +1,18 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth } from '../middleware/auth'
+import { adminAuth, hasForbiddenPaymentFields } from '../middleware/auth'
+
+function isValidId(id: string | undefined): boolean {
+  return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
+}
+
+export function resolveMediaUrl(key: string): string {
+  if (!key) return ''
+  if (key.startsWith('https://') || key.startsWith('http://') || key.startsWith('/') || key.startsWith('data:image/')) {
+    return key
+  }
+  return `/api/media/${key.replace(/^\/+/, '')}`
+}
 
 export const portfolioRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -9,12 +21,36 @@ portfolioRouter.get('/', async (c) => {
   try {
     const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100))
     const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
+    const category = (c.req.query('category') || '').trim()
 
-    const { results } = await c.env.DB.prepare(
-      'SELECT id, r2_object_key, category, alt_text, display_order, is_featured FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC LIMIT ? OFFSET ?'
-    ).bind(limit, offset).all()
+    let results: any[] = []
 
-    return c.json({ images: results, limit, offset, status: 'success', data: results })
+    if (category && category.toLowerCase() !== 'all') {
+      if (category.toLowerCase() === 'hero') {
+        const queryRes = await c.env.DB.prepare(
+          'SELECT id, r2_object_key, category, alt_text, display_order, is_featured FROM Portfolio_Images WHERE is_active = 1 AND (LOWER(category) = \'hero\' OR is_featured = 1) ORDER BY display_order ASC LIMIT ? OFFSET ?'
+        ).bind(limit, offset).all()
+        results = queryRes.results || []
+      } else {
+        const queryRes = await c.env.DB.prepare(
+          'SELECT id, r2_object_key, category, alt_text, display_order, is_featured FROM Portfolio_Images WHERE is_active = 1 AND LOWER(category) = LOWER(?) ORDER BY display_order ASC LIMIT ? OFFSET ?'
+        ).bind(category, limit, offset).all()
+        results = queryRes.results || []
+      }
+    } else {
+      const queryRes = await c.env.DB.prepare(
+        'SELECT id, r2_object_key, category, alt_text, display_order, is_featured FROM Portfolio_Images WHERE is_active = 1 ORDER BY display_order ASC LIMIT ? OFFSET ?'
+      ).bind(limit, offset).all()
+      results = queryRes.results || []
+    }
+
+    const mapped = results.map((r: any) => ({
+      ...r,
+      url: resolveMediaUrl(r.r2_object_key),
+      public_url: resolveMediaUrl(r.r2_object_key)
+    }))
+
+    return c.json({ images: mapped, limit, offset, status: 'success', data: mapped })
   } catch (e: any) {
     return c.json({
       error: {
@@ -53,11 +89,23 @@ portfolioRouter.post('/', adminAuth, async (c) => {
       'INSERT INTO Portfolio_Images (r2_object_key, category, alt_text, display_order, is_featured) VALUES (?, ?, ?, ?, ?)'
     ).bind(cleanKey, category, alt_text, display_order, is_featured ? 1 : 0).run()
 
+    const mediaUrl = resolveMediaUrl(cleanKey)
     return c.json({
       success: true,
       status: 'success',
       id: result.meta.last_row_id,
-      data: { id: result.meta.last_row_id, r2_object_key: cleanKey, category, alt_text, display_order }
+      url: mediaUrl,
+      public_url: mediaUrl,
+      data: {
+        id: result.meta.last_row_id,
+        r2_object_key: cleanKey,
+        category,
+        alt_text,
+        display_order,
+        is_featured: is_featured ? 1 : 0,
+        url: mediaUrl,
+        public_url: mediaUrl
+      }
     })
   } catch (e: any) {
     return c.json({
@@ -112,7 +160,19 @@ portfolioRouter.put('/order', adminAuth, async (c) => {
 portfolioRouter.put('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const body = await c.req.json()
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+          details: []
+        }
+      }, 400)
+    }
 
     const existing = await c.env.DB.prepare('SELECT * FROM Portfolio_Images WHERE id = ?').bind(id).first<any>()
     if (!existing) {
@@ -154,6 +214,9 @@ portfolioRouter.put('/:id', adminAuth, async (c) => {
 portfolioRouter.delete('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
     const existing = await c.env.DB.prepare(
       'SELECT id, r2_object_key FROM Portfolio_Images WHERE id = ?'
     ).bind(id).first<{ id: number; r2_object_key: string }>()

@@ -21,6 +21,88 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return mismatch === 0
 }
 
+const PBKDF2_PREFIX = 'pbkdf2_sha256'
+const PBKDF2_ITERATIONS = 100_000
+const PBKDF2_KEY_BITS = 256
+const SALT_BYTES = 16
+
+function bytesToHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+function hexToBytes(hex: string): Uint8Array | null {
+  if (!hex || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) return null
+  const out = new Uint8Array(hex.length / 2)
+  for (let i = 0; i < hex.length; i += 2) {
+    out[i / 2] = parseInt(hex.substring(i, i + 2), 16)
+  }
+  return out
+}
+
+async function derivePbkdf2Hex(password: string, salt: Uint8Array, iterations: number): Promise<string> {
+  const encoder = new TextEncoder()
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  )
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-256',
+      salt,
+      iterations
+    },
+    baseKey,
+    PBKDF2_KEY_BITS
+  )
+  return bytesToHex(new Uint8Array(derivedBits))
+}
+
+/**
+ * Generates a salted PBKDF2-SHA256 password hash:
+ * Format: pbkdf2_sha256$100000$<16-byte-random-salt-hex>$<32-byte-hash-hex>
+ */
+export async function hashPassword(password: string, iterations: number = PBKDF2_ITERATIONS): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES))
+  const hashHex = await derivePbkdf2Hex(password, salt, iterations)
+  return `${PBKDF2_PREFIX}$${iterations}$${bytesToHex(salt)}$${hashHex}`
+}
+
+/**
+ * Verifies a candidate password against either:
+ * 1. A salted PBKDF2-SHA256 hash (`pbkdf2_sha256$<iterations>$<saltHex>$<hashHex>`), OR
+ * 2. A legacy secret (for seamless first-login migration, after which it is upgraded to a salted hash in D1).
+ */
+export async function verifyPassword(
+  candidatePassword: string,
+  storedSecretOrHash: string
+): Promise<{ matches: boolean; needsHashUpgrade: boolean }> {
+  if (!candidatePassword || !storedSecretOrHash) {
+    return { matches: false, needsHashUpgrade: false }
+  }
+  if (storedSecretOrHash.startsWith(`${PBKDF2_PREFIX}$`)) {
+    const parts = storedSecretOrHash.split('$')
+    if (parts.length !== 4) return { matches: false, needsHashUpgrade: false }
+    const iterations = Number(parts[1])
+    const salt = hexToBytes(parts[2])
+    const expectedHashHex = parts[3].toLowerCase()
+    if (!iterations || iterations < 10_000 || iterations > 1_000_000 || !salt) {
+      return { matches: false, needsHashUpgrade: false }
+    }
+    const derivedHex = await derivePbkdf2Hex(candidatePassword, salt, iterations)
+    return {
+      matches: timingSafeEqual(derivedHex, expectedHashHex),
+      needsHashUpgrade: false
+    }
+  }
+  // Legacy raw secret comparison (constant-time) — triggers automatic upgrade to salted PBKDF2 hash in D1
+  const matches = timingSafeEqual(candidatePassword, storedSecretOrHash)
+  return { matches, needsHashUpgrade: matches }
+}
+
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
 
 /**
@@ -122,18 +204,84 @@ export function isTokenRevoked(token: string): boolean {
 }
 
 /**
- * Extracts the session token strictly from Authorization: Bearer <token>.
- * Does NOT fall back to the r59_session cookie, ensuring an old browser cookie
- * cannot authenticate requests without an explicit in-memory Bearer token.
+ * Parses a named cookie from the Cookie header.
+ */
+export function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null
+  const parts = cookieHeader.split(';')
+  for (const part of parts) {
+    const eqIdx = part.indexOf('=')
+    if (eqIdx === -1) continue
+    const k = part.substring(0, eqIdx).trim()
+    if (k === name) {
+      const val = part.substring(eqIdx + 1).trim()
+      if (val) {
+        try {
+          return decodeURIComponent(val)
+        } catch {
+          return val
+        }
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Extracts the session token from:
+ * 1. Authorization: Bearer <token> (for API clients/tests), OR
+ * 2. HttpOnly cookie `r59_session` (for browser Admin SPA).
  */
 export function extractSessionToken(c: Context): string | null {
   const auth = c.req.header('Authorization')
   if (auth && auth.startsWith('Bearer ')) {
     const token = auth.substring(7).trim()
-    if (token) return token
+    if (token && token !== 'cookie') return token
   }
+  const cookieToken = getCookieValue(c.req.header('Cookie'), 'r59_session')
+  if (cookieToken) return cookieToken
   return null
 }
+
+/**
+ * Strictly extracts client IP from Cloudflare's non-spoofable CF-Connecting-IP header.
+ * Explicitly ignores X-Forwarded-For and X-Real-IP.
+ */
+export function getTrustedClientIp(c: Context): string {
+  return (c.req.header('cf-connecting-ip') || 'unknown').trim()
+}
+
+/**
+ * PCI / Bank Data Guard: Detects raw credit card numbers (13-19 digit PANs)
+ * or forbidden raw card/bank keys in request payloads.
+ */
+const FORBIDDEN_PAYMENT_KEYS = new Set([
+  'cardnumber', 'card_number', 'pan', 'cvv', 'cvc', 'cvv2', 'csc',
+  'securitycode', 'security_code', 'pin', 'accountnumber', 'account_number',
+  'routingnumber', 'routing_number', 'iban', 'swift', 'bankaccount', 'bank_account'
+])
+
+export function hasForbiddenPaymentFields(obj: unknown): boolean {
+  if (!obj || typeof obj !== 'object') return false
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    const normKey = k.toLowerCase().replace(/[\s_-]/g, '')
+    if (FORBIDDEN_PAYMENT_KEYS.has(k.toLowerCase()) || FORBIDDEN_PAYMENT_KEYS.has(normKey)) {
+      return true
+    }
+    if (typeof v === 'string') {
+      const digitsOnly = v.replace(/[\s-]/g, '')
+      if (/^\d{13,19}$/.test(digitsOnly)) {
+        return true
+      }
+    } else if (typeof v === 'object' && v !== null) {
+      if (hasForbiddenPaymentFields(v)) return true
+    }
+  }
+  return false
+}
+
+let lastDbCheckMs = 0
+const DB_CACHE_TTL_MS = 30_000
 
 /**
  * Revokes a session token in D1 database and in-memory cache across Cloudflare Worker isolates.
@@ -141,6 +289,7 @@ export function extractSessionToken(c: Context): string | null {
 export async function revokeTokenInDb(db: D1Database | undefined, token: string): Promise<void> {
   if (!token) return
   revokeSessionToken(token)
+  lastDbCheckMs = 0
   if (!db) return
 
   try {
@@ -151,39 +300,16 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
 
     let revokedMap: Record<string, number> = {}
 
-    // Read existing revoked tokens (supporting key/value and setting_key/setting_value)
-    let rawValue: string | null = null
+    // Read existing revoked tokens using setting_key / setting_value
     try {
-      const row = await db.prepare("SELECT value FROM Admin_Settings WHERE key = 'revoked_tokens'").first<{ value: string }>()
-      if (row && typeof row.value === 'string') {
-        rawValue = row.value
-      }
-    } catch {
-      try {
-        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
-        if (row && typeof row.setting_value === 'string') {
-          rawValue = row.setting_value
-        }
-      } catch {}
-    }
-
-    if (!rawValue) {
-      try {
-        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
-        if (row && typeof row.setting_value === 'string') {
-          rawValue = row.setting_value
-        }
-      } catch {}
-    }
-
-    if (rawValue) {
-      try {
-        const parsed = JSON.parse(rawValue)
+      const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
+      if (row && typeof row.setting_value === 'string') {
+        const parsed = JSON.parse(row.setting_value)
         if (parsed && typeof parsed === 'object') {
           revokedMap = parsed
         }
-      } catch {}
-    }
+      }
+    } catch {}
 
     // Prune entries where expiry <= Date.now()
     const cleanedMap: Record<string, number> = {}
@@ -208,21 +334,9 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
 
     const jsonStr = JSON.stringify(cleanedMap)
 
-    let saved = false
-    try {
-      await db.prepare(
-        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('revoked_tokens', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-      ).bind(jsonStr).run()
-      saved = true
-    } catch {}
-
-    if (!saved) {
-      try {
-        await db.prepare(
-          "INSERT OR REPLACE INTO Admin_Settings (key, value) VALUES ('revoked_tokens', ?)"
-        ).bind(jsonStr).run()
-      } catch {}
-    }
+    await db.prepare(
+      "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('revoked_tokens', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+    ).bind(jsonStr).run()
   } catch (err) {
     // DB errors should never crash logout
     console.warn('[auth] DB token revocation warning:', err)
@@ -235,43 +349,31 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
 export async function isTokenRevokedInDb(db: D1Database | undefined, token: string): Promise<boolean> {
   if (!token) return true
   if (isTokenRevoked(token)) return true
+
+  const parts = token.split('.')
+  const sig = parts.length > 1 ? parts[1] : token
+  if (isTokenRevoked(sig)) return true
+
+  const now = Date.now()
+  if (now - lastDbCheckMs < DB_CACHE_TTL_MS) {
+    return false
+  }
+
   if (!db) return false
 
   try {
-    const parts = token.split('.')
-    const sig = parts.length > 1 ? parts[1] : token
-    const now = Date.now()
+    const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
+    lastDbCheckMs = now
 
-    let rawValue: string | null = null
-    try {
-      const row = await db.prepare("SELECT value FROM Admin_Settings WHERE key = 'revoked_tokens'").first<{ value: string }>()
-      if (row && typeof row.value === 'string') {
-        rawValue = row.value
-      }
-    } catch {
-      try {
-        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
-        if (row && typeof row.setting_value === 'string') {
-          rawValue = row.setting_value
-        }
-      } catch {}
-    }
-
-    if (!rawValue) {
-      try {
-        const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
-        if (row && typeof row.setting_value === 'string') {
-          rawValue = row.setting_value
-        }
-      } catch {}
-    }
-
-    if (rawValue) {
-      const parsed = JSON.parse(rawValue) as Record<string, number>
+    if (row && typeof row.setting_value === 'string') {
+      const parsed = JSON.parse(row.setting_value) as Record<string, number>
       if (parsed && typeof parsed === 'object') {
-        const exp = parsed[sig]
-        if (typeof exp === 'number' && exp > now) {
-          revokeSessionToken(token)
+        for (const [key, exp] of Object.entries(parsed)) {
+          if (typeof exp === 'number' && exp > now) {
+            revokedTokens.set(key, exp)
+          }
+        }
+        if (isTokenRevoked(token) || isTokenRevoked(sig)) {
           return true
         }
       }
@@ -326,6 +428,27 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
 
   const session = await verifySessionToken(token, signingSecret)
   if (session.valid) {
+    const method = c.req.method.toUpperCase()
+    const hasBearer = Boolean(c.req.header('Authorization')?.startsWith('Bearer '))
+    if (!hasBearer && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+      const xrw = c.req.header('X-Requested-With')
+      const secFetchSite = c.req.header('Sec-Fetch-Site')
+      const origin = c.req.header('Origin')
+      const reqOrigin = new URL(c.req.url).origin
+      const csrfSafe =
+        xrw === 'XMLHttpRequest' ||
+        secFetchSite === 'same-origin' ||
+        (origin && origin === reqOrigin)
+      if (!csrfSafe) {
+        return c.json({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'CSRF validation failed for cookie-authenticated request.',
+            details: []
+          }
+        }, 403)
+      }
+    }
     return await next()
   }
 

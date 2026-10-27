@@ -102,7 +102,9 @@ uploadRouter.post('/', adminAuth, async (c) => {
     return c.json({
       uploadUrl: signedUrl,
       fileKey: uniqueKey,
-      key: uniqueKey
+      key: uniqueKey,
+      publicUrl: `/api/media/${uniqueKey}`,
+      url: `/api/media/${uniqueKey}`
     })
   } catch (e: any) {
     return c.json({
