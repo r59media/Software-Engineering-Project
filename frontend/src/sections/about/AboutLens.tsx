@@ -1,4 +1,5 @@
-import { Component, lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { LensTransitionContext } from '../transition/LensTransitionContext'
 import { aboutLens } from '../../config/aboutLens'
 
 const LensScene = lazy(() => import('./LensScene'))
@@ -7,13 +8,15 @@ function LensFallback() {
   return <div className="about__lens-fallback" data-lens-state="fallback" />
 }
 
-class LensBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+class LensBoundary extends Component<{ children: ReactNode; onFailure?: () => void }, { failed: boolean }> {
   state = { failed: false }
   static getDerivedStateFromError() { return { failed: true } }
+  componentDidCatch() { this.props.onFailure?.() }
   render() { return this.state.failed ? <LensFallback /> : this.props.children }
 }
 
 export function AboutLens() {
+  const transition = useContext(LensTransitionContext)
   const host = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
   const [mobile, setMobile] = useState(() => window.matchMedia(aboutLens.mobileQuery).matches)
@@ -32,9 +35,9 @@ export function AboutLens() {
   const url = mobile ? aboutLens.mobileUrl : aboutLens.desktopUrl
   return <div ref={host} className="about__lens" data-about-part="lens-transition" aria-hidden="true">
     <div className="about__motion" data-about-motion="lens-transition">
-      <LensBoundary key={url}>
+      <LensBoundary key={url} onFailure={transition?.fail}>
         <Suspense fallback={<LensFallback />}>
-          {ready ? <LensScene url={url} aperture={aboutLens.aperture} /> : <LensFallback />}
+          {ready ? <LensScene url={url} aperture={aboutLens.aperture} transition={transition} /> : <LensFallback />}
         </Suspense>
       </LensBoundary>
     </div>
