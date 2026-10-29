@@ -83,8 +83,9 @@ function LensModel({ url, aperture, transition }: LensProps) {
     const blades: { mesh: Mesh; rest: number; travel: number }[] = []
     model.traverse(object => {
       if (!(object instanceof Mesh) || !object.name.startsWith('IrisBlade_')) return
-      blades.push({ mesh: object, rest: object.userData.irisRestAngle,
-        travel: object.userData.irisTravelAngle })
+      const rest = typeof object.userData.irisRestAngle === 'number' ? object.userData.irisRestAngle : object.rotation.z
+      const travel = typeof object.userData.irisTravelAngle === 'number' ? object.userData.irisTravelAngle : aboutLens.iris.travelAngle
+      blades.push({ mesh: object, rest, travel })
     })
     const update = (value: number) => {
       const opening = Math.min(1, Math.max(0, value))

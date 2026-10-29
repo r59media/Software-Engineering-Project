@@ -1,5 +1,9 @@
+.lens-transition {
+  overflow: clip;
+}
 .lens-transition[data-enabled="true"] .lens-transition__stage {
   position: sticky;
+  overflow: clip;
 }
 .lens-transition[data-zooming="true"] .about {
   overflow: visible;
@@ -15,21 +19,22 @@
 }
 .lens-transition[data-enabled="true"] .about__lens {
   z-index: 5;
-  transform-origin: center;
-  will-change: transform;
-}
-@media (prefers-reduced-motion: reduce) {
-  .lens-transition .about__lens { will-change: auto; }
 }
 
 .lens-transition[data-enabled="true"] .about__lens > .about__motion {
   position: absolute;
-  top: 0;
-  left: 0;
+  top: 50%;
+  left: 50%;
   width: 960px;
   height: 960px;
+  margin-top: -480px;
+  margin-left: -480px;
+  transform-origin: center;
   transform: scale(var(--lens-render-scale, 0.166667));
-  transform-origin: top left;
+  will-change: transform;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lens-transition .about__lens > .about__motion { will-change: auto; }
 }
 .lens-transition__skip {
   position: absolute;

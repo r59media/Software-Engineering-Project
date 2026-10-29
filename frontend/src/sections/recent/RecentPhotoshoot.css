@@ -33,14 +33,14 @@
 .photo-viewer__close { top: 1rem; right: 1rem; font-size: 2.5rem; line-height: 1; }
 .photo-viewer__count { position: absolute; bottom: 1rem; left: 50%; transform: translateX(-50%); margin: 0; font-size: var(--text-caption); }
 @media (max-width: 1000px) {
-  .recent__composition { padding-block: 3rem; }
-  .recent__stage { height: min(100cqw, 38rem); }
-  .recent__slot { width: min(48cqw, 18.5rem); height: min(72cqw, 28rem); top: 12cqw; }
-  .recent__slot[data-recent-slot="0"] { top: 8cqw; width: min(52cqw, 20rem); height: min(80cqw, 30.8rem); z-index: 1; }
+  .recent__composition { padding-block: min(2rem, 3svh); }
+  .recent__stage { height: min(100cqw, 52svh, 34rem); }
+  .recent__slot { width: min(48cqw, 28svh, 16rem); height: min(72cqw, 42svh, 24rem); top: min(8cqw, 5svh); }
+  .recent__slot[data-recent-slot="0"] { top: min(5cqw, 3svh); width: min(52cqw, 31svh, 17.5rem); height: min(80cqw, 47svh, 27rem); z-index: 1; }
   .recent__slot[data-recent-slot="-1"] { left: -10%; }
   .recent__slot[data-recent-slot="1"] { left: 110%; }
   .recent__slot[data-recent-slot="-2"], .recent__slot[data-recent-slot="2"] { display: none; }
-  .recent__heading { margin-top: 1.5rem; font-size: clamp(2rem, 8.5cqw, 3.75rem); padding-inline: 1rem; }
+  .recent__heading { margin-top: min(1rem, 2svh); font-size: min(clamp(1.75rem, 8cqw, 3rem), 6.5svh); padding-inline: 1rem; }
   .photo-viewer__image { top: 12%; height: 72%; width: calc(100% - 6rem); }
   .photo-viewer .photo-viewer__previous { left: 0; width: 64px; height: 112px; top: calc(50% - 56px); }
   .photo-viewer .photo-viewer__next { right: 0; width: 64px; height: 112px; top: calc(50% - 56px); }
