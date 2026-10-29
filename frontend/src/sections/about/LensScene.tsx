@@ -3,6 +3,7 @@ import { Canvas, useLoader, useThree } from '@react-three/fiber'
 import { Mesh, PMREMGenerator } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
+import type { LensTransitionController } from '../transition/LensTransitionContext'
 import { aboutLens } from '../../config/aboutLens'
 
 function StudioLighting() {
@@ -27,7 +28,9 @@ function StudioLighting() {
   </>
 }
 
-function LensModel({ url, aperture }: { url: string; aperture: number }) {
+type LensProps = { url: string; aperture: number; transition?: LensTransitionController | null }
+
+function LensModel({ url, aperture, transition }: LensProps) {
   const gltf = useLoader(GLTFLoader, url, loader => {
     loader.register(parser => ({
       name: 'R59LensMetadata',
@@ -46,22 +49,34 @@ function LensModel({ url, aperture }: { url: string; aperture: number }) {
   const model = useMemo(() => gltf.scene.clone(true), [gltf.scene])
   const invalidate = useThree(state => state.invalidate)
   useLayoutEffect(() => {
+    const blades: { mesh: Mesh; rest: number; travel: number }[] = []
     model.traverse(object => {
-      if (!(object instanceof Mesh)) return
-      const index = object.morphTargetDictionary?.ApertureOpen
-      if (index !== undefined && object.morphTargetInfluences) {
-        object.morphTargetInfluences[index] = Math.min(1, Math.max(0, aperture))
-      }
+      if (!(object instanceof Mesh) || !object.name.startsWith('IrisBlade_')) return
+      blades.push({ mesh: object, rest: object.userData.irisRestAngle,
+        travel: object.userData.irisTravelAngle })
     })
-    invalidate()
-  }, [model, aperture, invalidate])
+    const update = (value: number) => {
+      const opening = Math.min(1, Math.max(0, value))
+      for (const { mesh, rest, travel } of blades) mesh.rotation.z = rest + opening * travel
+      invalidate()
+    }
+    update(aperture)
+    transition?.ready()
+    const unsubscribe = transition?.subscribe(update)
+    return () => {
+      unsubscribe?.()
+      for (const { mesh, rest } of blades) mesh.rotation.z = rest
+    }
+  }, [model, aperture, invalidate, transition])
   return <primitive object={model} dispose={null} />
 }
 
-export default function LensScene({ url, aperture }: { url: string; aperture: number }) {
+export default function LensScene({ url, aperture, transition }: LensProps) {
   return <Canvas
     className="about__lens-canvas"
+    onCreated={({ gl }) => { gl.domElement.addEventListener('webglcontextlost', () => transition?.fail(), { once: true }) }}
     frameloop="demand"
+    resize={{ offsetSize: true }}
     camera={aboutLens.camera}
     dpr={aboutLens.pixelRatio}
     scene={{ environmentIntensity: 0.35 }}
@@ -69,6 +84,6 @@ export default function LensScene({ url, aperture }: { url: string; aperture: nu
     fallback={<div className="about__lens-fallback" data-lens-state="fallback" />}
   >
     <StudioLighting />
-    <Suspense fallback={null}><LensModel url={url} aperture={aperture} /></Suspense>
+    <Suspense fallback={null}><LensModel url={url} aperture={aperture} transition={transition} /></Suspense>
   </Canvas>
 }

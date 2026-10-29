@@ -3,9 +3,9 @@ import './styles/global.css'
 import { fetchHeroSlides } from './api/client'
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
-import { RecentPhotoshoot } from './sections/recent/RecentPhotoshoot'
-import { About } from './sections/about/About'
+import { AboutToRecent } from './sections/transition/AboutToRecent'
 import { Hero } from './sections/hero/Hero'
+import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
 
 function App() {
@@ -23,16 +23,16 @@ function App() {
     return () => controller.abort()
   }, [])
 
-  return <div className="site-shell">
+  return <div id="top" className="site-shell">
     <a className="skip-link" href="#hero">Skip to content</a>
     <main>
       <div className="site-intro">
         <SiteHeader destinations={heroDestinations} />
         <Hero slides={slides} destinations={heroDestinations} />
       </div>
-      <About />
-      <RecentPhotoshoot />
+      <AboutToRecent />
     </main>
+    <SiteFooter />
   </div>
 }
 
