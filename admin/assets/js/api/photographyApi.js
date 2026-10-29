@@ -33,18 +33,18 @@
     },
 
     /**
-     * Request a presigned R2 upload URL for a file.
+     * Request an upload URL for a file.
      * Established backend endpoint: POST /upload-url
      */
     async getUploadUrl(filename, contentType) {
       return await window.R59.apiClient.post('/upload-url', {
         filename,
-        contentType
+        contentType: contentType || 'image/webp'
       });
     },
 
     /**
-     * Upload image binary directly to R2 bucket via presigned URL,
+     * Upload image binary directly to D1 media endpoint via uploadUrl,
      * then save image record.
      */
     async uploadImageFile(file, categoryOrOpts = 'All', title = '') {
@@ -53,15 +53,58 @@
         : (categoryOrOpts || {});
       const { category = 'All', altText = '', displayOrder = 0, isFeatured = false } = opts;
 
-      // 1. Get presigned upload URL from backend
-      const { uploadUrl, key, publicUrl } = await this.getUploadUrl(file.name, file.type);
+      // 1. Get upload URL from backend
+      const res = await this.getUploadUrl(file.name, file.type || 'image/webp');
+      const uploadUrl = res.uploadUrl || res.data?.uploadUrl;
+      const key = res.key || res.fileKey || res.data?.fileKey || res.data?.key;
+      const publicUrl = res.publicUrl || res.data?.publicUrl;
 
-      // 2. Upload file directly to R2
-      await fetch(uploadUrl, {
+      if (!uploadUrl) {
+        throw new Error('No upload URL returned from server.');
+      }
+
+      // 2. Upload file directly to D1 media storage endpoint (/api/media/*)
+      const uploadHeaders = {
+        'Content-Type': file.type || 'image/webp',
+        'X-Requested-With': 'XMLHttpRequest'
+      };
+
+      const authToken = window.R59?.apiClient?.getAuthToken?.();
+      if (authToken && authToken !== 'cookie') {
+        uploadHeaders['Authorization'] = `Bearer ${authToken}`;
+      }
+
+      // Resolve relative upload URL if apiClient has a base URL configured
+      let targetUploadUrl = uploadUrl;
+      if (uploadUrl.startsWith('/')) {
+        const baseUrl = window.R59?.apiClient?.getBaseUrl?.() || '';
+        if (baseUrl && (baseUrl.startsWith('http://') || baseUrl.startsWith('https://'))) {
+          const originMatch = baseUrl.match(/^(https?:\/\/[^/]+)/);
+          if (originMatch) {
+            targetUploadUrl = originMatch[1] + uploadUrl;
+          }
+        }
+      }
+
+      const putRes = await fetch(targetUploadUrl, {
         method: 'PUT',
-        headers: { 'Content-Type': file.type },
+        headers: uploadHeaders,
+        credentials: 'include',
         body: file
       });
+
+      if (!putRes.ok) {
+        let errMsg = `Upload failed with status ${putRes.status}: ${putRes.statusText}`;
+        try {
+          const errBody = await putRes.json();
+          if (errBody?.error?.message) {
+            errMsg = errBody.error.message;
+          } else if (errBody?.message) {
+            errMsg = errBody.message;
+          }
+        } catch {}
+        throw new Error(errMsg);
+      }
 
       // 3. Save portfolio database entry
       const saved = await this.saveImageRecord({

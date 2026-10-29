@@ -23,11 +23,4 @@ binding = "DB"
 database_name = "r59_db"
 database_id = "a774e6aa-39ec-4a9c-8206-48c57aeead87"
 
-# Note: To enable Cloudflare R2 image storage, activate R2 in Cloudflare Dashboard
-# for account b51ba851fbab2d337a876a81968423ae, create bucket 'r59-portfolio-images',
-# then uncomment the binding below:
-# [[r2_buckets]]
-# binding = "BUCKET"
-# bucket_name = "r59-portfolio-images"
-
 

@@ -210,7 +210,7 @@ portfolioRouter.put('/:id', adminAuth, async (c) => {
   }
 })
 
-// DELETE: Remove an image and clean up R2 object if bound (admin only)
+// DELETE: Remove an image and clean up Media_Storage from D1 (admin only)
 portfolioRouter.delete('/:id', adminAuth, async (c) => {
   try {
     const id = c.req.param('id')
@@ -227,8 +227,8 @@ portfolioRouter.delete('/:id', adminAuth, async (c) => {
 
     await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
 
-    if (c.env.BUCKET && existing.r2_object_key && existing.r2_object_key.startsWith('portfolio/')) {
-      await c.env.BUCKET.delete(existing.r2_object_key).catch(() => {})
+    if (existing.r2_object_key) {
+      await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(existing.r2_object_key).run().catch(() => {})
     }
 
     return c.json({ success: true, status: 'success' })

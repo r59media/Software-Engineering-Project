@@ -91,6 +91,15 @@ CREATE TABLE Blocked_Dates (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS Media_Storage (
+    file_key TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'image/webp',
+    data BLOB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (file_key, chunk_index)
+);
+
 -- Performance Indexes
 CREATE INDEX IF NOT EXISTS idx_slots_availability ON Schedule_Slots(is_booked, date, start_time);
 CREATE INDEX IF NOT EXISTS idx_portfolio_active ON Portfolio_Images(is_active, display_order);

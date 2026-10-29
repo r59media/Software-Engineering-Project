@@ -80,6 +80,7 @@ export function AboutToRecent() {
       recent.inert = progress < 1
       about.inert = progress >= 1
       host.dataset.progress = progress.toFixed(3)
+      host.dataset.zooming = String(progress > 0.005)
       subscribers.forEach(listener => listener(aperture))
     }
     const schedule = () => { if (!frame) frame = requestAnimationFrame(render) }
@@ -98,7 +99,7 @@ export function AboutToRecent() {
       x = lensBounds.left - aboutBounds.left + lensBounds.width / 2
       y = lensBounds.top - aboutBounds.top + lensBounds.height / 2
       size = lensBounds.width
-      lens.style.setProperty('--lens-render-scale', String(size / 640))
+      lens.style.setProperty('--lens-render-scale', String(size / 960))
       start = bounds.top + window.scrollY + height - viewport
       render()
     }
@@ -124,6 +125,7 @@ export function AboutToRecent() {
       window.removeEventListener('hashchange', navigate)
       recent.removeEventListener('focusin', focusRecent)
       host.style.height = ''; stage.style.top = ''; recent.style.cssText = ''; lens.style.transform = ''; lens.style.removeProperty('--lens-render-scale')
+      delete host.dataset.progress; delete host.dataset.zooming
       recent.inert = false; about.inert = false
       subscribers.forEach(listener => listener(0))
     }

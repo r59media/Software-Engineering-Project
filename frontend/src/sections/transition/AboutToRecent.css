@@ -1,9 +1,8 @@
 .lens-transition[data-enabled="true"] .lens-transition__stage {
   position: sticky;
 }
-.lens-transition[data-enabled="true"] .about {
-  overflow-x: clip;
-  overflow-y: visible;
+.lens-transition[data-zooming="true"] .about {
+  overflow: visible;
 }
 .lens-transition[data-enabled="true"] .lens-transition__recent {
   position: absolute;
@@ -27,9 +26,9 @@
   position: absolute;
   top: 0;
   left: 0;
-  width: 640px;
-  height: 640px;
-  transform: scale(var(--lens-render-scale, 0.25));
+  width: 960px;
+  height: 960px;
+  transform: scale(var(--lens-render-scale, 0.166667));
   transform-origin: top left;
 }
 .lens-transition__skip {

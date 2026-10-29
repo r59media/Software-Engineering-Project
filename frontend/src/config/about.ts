@@ -31,11 +31,11 @@ export const aboutImages = {
 } satisfies Record<string, AboutImage>
 
 export const aboutDecorations: readonly AboutImage[] = [
-  { id: 'top-lens', imageUrl: topLens, alt: '', width: 916, height: 1486 },
-  { id: 'top-right-lens', imageUrl: rightLens, alt: '', width: 1027, height: 1028 },
-  { id: 'bottom-right-camera', imageUrl: camera, alt: '', width: 1187, height: 1386 },
-  { id: 'left-flash', imageUrl: flash, alt: '', width: 596, height: 920 },
-  { id: 'left-memory-card', imageUrl: leftCard, alt: '', width: 573, height: 572 },
-  { id: 'top-memory-card', imageUrl: topCard, alt: '', width: 663, height: 663 },
-  { id: 'bottom-memory-card', imageUrl: bottomCard, alt: '', width: 544, height: 543 },
+  { id: 'top-lens', imageUrl: topLens, alt: '', width: 1848, height: 2988 },
+  { id: 'top-right-lens', imageUrl: rightLens, alt: '', width: 2070, height: 2072 },
+  { id: 'bottom-right-camera', imageUrl: camera, alt: '', width: 2390, height: 2788 },
+  { id: 'left-flash', imageUrl: flash, alt: '', width: 1208, height: 1856 },
+  { id: 'left-memory-card', imageUrl: leftCard, alt: '', width: 1162, height: 1160 },
+  { id: 'top-memory-card', imageUrl: topCard, alt: '', width: 1342, height: 1342 },
+  { id: 'bottom-memory-card', imageUrl: bottomCard, alt: '', width: 1104, height: 1102 },
 ]

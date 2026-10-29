@@ -10,17 +10,14 @@ import { checkoutRouter } from './routes/checkout'
 import { portfolioRouter } from './routes/portfolio'
 import { servicesRouter } from './routes/services'
 import { adminRouter } from './routes/admin'
-import { extractSessionToken, verifySessionToken, isTokenRevokedInDb } from './middleware/auth'
+import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth } from './middleware/auth'
 
 export type Bindings = {
   DB: D1Database
-  BUCKET?: R2Bucket
   ASSETS?: Fetcher
   SQUARE_ACCESS_TOKEN?: string
   SQUARE_ENVIRONMENT?: string
   SQUARE_LOCATION_ID?: string
-  R2_ACCESS_KEY_ID?: string
-  R2_SECRET_ACCESS_KEY?: string
   CLOUDFLARE_ACCOUNT_ID?: string
   ADMIN_SECRET?: string
   ADMIN_EMAIL?: string
@@ -38,7 +35,7 @@ app.use('*', async (c, next) => {
   await next()
   c.header(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://*.workers.dev https://*.r2.cloudflarestorage.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://*.workers.dev; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
   )
   c.header('X-Frame-Options', 'DENY')
   c.header('X-Content-Type-Options', 'nosniff')
@@ -192,21 +189,126 @@ app.route('/api/portfolio', portfolioRouter)
 app.route('/api/services', servicesRouter)
 app.route('/api/admin', adminRouter)
 
-// R2 Public Media Delivery
+// D1 Media Storage Upload (admin only)
+app.put('/api/media/*', adminAuth, async (c) => {
+  const url = new URL(c.req.url)
+  const key = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+  if (!key || key.includes('..')) {
+    return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid media key', details: [] } }, 400)
+  }
+
+  const contentType = c.req.header('Content-Type') || 'image/webp'
+  const arrayBuffer = await c.req.arrayBuffer()
+  if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+    return c.json({ error: { code: 'VALIDATION_FAILED', message: 'No file data received.', details: [] } }, 400)
+  }
+
+  try {
+    // 1. Ensure Media_Storage table exists in D1
+    await c.env.DB.prepare(
+      'CREATE TABLE IF NOT EXISTS Media_Storage (file_key TEXT NOT NULL, chunk_index INTEGER NOT NULL, content_type TEXT NOT NULL DEFAULT \'image/webp\', data BLOB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (file_key, chunk_index))'
+    ).run()
+
+    // 2. Delete existing chunks for key
+    await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(key).run()
+
+    // 3. Chunk arrayBuffer into 512 KB pieces to stay well within D1 statement limits
+    const CHUNK_SIZE = 512 * 1024
+    const statements: D1PreparedStatement[] = []
+    let chunkIndex = 0
+
+    for (let offset = 0; offset < arrayBuffer.byteLength; offset += CHUNK_SIZE) {
+      const chunk = new Uint8Array(arrayBuffer.slice(offset, offset + CHUNK_SIZE))
+      statements.push(
+        c.env.DB.prepare(
+          'INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)'
+        ).bind(key, chunkIndex, contentType, chunk)
+      )
+      chunkIndex++
+    }
+
+    if (statements.length === 0) {
+      statements.push(
+        c.env.DB.prepare(
+          'INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)'
+        ).bind(key, 0, contentType, new Uint8Array(0))
+      )
+    }
+
+    // Execute in batches of 50 to respect statement limits
+    for (let i = 0; i < statements.length; i += 50) {
+      await c.env.DB.batch(statements.slice(i, i + 50))
+    }
+
+    return c.json({ success: true, fileKey: key, key }, 200)
+  } catch (err: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to store image in database storage.',
+        details: []
+      }
+    }, 500)
+  }
+})
+
+// D1 Media Storage Retrieval
 app.get('/api/media/*', async (c) => {
   const url = new URL(c.req.url)
   const key = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
   if (!key || key.includes('..')) {
     return c.json({ status: 'error', code: 'BAD_REQUEST', message: 'Invalid media key' }, 400)
   }
-  if (c.env.BUCKET) {
-    const obj = await c.env.BUCKET.get(key)
-    if (!obj) return c.notFound()
-    const headers = new Headers()
-    obj.writeHttpMetadata(headers)
-    headers.set('Cache-Control', 'public, max-age=31536000, immutable')
-    return new Response(obj.body, { headers })
+
+  try {
+    const rows = await c.env.DB.prepare(
+      'SELECT chunk_index, content_type, data FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
+    ).bind(key).all<{ chunk_index: number; content_type: string; data: any }>()
+
+    if (rows?.results && rows.results.length > 0) {
+      const results = rows.results
+      let totalLength = 0
+      const byteChunks: Uint8Array[] = []
+
+      for (const row of results) {
+        let chunkArr: Uint8Array
+        if (row.data instanceof Uint8Array) {
+          chunkArr = row.data
+        } else if (row.data instanceof ArrayBuffer) {
+          chunkArr = new Uint8Array(row.data)
+        } else if (ArrayBuffer.isView(row.data)) {
+          chunkArr = new Uint8Array(row.data.buffer, row.data.byteOffset, row.data.byteLength)
+        } else if (Array.isArray(row.data)) {
+          chunkArr = new Uint8Array(row.data)
+        } else if (row.data && typeof row.data === 'object') {
+          chunkArr = new Uint8Array(Object.values(row.data as Record<string, number>))
+        } else {
+          chunkArr = new Uint8Array(0)
+        }
+        byteChunks.push(chunkArr)
+        totalLength += chunkArr.byteLength
+      }
+
+      const combined = new Uint8Array(totalLength)
+      let currentOffset = 0
+      for (const chunk of byteChunks) {
+        combined.set(chunk, currentOffset)
+        currentOffset += chunk.byteLength
+      }
+
+      const contentType = results[0].content_type || 'image/webp'
+      return new Response(combined, {
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': String(totalLength),
+          'Cache-Control': 'public, max-age=31536000, immutable'
+        }
+      })
+    }
+  } catch (dbErr) {
+    // Media_Storage table may not exist yet or query error
   }
+
   return c.notFound()
 })
 

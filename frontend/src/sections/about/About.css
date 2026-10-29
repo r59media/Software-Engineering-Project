@@ -34,10 +34,15 @@
 .about__subheading { padding-top: .62cqw; padding-left: 1.25cqw; font-size: var(--text-about-subtitle); font-weight: var(--font-weight-medium); font-style: italic; line-height: 1; }
 .about__biography { margin: 2.1cqw 0 0; font-size: var(--text-base); line-height: var(--line-body); }
 .about__lens { position: relative; width: 11.62cqw; aspect-ratio: 813 / 814; margin: 3.65cqw 0 0 4.75cqw; }
-.about__decorations { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.about__decorations { position: absolute; inset: 0; z-index: -1; pointer-events: none; overflow: clip; }
 .about__decorations > .about__artwork { position: absolute; }
-.about__decorations .about__art { filter: drop-shadow(8px 12px 9px var(--color-black-30)); }
-.about__decorations [data-about-part="top-lens"] { width: 16.07%; left: 30.2%; top: -14.2cqw; }
+.about__decorations .about__art {
+  filter: drop-shadow(8px 12px 9px var(--color-black-30));
+  backface-visibility: hidden;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+.about__decorations [data-about-part="top-lens"] { width: 16.07%; left: 30.2%; top: -7.5cqw; }
 .about__decorations [data-about-part="top-lens"] .about__art { transform: rotate(78.1deg); }
 .about__decorations [data-about-part="top-right-lens"] { width: 18%; right: -3.4%; top: -2.4cqw; }
 .about__decorations [data-about-part="top-right-lens"] .about__art { transform: rotate(-12.73deg); }

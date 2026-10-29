@@ -1,6 +1,6 @@
 import { Suspense, useLayoutEffect, useMemo } from 'react'
 import { Canvas, useLoader, useThree } from '@react-three/fiber'
-import { Mesh, PMREMGenerator } from 'three'
+import { LinearFilter, LinearMipmapLinearFilter, Mesh, PMREMGenerator } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import type { LensTransitionController } from '../transition/LensTransitionContext'
@@ -54,7 +54,31 @@ function LensModel({ url, aperture, transition }: LensProps) {
   })
   // Clone the hierarchy so future aperture/transform changes do not mutate the loader cache.
   const model = useMemo(() => gltf.scene.clone(true), [gltf.scene])
-  const invalidate = useThree(state => state.invalidate)
+  const { gl, invalidate } = useThree()
+
+  useLayoutEffect(() => {
+    const maxAnisotropy = gl.capabilities?.getMaxAnisotropy?.() ?? 1
+    model.traverse(object => {
+      if (!(object instanceof Mesh)) return
+      const materials = Array.isArray(object.material) ? object.material : [object.material]
+      for (const mat of materials) {
+        if (!mat || typeof mat !== 'object') continue
+        const m = mat as Record<string, unknown>
+        const textureKeys = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'bumpMap', 'emissiveMap']
+        for (const key of textureKeys) {
+          const tex = m[key]
+          if (tex && typeof tex === 'object' && 'minFilter' in tex) {
+            const t = tex as { minFilter: number; magFilter: number; anisotropy: number; needsUpdate: boolean }
+            t.anisotropy = maxAnisotropy
+            t.minFilter = LinearMipmapLinearFilter
+            t.magFilter = LinearFilter
+            t.needsUpdate = true
+          }
+        }
+      }
+    })
+  }, [model, gl])
+
   useLayoutEffect(() => {
     const blades: { mesh: Mesh; rest: number; travel: number }[] = []
     model.traverse(object => {
@@ -87,7 +111,7 @@ export default function LensScene({ url, aperture, transition }: LensProps) {
     camera={aboutLens.camera}
     dpr={aboutLens.pixelRatio}
     scene={{ environmentIntensity: 0.35 }}
-    gl={{ alpha: true, antialias: true }}
+    gl={{ alpha: true, antialias: true, powerPreference: 'high-performance' }}
     fallback={<div className="about__lens-fallback" data-lens-state="fallback" />}
   >
     <StudioLighting />

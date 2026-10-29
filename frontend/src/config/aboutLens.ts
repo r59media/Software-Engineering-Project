@@ -11,5 +11,5 @@ export const aboutLens = {
   iris: { count: 9, pivotRadius: 0.027, leafDepth: -0.005, leafSlope: 0.014,
     travelAngle: -70 * Math.PI / 180, clearRadius: 0.0228 },
   camera: { position: [0, 0, 0.2] as [number, number, number], fov: 25, near: 0.001, far: 1 },
-  pixelRatio: [1, 2] as [number, number],
+  pixelRatio: [1.5, 2.5] as [number, number],
 }

@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Backend for Photographer Portfolio",
   "main": "src/index.ts",
-  "packageManager": "pnpm@10.34.6",
   "engines": {
     "node": ">=22.0.0"
   },
@@ -18,8 +17,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.1132.0",
-    "@aws-sdk/s3-request-presigner": "3.1132.0",
     "hono": "4.13.13",
     "square": "45.1.0"
   },

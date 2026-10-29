@@ -460,3 +460,5 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }
   }, 401)
 }
+
+export const authMiddleware = adminAuth
