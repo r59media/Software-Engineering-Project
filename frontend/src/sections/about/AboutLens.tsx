@@ -27,13 +27,19 @@ export function AboutLens() {
     media.addEventListener('change', update)
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) { setReady(true); observer.disconnect() }
-    }, { rootMargin: '200px' })
+    }, { rootMargin: '1800px' })
     if (host.current) observer.observe(host.current)
     return () => { media.removeEventListener('change', update); observer.disconnect() }
   }, [])
 
   const url = mobile ? aboutLens.mobileUrl : aboutLens.desktopUrl
+
+  useEffect(() => {
+    fetch(url).catch(() => {})
+  }, [url])
+
   return <div ref={host} className="about__lens" data-about-part="lens-transition" aria-hidden="true">
+    <link rel="preload" as="fetch" crossOrigin="anonymous" href={url} />
     <div className="about__motion" data-about-motion="lens-transition">
       <LensBoundary key={url} onFailure={transition?.fail}>
         <Suspense fallback={<LensFallback />}>

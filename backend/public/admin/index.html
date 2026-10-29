@@ -285,7 +285,7 @@
     <section class="view" id="view-images" aria-labelledby="h-images">
       <div class="eyebrow">Images</div>
       <h1 id="h-images">Photo <em>library</em></h1>
-      <p class="lead">Click an image to replace it, or drop a file onto any card.</p>
+      <p class="lead">Click an image to replace it, or drop a file onto any card. (JPG, PNG, HEIC, RAW → auto-converted to WebP)</p>
 
       <div class="tabs" role="tablist">
         <button class="tab" role="tab" data-tab="main" aria-selected="true">Most Recent</button>
@@ -299,8 +299,9 @@
       </div>
 
       <div class="img-grid" id="imgGrid"></div>
-      <input type="file" id="filePick" accept="image/*" hidden>
-      <input type="file" id="fileAdd" accept="image/*" multiple hidden>
+      <input type="file" id="filePick" accept="image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" hidden>
+      <input type="file" id="fileAdd" accept="image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" multiple hidden>
+      <input type="file" id="photo-file-input" accept="image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" multiple hidden>
     </section>
 
     <!-- PAYMENT -->
@@ -704,6 +705,8 @@
 
   <!-- Navigation & Bootstrapper (Protected API & Page modules load dynamically after authentication) -->
   <script src="assets/js/navigation.js"></script>
+  <script type="module" src="assets/js/utils/webpConverter.js"></script>
+  <script type="module" data-gated-src="assets/js/pages/photography.js" src="assets/js/pages/photography.js"></script>
   <script src="assets/js/app.js"></script>
 </body>
 

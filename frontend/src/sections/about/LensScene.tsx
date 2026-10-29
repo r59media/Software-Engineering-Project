@@ -9,17 +9,24 @@ import { aboutLens } from '../../config/aboutLens'
 function StudioLighting() {
   const { gl, scene, invalidate } = useThree()
   useLayoutEffect(() => {
-    const generator = new PMREMGenerator(gl)
-    const room = new RoomEnvironment()
-    const environment = generator.fromScene(room, 0.04)
-    const previous = scene.environment
-    // Three.js owns this mutable scene; restore its environment on cleanup.
-    // eslint-disable-next-line react-hooks/immutability
-    scene.environment = environment.texture
-    invalidate()
-    room.dispose()
-    generator.dispose()
-    return () => { scene.environment = previous; environment.dispose() }
+    let cleanup: (() => void) | undefined
+    try {
+      const generator = new PMREMGenerator(gl)
+      const room = new RoomEnvironment()
+      const environment = generator.fromScene(room, 0.04)
+      const previous = scene.environment
+      // Three.js owns this mutable scene; restore its environment on cleanup.
+      // eslint-disable-next-line react-hooks/immutability
+      scene.environment = environment.texture
+      invalidate()
+      room.dispose()
+      generator.dispose()
+      cleanup = () => { scene.environment = previous; environment.dispose() }
+    } catch {
+      // Brave Shields strict fingerprinting can block float textures;
+      // fallback to ambient/directional lights without crashing the scene.
+    }
+    return () => { cleanup?.() }
   }, [gl, scene, invalidate])
   return <>
     <ambientLight intensity={0.2} />

@@ -23,8 +23,8 @@ export function irisOpening(opening: number, diameter: number, centerX: number, 
     if (distance < 0) { nx = -nx; ny = -ny; distance = -distance }
     return { nx, ny, distance }
   })
-  const points = Array.from({ length: 144 }, (_, index) => {
-    const angle = index * 2 * Math.PI / 144
+  const points = Array.from({ length: 72 }, (_, index) => {
+    const angle = index * 2 * Math.PI / 72
     const x = Math.cos(angle)
     const y = Math.sin(angle)
     let radius = clearRadius * focal / (aboutLens.camera.position[2] + 0.004)

@@ -10,9 +10,9 @@ const smooth = (value: number) => value * value * (3 - 2 * value)
 
 export function AboutToRecent() {
   const root = useRef<HTMLDivElement>(null)
-  const [loaded, setLoaded] = useState(false)
-  const [fits, setFits] = useState(false)
-  const [failed, setFailed] = useState(false)
+  const [, setLoaded] = useState(false)
+  const [fits, setFits] = useState(() => window.innerHeight >= 500)
+  const [, setFailed] = useState(false)
   const [reduced, setReduced] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
   const listeners = useRef(new Set<(value: number) => void>())
   const controller = useMemo(() => ({
@@ -23,13 +23,13 @@ export function AboutToRecent() {
     ready: () => setLoaded(true),
     fail: () => setFailed(true),
   }), [listeners])
-  const enabled = loaded && !failed && !reduced && fits
+  const enabled = !reduced && fits
 
   useEffect(() => {
     const section = root.current?.querySelector<HTMLElement>('#recent-photoshoot')
     if (!section) return
     // Keep all gallery content scrollable on short/landscape viewports.
-    const measure = () => setFits(section.offsetHeight <= window.innerHeight + 1)
+    const measure = () => setFits(window.innerHeight >= 480 && section.offsetHeight <= window.innerHeight + 80)
     const observer = new ResizeObserver(measure)
     observer.observe(section)
     window.addEventListener('resize', measure)

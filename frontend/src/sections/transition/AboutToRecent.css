@@ -1,6 +1,10 @@
 .lens-transition[data-enabled="true"] .lens-transition__stage {
   position: sticky;
 }
+.lens-transition[data-enabled="true"] .about {
+  overflow-x: clip;
+  overflow-y: visible;
+}
 .lens-transition[data-enabled="true"] .lens-transition__recent {
   position: absolute;
   bottom: 0;

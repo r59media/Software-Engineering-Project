@@ -10,7 +10,7 @@ import flash from '../assets/aboutMeImages/speedlight_IMG.webp'
 import leftCard from '../assets/aboutMeImages/128MmrCard_IMG.webp'
 import topCard from '../assets/aboutMeImages/32MmrCard_IMG.webp'
 import bottomCard from '../assets/aboutMeImages/1TMmrCard_IMG.webp'
-import paper from '../assets/aboutMeImages/about-paper.png'
+import paper from '../assets/aboutMeImages/about-paper.webp'
 import type { AboutContent, AboutImage } from '../types/about'
 
 export const aboutContent: AboutContent = {

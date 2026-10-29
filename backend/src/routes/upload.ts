@@ -5,7 +5,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { adminAuth } from '../middleware/auth'
 
 const ALLOWED_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic']
-const MAX_UPLOAD_BYTES = 15 * 1024 * 1024 // 15 MB
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024 // 50 MB
 
 export const uploadRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -57,9 +57,9 @@ uploadRouter.post('/', adminAuth, async (c) => {
         return c.json({
           error: {
             code: 'FILE_TOO_LARGE',
-            message: 'File size exceeds the 15 MB maximum limit.',
+            message: 'File size exceeds the 50 MB maximum limit.',
             target: 'upload',
-            details: [{ field: 'fileSize', message: 'Maximum allowed file size is 15 MB.', code: 'FILE_TOO_LARGE' }]
+            details: [{ field: 'fileSize', message: 'Maximum allowed file size is 50 MB.', code: 'FILE_TOO_LARGE' }]
           }
         }, 400)
       }
