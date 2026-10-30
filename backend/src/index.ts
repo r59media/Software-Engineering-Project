@@ -92,7 +92,7 @@ app.use('*', async (c, next) => {
     url.pathname.startsWith('/api/media/') ||
     /\.(webp|png|jpe?g|glb)$/i.test(url.pathname)
 
-  if (isProtectedAsset && c.req.method === 'GET') {
+  if (isProtectedAsset && (c.req.method === 'GET' || c.req.method === 'HEAD')) {
     const fetchDest = c.req.header('Sec-Fetch-Dest')
     const fetchSite = c.req.header('Sec-Fetch-Site')
 
