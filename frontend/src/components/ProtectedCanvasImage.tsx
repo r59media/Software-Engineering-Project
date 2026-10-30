@@ -4,6 +4,7 @@ export interface ProtectedCanvasImageProps {
   src: string
   alt: string
   className?: string
+  containerClassName?: string
   style?: CSSProperties
   objectPosition?: string
   width?: number
@@ -103,6 +104,7 @@ export function ProtectedCanvasImage({
   src,
   alt,
   className = '',
+  containerClassName,
   style,
   objectPosition,
   width,
@@ -156,7 +158,7 @@ export function ProtectedCanvasImage({
 
   return (
     <div
-      className="protected-media-container"
+      className={`protected-media-container ${containerClassName || ''}`.trim()}
       style={style}
       onContextMenu={(e) => e.preventDefault()}
       onDragStart={(e) => e.preventDefault()}

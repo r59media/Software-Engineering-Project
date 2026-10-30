@@ -78,3 +78,13 @@ button:disabled { cursor: not-allowed; }
   height: 100%;
   object-fit: cover;
 }
+
+.about__artwork .protected-media-container {
+  overflow: visible;
+}
+
+.about__paper .protected-media-container {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}

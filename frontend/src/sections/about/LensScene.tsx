@@ -39,10 +39,10 @@ type LensProps = { url: string; aperture: number; transition?: LensTransitionCon
 
 function LensModel({ url, aperture, transition }: LensProps) {
   const gltf = useLoader(GLTFLoader, url, loader => {
+    loader.setRequestHeader({ 'X-R59-Client': 'media-viewer' })
     loader.register(parser => ({
       name: 'R59LensMetadata',
       beforeRoot: async () => {
-        // Three.js interprets extras.pivot as a numeric transform. These exports use prose.
         for (const node of parser.json.nodes ?? []) {
           if (typeof node.extras?.pivot === 'string') {
             node.extras.pivotDescription = node.extras.pivot

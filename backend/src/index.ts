@@ -92,16 +92,18 @@ app.use('*', async (c, next) => {
     return await next()
   }
 
-  // Protect images & 3D models from direct standalone browser-tab scraping and external hotlinking
-  const isProtectedAsset =
+  // Identify protected images (photos, artwork, portfolio media)
+  const isProtectedImage =
     url.pathname.startsWith('/api/media/') ||
-    /\.(webp|png|jpe?g|glb)$/i.test(url.pathname)
+    /\.(webp|png|jpe?g)$/i.test(url.pathname)
 
-  if (isProtectedAsset && (c.req.method === 'GET' || c.req.method === 'HEAD')) {
+  const is3DModel = /\.glb$/i.test(url.pathname)
+
+  if ((isProtectedImage || is3DModel) && (c.req.method === 'GET' || c.req.method === 'HEAD')) {
     const fetchDest = c.req.header('Sec-Fetch-Dest')
     const fetchSite = c.req.header('Sec-Fetch-Site')
 
-    // Keep direct document requests redirecting to home
+    // Block direct navigation to assets via address bar or "Open image/link in new tab"
     if (fetchDest === 'document') {
       return c.redirect('/', 302)
     }
@@ -111,18 +113,18 @@ app.use('*', async (c, next) => {
       return c.text('Forbidden', 403)
     }
 
-    // Strict Anti-Scraping / Anti-Direct-Download check:
-    // Standalone browser tabs, address bars, bookmarks, or external tools cannot send custom headers.
-    // Only authorized in-memory fetch requests carrying 'X-R59-Client: media-viewer' are permitted.
-    const clientHeader = c.req.header('X-R59-Client')
-    if (clientHeader !== 'media-viewer') {
-      return c.redirect('/', 302)
+    // For images: enforce authorized in-memory fetch carrying 'X-R59-Client: media-viewer'
+    if (isProtectedImage) {
+      const clientHeader = c.req.header('X-R59-Client')
+      if (clientHeader !== 'media-viewer') {
+        return c.redirect('/', 302)
+      }
     }
   }
 
   await next()
 
-  if (isProtectedAsset && (c.req.method === 'GET' || c.req.method === 'HEAD')) {
+  if ((isProtectedImage || is3DModel) && (c.req.method === 'GET' || c.req.method === 'HEAD')) {
     c.header('Cross-Origin-Resource-Policy', 'same-origin')
     c.header('Content-Disposition', 'inline')
     c.header('X-Content-Type-Options', 'nosniff')
@@ -406,11 +408,14 @@ app.get('*', async (c) => {
   }
 
   // Strict check on static assets matching protected media types
-  const isProtectedAsset =
+  const isProtectedImage =
     !url.pathname.startsWith('/favicon') &&
-    (url.pathname.startsWith('/api/media/') || /\.(webp|png|jpe?g|glb)$/i.test(url.pathname))
+    (url.pathname.startsWith('/api/media/') || /\.(webp|png|jpe?g)$/i.test(url.pathname))
 
-  if (isProtectedAsset && c.req.header('X-R59-Client') !== 'media-viewer') {
+  const is3DModel = /\.glb$/i.test(url.pathname)
+  const isProtectedAsset = isProtectedImage || is3DModel
+
+  if (isProtectedImage && c.req.header('X-R59-Client') !== 'media-viewer') {
     return c.redirect('/', 302)
   }
 
