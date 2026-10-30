@@ -23,6 +23,22 @@ function App() {
     return () => controller.abort()
   }, [])
 
+  useEffect(() => {
+    const protectMedia = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null
+      if (
+        target &&
+        (target.tagName === 'IMG' ||
+          target.tagName === 'CANVAS' ||
+          target.closest('.recent__photo, .about__artwork, .about__portrait, .photo-viewer__image'))
+      ) {
+        e.preventDefault()
+      }
+    }
+    document.addEventListener('contextmenu', protectMedia)
+    return () => document.removeEventListener('contextmenu', protectMedia)
+  }, [])
+
   return <div id="top" className="site-shell">
     <a className="skip-link" href="#hero">Skip to content</a>
     <main>

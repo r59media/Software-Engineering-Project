@@ -5,11 +5,14 @@
  * image reordering/replacement, biography, contact info, and social media links.
  */
 
-import { convertToWebP, isSupportedImageFile } from '../utils/webpConverter.js';
+(function () {
+  'use strict';
 
-const $ = s => document.querySelector(s);
-const $$ = s => [...document.querySelectorAll(s)];
-const esc = s => window.R59?.formValidation?.escapeHtml(s) || String(s);
+  const { convertToWebP, isSupportedImageFile } = window.R59.webpConverter;
+
+  const $ = s => document.querySelector(s);
+  const $$ = s => [...document.querySelectorAll(s)];
+  const esc = s => window.R59?.formValidation?.escapeHtml(s) || String(s);
 
 let currentTab = 'main';
 let currentFilter = 'All';
@@ -523,38 +526,24 @@ function initPhotographyListeners() {
   });
 }
 
-// Global registry
-window.R59 = window.R59 || {};
-window.R59.photography = {
-  setTab,
-  getCurrentTab,
-  updateBioCount,
-  renderSocial,
-  renderImages,
-  handleFiles,
-  addFiles: handleFiles,
-  deletePhoto,
-  safeImgSrc,
-  initPhotographyListeners,
-  pendingFiles
-};
-window.setTab = setTab;
-window.updateBioCount = updateBioCount;
-window.renderSocial = renderSocial;
-window.renderImages = renderImages;
-window.handleFiles = handleFiles;
-
-export {
-  setTab,
-  getCurrentTab,
-  updateBioCount,
-  renderSocial,
-  renderImages,
-  handleFiles,
-  deletePhoto,
-  safeImgSrc,
-  initPhotographyListeners,
-  pendingFiles
-};
-
-export default window.R59.photography;
+  // Global registry
+  window.R59 = window.R59 || {};
+  window.R59.photography = {
+    setTab,
+    getCurrentTab,
+    updateBioCount,
+    renderSocial,
+    renderImages,
+    handleFiles,
+    addFiles: handleFiles,
+    deletePhoto,
+    safeImgSrc,
+    initPhotographyListeners,
+    pendingFiles
+  };
+  window.setTab = setTab;
+  window.updateBioCount = updateBioCount;
+  window.renderSocial = renderSocial;
+  window.renderImages = renderImages;
+  window.handleFiles = handleFiles;
+})();

@@ -63,10 +63,20 @@ uploadRouter.post('/', adminAuth, async (c) => {
       }
     }
 
-    // Sanitize filename to prevent directory traversal and overwrite attacks
+    // Sanitize filename and derive extension to keep URLs anonymized
     const cleanBaseName = filename.replace(/[^a-zA-Z0-9._-]/g, '').replace(/^\.+/, '')
-    const safeFilename = cleanBaseName.length > 0 ? cleanBaseName : 'upload.webp'
-    const uniqueKey = `portfolio/${Date.now()}-${crypto.randomUUID()}-${safeFilename}`
+    const lastDotIndex = cleanBaseName.lastIndexOf('.')
+    let ext = lastDotIndex !== -1 ? cleanBaseName.slice(lastDotIndex + 1).toLowerCase() : ''
+    if (!ext) {
+      if (contentType === 'image/jpeg') ext = 'jpg'
+      else if (contentType === 'image/png') ext = 'png'
+      else if (contentType === 'image/webp') ext = 'webp'
+      else if (contentType === 'image/heic') ext = 'heic'
+      else ext = 'webp'
+    } else if (ext === 'jpeg') {
+      ext = 'jpg'
+    }
+    const uniqueKey = `portfolio/${Date.now()}-${crypto.randomUUID()}.${ext}`
 
     const mediaPath = `/api/media/${uniqueKey}`
 

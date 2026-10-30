@@ -20,6 +20,7 @@
     'assets/js/pages/dashboard.js',
     'assets/js/pages/schedule.js',
     'assets/js/pages/payments.js',
+    'assets/js/utils/webpConverter.js',
     'assets/js/pages/photography.js'
   ];
   let adminModulesLoaded = false;

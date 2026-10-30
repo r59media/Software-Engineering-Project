@@ -78,13 +78,42 @@ app.use('*', async (c, next) => {
   return corsMiddleware(c, next)
 })
 
+// Block sourcemap files everywhere & protect media/model assets from standalone scraping & hotlinking
+app.use('*', async (c, next) => {
+  const url = new URL(c.req.url)
+
+  // Block .map sourcemap files everywhere
+  if (url.pathname.endsWith('.map')) {
+    return c.notFound()
+  }
+
+  // Protect images & 3D models from direct standalone browser-tab scraping and external hotlinking
+  const isProtectedAsset =
+    url.pathname.startsWith('/api/media/') ||
+    /\.(webp|png|jpe?g|glb)$/i.test(url.pathname)
+
+  if (isProtectedAsset && c.req.method === 'GET') {
+    const fetchDest = c.req.header('Sec-Fetch-Dest')
+    const fetchSite = c.req.header('Sec-Fetch-Site')
+
+    if (fetchDest === 'document') {
+      return c.redirect('/', 302)
+    }
+    if (fetchSite === 'cross-site') {
+      return c.text('Forbidden', 403)
+    }
+  }
+
+  await next()
+})
+
 // Route /admin and /admin/* to Admin Dashboard static assets
 app.get('/admin', (c) => {
   return c.redirect('/admin/', 301)
 })
 
-const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|map|glb)$/i
-const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|api\/(bookingsApi|packagesApi|paymentsApi|photographyApi|scheduleApi)\.js)/i
+const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb)$/i
+const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|utils\/webpConverter\.js|api\/(bookingsApi|dashboardApi|packagesApi|paymentsApi|personalApi|photographyApi|scheduleApi)\.js)/i
 
 app.get('/admin/*', async (c) => {
   if (!c.env.ASSETS) {
@@ -96,6 +125,11 @@ app.get('/admin/*', async (c) => {
   // 1. Block internal documentation files (.md) from public access
   if (url.pathname.toLowerCase().endsWith('.md')) {
     return c.redirect('/admin/', 302)
+  }
+
+  // Block sourcemap files (.map)
+  if (url.pathname.endsWith('.map')) {
+    return c.notFound()
   }
 
   // Gate sensitive admin scripts behind valid authentication
@@ -110,10 +144,10 @@ app.get('/admin/*', async (c) => {
       (await verifySessionToken(token, signingSecret)).valid
     )
     if (!isAuthed) {
-      return new Response('/* 401 Unauthorized: Admin authentication required */', {
-        status: 401,
+      return new Response('Not Found', {
+        status: 404,
         headers: {
-          'Content-Type': 'application/javascript; charset=utf-8',
+          'Content-Type': 'text/plain; charset=utf-8',
           'Cache-Control': 'no-store, no-cache, must-revalidate'
         }
       })
@@ -254,6 +288,15 @@ app.put('/api/media/*', adminAuth, async (c) => {
 
 // D1 Media Storage Retrieval
 app.get('/api/media/*', async (c) => {
+  const fetchDest = c.req.header('Sec-Fetch-Dest')
+  const fetchSite = c.req.header('Sec-Fetch-Site')
+  if (fetchDest === 'document') {
+    return c.redirect('/', 302)
+  }
+  if (fetchSite === 'cross-site') {
+    return c.text('Forbidden', 403)
+  }
+
   const url = new URL(c.req.url)
   const key = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
   if (!key || key.includes('..')) {
@@ -320,7 +363,7 @@ app.get('*', async (c) => {
   if (!c.env.ASSETS) {
     return c.text('R59 Media API is running!')
   }
-  if (url.pathname.toLowerCase().endsWith('.md')) {
+  if (url.pathname.toLowerCase().endsWith('.md') || url.pathname.endsWith('.map')) {
     return c.notFound()
   }
 

@@ -1,1345 +1,191 @@
-/**
- * R59 Media Admin — Schedule, Availability & Bookings Page Module
- * 
- * Manages calendar Day/Week/Month views, date navigation, weekly availability rules,
- * blocked dates, customer bookings management, and booking creation/edit modals.
- */
-
-(function () {
-  'use strict';
-
-  const $ = s => document.querySelector(s);
-  const $$ = s => [...document.querySelectorAll(s)];
-  const esc = s => window.R59.formValidation?.escapeHtml(s) || String(s);
-
-  const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  const DAYS_OF_WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-  let currentCalView = 'month';
-  let selectedDayDate = toISODate(new Date());
-
-  let nextTimeframeId = 100;
-  let editingTimeframeDay = null;
-  let editingTimeframeId = null;
-
-  let editingBookingId = null;
-  let nbCoupon = null;
-  let lastFocus = null;
-
-  /* ---------- Date Utilities ---------- */
-  function toISODate(date) {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-  }
-
-  function fromISODate(dateStr) {
-    const [y, m, d] = dateStr.split('-').map(Number);
-    return new Date(y, m - 1, d);
-  }
-
-  function startOfWeek(date) {
-    const result = new Date(date);
-    result.setHours(0, 0, 0, 0);
-    result.setDate(result.getDate() - result.getDay());
-    return result;
-  }
-
-  function endOfWeek(date) {
-    const result = startOfWeek(date);
-    result.setDate(result.getDate() + 6);
-    return result;
-  }
-
-  function formatLongDate(date) {
-    return date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-  }
-
-  function formatMonthYear(date) {
-    return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-  }
-
-  function formatWeekRange(start, end) {
-    const sameYear = start.getFullYear() === end.getFullYear();
-    const startLabel = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    const endLabel = end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }) });
-    return sameYear
-      ? `${startLabel} – ${endLabel}, ${end.getFullYear()}`
-      : `${startLabel}, ${start.getFullYear()} – ${endLabel}`;
-  }
-
-  function formatTime12h(time24) {
-    if (!time24) return '';
-    const [h, m] = time24.split(':').map(Number);
-    const period = h >= 12 ? 'PM' : 'AM';
-    const h12 = h % 12 || 12;
-    return `${String(h12).padStart(2, '0')}:${String(m).padStart(2, '0')} ${period}`;
-  }
-
-  function to24(str) {
-    if (!str) return '';
-    const s = String(str).trim();
-    const m12 = s.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
-    if (m12) {
-      let h = parseInt(m12[1], 10);
-      const min = m12[2];
-      const ampm = m12[3].toUpperCase();
-      if (ampm === 'PM' && h < 12) h += 12;
-      if (ampm === 'AM' && h === 12) h = 0;
-      return `${String(h).padStart(2, '0')}:${min}`;
-    }
-    const m24 = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
-    if (m24) {
-      return `${String(parseInt(m24[1], 10)).padStart(2, '0')}:${m24[2]}`;
-    }
-    return '';
-  }
-
-  function from24(t) {
-    const t24 = to24(t);
-    if (!t24) return String(t || '');
-    const [h, m] = t24.split(':').map(Number);
-    return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
-  }
-
-  function money(n) {
-    const v = Number(n || 0);
-    return '$' + v.toLocaleString('en-US', {
-      minimumFractionDigits: Number.isInteger(v) ? 0 : 2,
-      maximumFractionDigits: 2
-    });
-  }
-
-  const round2 = n => Math.round(n * 100) / 100;
-  const bookingSortKey = b => b.date + ' ' + (to24(b.time) || '00:00');
-
-  /* ---------- Calendar Rendering (Day / Week / Month) ---------- */
-  function renderCalendar() {
-    const container = $('#calendarDisplay');
-    const label = $('#calActiveRange');
-    const prevBtn = $('#calPrev');
-    const nextBtn = $('#calNext');
-    if (!container) return;
-
-    ['Day', 'Week', 'Month'].forEach(v => {
-      const btn = document.getElementById(`calBtn${v}`);
-      if (btn) {
-        const isActive = currentCalView === v.toLowerCase();
-        btn.classList.toggle('active', isActive);
-        btn.setAttribute('aria-pressed', String(isActive));
-      }
-    });
-
-    const selectedDate = fromISODate(selectedDayDate);
-
-    if (currentCalView === 'month') {
-      if (label) label.textContent = formatMonthYear(selectedDate);
-      if (prevBtn) prevBtn.setAttribute('aria-label', 'Previous month');
-      if (nextBtn) nextBtn.setAttribute('aria-label', 'Next month');
-      renderMonthCalendar(container);
-    } else if (currentCalView === 'week') {
-      const start = startOfWeek(selectedDate);
-      const end = endOfWeek(selectedDate);
-      if (label) label.textContent = formatWeekRange(start, end);
-      if (prevBtn) prevBtn.setAttribute('aria-label', 'Previous week');
-      if (nextBtn) nextBtn.setAttribute('aria-label', 'Next week');
-      renderWeekCalendar(container);
-    } else {
-      if (label) label.textContent = formatLongDate(selectedDate).toUpperCase();
-      if (prevBtn) prevBtn.setAttribute('aria-label', 'Previous day');
-      if (nextBtn) nextBtn.setAttribute('aria-label', 'Next day');
-      renderDayCalendar(container);
-    }
-  }
-
-  function buildMonthGridHTML(year, month, opts = {}) {
-    const firstDayOffset = new Date(year, month, 1).getDay();
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const totalCells = Math.ceil((firstDayOffset + daysInMonth) / 7) * 7;
-    const todayStr = toISODate(new Date());
-
-    const bookings = window.R59.state.getBookings();
-    const blockedList = window.R59.state.getBlockedDates();
-
-    let html = '<div class="cal-month-grid">';
-    DAYS_OF_WEEK.forEach(d => {
-      html += `<div class="cal-day-header">${d}</div>`;
-    });
-
-    const isOverviewMode = opts.chipAction === 'edit' || (!opts.selectedStr && !opts.selectable);
-
-    for (let i = 0; i < totalCells; i++) {
-      const cellDate = new Date(year, month, i - firstDayOffset + 1);
-      const dateStr = toISODate(cellDate);
-      const isCurrentMonth = cellDate.getMonth() === month;
-      const dayBookings = bookings.filter(b => b.date === dateStr);
-      const blocked = blockedList.find(b => (b.dateStr || b.date) === dateStr);
-      const hasBookings = dayBookings.length > 0;
-      const isSelected = dateStr === opts.selectedStr;
-      const isToday = dateStr === todayStr;
-      const cellAttr = !isOverviewMode ? ` data-select-cal-date="${esc(dateStr)}"` : '';
-
-      const chipsHtml = dayBookings.map(b => {
-        const rawStatus = String(b.status || 'pending').toLowerCase();
-        const safeStatus = ['confirmed', 'cancelled', 'pending'].includes(rawStatus) ? rawStatus : 'pending';
-        const chipAttr = isOverviewMode
-          ? `data-open-booking="${esc(b.id)}"`
-          : `data-select-day="${esc(b.date)}"`;
-        return `
-          <div class="cal-event-chip ${safeStatus === 'cancelled' ? 'cancelled' : ''}" role="button" tabindex="0" ${chipAttr} title="${esc(b.customer)} (${esc(b.package)})">
-            <span class="cal-event-time">${esc(b.time)}</span>
-            <strong class="cal-event-name">${esc(b.customer)}</strong>
-            <span class="cal-event-pkg">${esc(b.package)}</span>
-            <span class="status-badge status-${safeStatus}" style="font-size: 9px; padding: 1px 5px;">${esc(b.status || 'Pending')}</span>
+(function(){"use strict";const o=t=>document.querySelector(t),Ne=t=>[...document.querySelectorAll(t)],d=t=>window.R59.formValidation?.escapeHtml(t)||String(t),F=["January","February","March","April","May","June","July","August","September","October","November","December"],ye=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];let E="month",$=V(new Date),he=100,I=null,S=null,j=null,v=null,x=null;function V(t){const e=t.getFullYear(),n=String(t.getMonth()+1).padStart(2,"0"),a=String(t.getDate()).padStart(2,"0");return`${e}-${n}-${a}`}function W(t){const[e,n,a]=t.split("-").map(Number);return new Date(e,n-1,a)}function J(t){const e=new Date(t);return e.setHours(0,0,0,0),e.setDate(e.getDate()-e.getDay()),e}function $e(t){const e=J(t);return e.setDate(e.getDate()+6),e}function De(t){return t.toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}function Se(t){return t.toLocaleDateString("en-US",{month:"long",year:"numeric"})}function Re(t,e){const n=t.getFullYear()===e.getFullYear(),a=t.toLocaleDateString("en-US",{month:"short",day:"numeric"}),s=e.toLocaleDateString("en-US",{month:"short",day:"numeric",...n?{}:{year:"numeric"}});return n?`${a} \u2013 ${s}, ${e.getFullYear()}`:`${a}, ${t.getFullYear()} \u2013 ${s}`}function ie(t){if(!t)return"";const[e,n]=t.split(":").map(Number),a=e>=12?"PM":"AM",s=e%12||12;return`${String(s).padStart(2,"0")}:${String(n).padStart(2,"0")} ${a}`}function U(t){if(!t)return"";const e=String(t).trim(),n=e.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);if(n){let s=parseInt(n[1],10);const l=n[2],c=n[3].toUpperCase();return c==="PM"&&s<12&&(s+=12),c==="AM"&&s===12&&(s=0),`${String(s).padStart(2,"0")}:${l}`}const a=e.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);return a?`${String(parseInt(a[1],10)).padStart(2,"0")}:${a[2]}`:""}function L(t){const e=U(t);if(!e)return String(t||"");const[n,a]=e.split(":").map(Number);return`${n%12||12}:${String(a).padStart(2,"0")} ${n>=12?"PM":"AM"}`}function b(t){const e=Number(t||0);return"$"+e.toLocaleString("en-US",{minimumFractionDigits:Number.isInteger(e)?0:2,maximumFractionDigits:2})}const q=t=>Math.round(t*100)/100,se=t=>t.date+" "+(U(t.time)||"00:00");function R(){const t=o("#calendarDisplay"),e=o("#calActiveRange"),n=o("#calPrev"),a=o("#calNext");if(!t)return;["Day","Week","Month"].forEach(l=>{const c=document.getElementById(`calBtn${l}`);if(c){const r=E===l.toLowerCase();c.classList.toggle("active",r),c.setAttribute("aria-pressed",String(r))}});const s=W($);if(E==="month")e&&(e.textContent=Se(s)),n&&n.setAttribute("aria-label","Previous month"),a&&a.setAttribute("aria-label","Next month"),Be(t);else if(E==="week"){const l=J(s),c=$e(s);e&&(e.textContent=Re(l,c)),n&&n.setAttribute("aria-label","Previous week"),a&&a.setAttribute("aria-label","Next week"),Ce(t)}else e&&(e.textContent=De(s).toUpperCase()),n&&n.setAttribute("aria-label","Previous day"),a&&a.setAttribute("aria-label","Next day"),xe(t)}function le(t,e,n={}){const a=new Date(t,e,1).getDay(),s=new Date(t,e+1,0).getDate(),l=Math.ceil((a+s)/7)*7,c=V(new Date),r=window.R59.state.getBookings(),p=window.R59.state.getBlockedDates();let i='<div class="cal-month-grid">';ye.forEach(g=>{i+=`<div class="cal-day-header">${g}</div>`});const u=n.chipAction==="edit"||!n.selectedStr&&!n.selectable;for(let g=0;g<l;g++){const m=new Date(t,e,g-a+1),f=V(m),k=m.getMonth()===e,B=r.filter(y=>y.date===f),C=p.find(y=>(y.dateStr||y.date)===f),M=B.length>0,A=f===n.selectedStr,D=f===c,h=u?"":` data-select-cal-date="${d(f)}"`,w=B.map(y=>{const ke=String(y.status||"pending").toLowerCase(),we=["confirmed","cancelled","pending"].includes(ke)?ke:"pending",Ae=u?`data-open-booking="${d(y.id)}"`:`data-select-day="${d(y.date)}"`;return`
+          <div class="cal-event-chip ${we==="cancelled"?"cancelled":""}" role="button" tabindex="0" ${Ae} title="${d(y.customer)} (${d(y.package)})">
+            <span class="cal-event-time">${d(y.time)}</span>
+            <strong class="cal-event-name">${d(y.customer)}</strong>
+            <span class="cal-event-pkg">${d(y.package)}</span>
+            <span class="status-badge status-${we}" style="font-size: 9px; padding: 1px 5px;">${d(y.status||"Pending")}</span>
           </div>
-        `;
-      }).join('');
-
-      const blockedHtml = blocked ? `
-        <div class="cal-blocked-tag">Blocked: ${esc(blocked.reason || 'Unavailable')}</div>
-      ` : '';
-
-      html += `
-        <div class="cal-day-cell ${!isCurrentMonth ? 'other-month' : ''} ${hasBookings ? 'has-booking' : ''} ${blocked ? 'cal-blocked' : ''} ${isSelected ? 'cal-selected' : ''}" role="button" tabindex="0"${cellAttr}>
+        `}).join(""),oe=C?`
+        <div class="cal-blocked-tag">Blocked: ${d(C.reason||"Unavailable")}</div>
+      `:"";i+=`
+        <div class="cal-day-cell ${k?"":"other-month"} ${M?"has-booking":""} ${C?"cal-blocked":""} ${A?"cal-selected":""}" role="button" tabindex="0"${h}>
           <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span class="cal-day-num">${cellDate.getDate()}</span>
-            ${isToday ? '<span class="status-badge status-available" style="font-size:9px;padding:1px 5px;">Today</span>' : ''}
-            ${hasBookings ? `<span class="hint" style="font-size: 10px; color: var(--yellow);">${dayBookings.length}</span>` : ''}
+            <span class="cal-day-num">${m.getDate()}</span>
+            ${D?'<span class="status-badge status-available" style="font-size:9px;padding:1px 5px;">Today</span>':""}
+            ${M?`<span class="hint" style="font-size: 10px; color: var(--yellow);">${B.length}</span>`:""}
           </div>
-          ${blockedHtml}
-          ${chipsHtml}
+          ${oe}
+          ${w}
         </div>
-      `;
-    }
-    html += '</div>';
-    return html;
-  }
-
-  function renderMonthCalendar(container) {
-    const selectedDate = fromISODate(selectedDayDate);
-    container.innerHTML = buildMonthGridHTML(selectedDate.getFullYear(), selectedDate.getMonth(), {
-      selectedStr: selectedDayDate,
-      selectable: true
-    });
-  }
-
-  function renderWeekCalendar(container) {
-    const selectedDate = fromISODate(selectedDayDate);
-    const start = startOfWeek(selectedDate);
-    const bookings = window.R59.state.getBookings();
-    const blockedList = window.R59.state.getBlockedDates();
-
-    const weekDays = Array.from({ length: 7 }, (_, i) => {
-      const date = new Date(start);
-      date.setDate(start.getDate() + i);
-      return {
-        name: date.toLocaleDateString('en-US', { weekday: 'short' }),
-        dateNum: date.getDate(),
-        dateStr: toISODate(date)
-      };
-    });
-
-    let html = '<div class="cal-week-grid">';
-    weekDays.forEach(wd => {
-      const dayBookings = bookings.filter(b => b.date === wd.dateStr);
-      const blocked = blockedList.find(b => (b.dateStr || b.date) === wd.dateStr);
-      const isSelected = selectedDayDate === wd.dateStr;
-
-      const eventsHtml = dayBookings.length > 0
-        ? dayBookings.map(b => {
-          const rawStatus = String(b.status || 'pending').toLowerCase();
-          const safeStatus = ['confirmed', 'cancelled', 'pending'].includes(rawStatus) ? rawStatus : 'pending';
-          return `
-            <div class="cal-event-chip ${safeStatus === 'cancelled' ? 'cancelled' : ''}" role="button" tabindex="0" data-select-day="${esc(b.date)}" style="padding: 8px;">
-              <span class="cal-event-time">${esc(b.timeRange || b.time)}</span>
-              <strong class="cal-event-name" style="font-size: 13px;">${esc(b.customer)}</strong>
-              <span class="cal-event-pkg" style="font-size: 11px;">${esc(b.package)}</span>
+      `}return i+="</div>",i}function Be(t){const e=W($);t.innerHTML=le(e.getFullYear(),e.getMonth(),{selectedStr:$,selectable:!0})}function Ce(t){const e=W($),n=J(e),a=window.R59.state.getBookings(),s=window.R59.state.getBlockedDates(),l=Array.from({length:7},(r,p)=>{const i=new Date(n);return i.setDate(n.getDate()+p),{name:i.toLocaleDateString("en-US",{weekday:"short"}),dateNum:i.getDate(),dateStr:V(i)}});let c='<div class="cal-week-grid">';l.forEach(r=>{const p=a.filter(m=>m.date===r.dateStr),i=s.find(m=>(m.dateStr||m.date)===r.dateStr),u=$===r.dateStr,g=p.length>0?p.map(m=>{const f=String(m.status||"pending").toLowerCase(),k=["confirmed","cancelled","pending"].includes(f)?f:"pending";return`
+            <div class="cal-event-chip ${k==="cancelled"?"cancelled":""}" role="button" tabindex="0" data-select-day="${d(m.date)}" style="padding: 8px;">
+              <span class="cal-event-time">${d(m.timeRange||m.time)}</span>
+              <strong class="cal-event-name" style="font-size: 13px;">${d(m.customer)}</strong>
+              <span class="cal-event-pkg" style="font-size: 11px;">${d(m.package)}</span>
               <div style="margin-top: 4px;">
-                <span class="status-badge status-${safeStatus}">${esc(b.status || 'Pending')}</span>
+                <span class="status-badge status-${k}">${d(m.status||"Pending")}</span>
               </div>
             </div>
-          `;
-        }).join('')
-        : blocked
-          ? `<div class="cal-blocked-tag" style="margin-top: 10px; text-align: center;">Blocked: ${esc(blocked.reason || 'Unavailable')}</div>`
-          : '<span class="hint" style="font-size: 12px; text-align: center; margin-top: 20px;">No bookings</span>';
-
-      html += `
-        <div class="cal-week-col ${blocked ? 'cal-blocked' : ''} ${isSelected ? 'cal-selected' : ''}" role="button" tabindex="0" data-select-cal-date="${esc(wd.dateStr)}">
+          `}).join(""):i?`<div class="cal-blocked-tag" style="margin-top: 10px; text-align: center;">Blocked: ${d(i.reason||"Unavailable")}</div>`:'<span class="hint" style="font-size: 12px; text-align: center; margin-top: 20px;">No bookings</span>';c+=`
+        <div class="cal-week-col ${i?"cal-blocked":""} ${u?"cal-selected":""}" role="button" tabindex="0" data-select-cal-date="${d(r.dateStr)}">
           <div class="cal-week-col-head">
-            <div class="cal-week-col-name">${wd.name}</div>
-            <div class="cal-week-col-date">${wd.dateNum}</div>
+            <div class="cal-week-col-name">${r.name}</div>
+            <div class="cal-week-col-date">${r.dateNum}</div>
           </div>
-          ${eventsHtml}
+          ${g}
         </div>
-      `;
-    });
-    html += '</div>';
-    container.innerHTML = html;
-  }
-
-  function renderDayCalendar(container) {
-    const bookings = window.R59.state.getBookings();
-    const blockedList = window.R59.state.getBlockedDates();
-
-    const datesWithBookings = [...new Set(bookings.map(b => b.date))];
-    const navPillsHtml = datesWithBookings.length > 0 ? `
+      `}),c+="</div>",t.innerHTML=c}function xe(t){const e=window.R59.state.getBookings(),n=window.R59.state.getBlockedDates(),a=[...new Set(e.map(i=>i.date))],s=a.length>0?`
       <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;">
-        ${datesWithBookings.map(d => {
-          const b = bookings.find(item => item.date === d);
-          const isSelected = selectedDayDate === d;
-          return `
-            <button type="button" class="btn btn-sm ${isSelected ? 'btn-primary' : ''}" data-select-day="${esc(d)}">
-              ${b ? esc(b.dateLabel || d) : esc(d)}
+        ${a.map(i=>{const u=e.find(m=>m.date===i);return`
+            <button type="button" class="btn btn-sm ${$===i?"btn-primary":""}" data-select-day="${d(i)}">
+              ${d(u&&u.dateLabel||i)}
             </button>
-          `;
-        }).join('')}
+          `}).join("")}
       </div>
-    ` : '';
-
-    const hours = [
-      { label: '09:00 AM', time24: '09:00' },
-      { label: '10:00 AM', time24: '10:00' },
-      { label: '11:00 AM', time24: '11:00' },
-      { label: '12:00 PM', time24: '12:00' },
-      { label: '01:00 PM', time24: '13:00' },
-      { label: '02:00 PM', time24: '14:00' },
-      { label: '03:00 PM', time24: '15:00' },
-      { label: '04:00 PM', time24: '16:00' },
-      { label: '05:00 PM', time24: '17:00' }
-    ];
-
-    const dayBookings = bookings.filter(b => b.date === selectedDayDate);
-    const isBlocked = blockedList.find(b => (b.dateStr || b.date) === selectedDayDate);
-
-    let timelineHtml = '<div class="cal-day-timeline">';
-    if (isBlocked) {
-      timelineHtml += `
+    `:"",l=[{label:"09:00 AM",time24:"09:00"},{label:"10:00 AM",time24:"10:00"},{label:"11:00 AM",time24:"11:00"},{label:"12:00 PM",time24:"12:00"},{label:"01:00 PM",time24:"13:00"},{label:"02:00 PM",time24:"14:00"},{label:"03:00 PM",time24:"15:00"},{label:"04:00 PM",time24:"16:00"},{label:"05:00 PM",time24:"17:00"}],c=e.filter(i=>i.date===$),r=n.find(i=>(i.dateStr||i.date)===$);let p='<div class="cal-day-timeline">';r&&(p+=`
         <div style="background: rgba(255, 34, 34, 0.1); border: 1px solid var(--red); padding: 12px; border-radius: 6px; margin-bottom: 8px;">
-          <strong style="color: var(--red);">Date Blocked:</strong> ${esc(isBlocked.reason || 'Unavailable')} — No bookings allowed.
+          <strong style="color: var(--red);">Date Blocked:</strong> ${d(r.reason||"Unavailable")} \u2014 No bookings allowed.
         </div>
-      `;
-    }
-
-    hours.forEach(hr => {
-      const b = dayBookings.find(item => {
-        const t24 = to24(item.time || item.start_time);
-        if (!t24) return false;
-        const bHour = parseInt(t24.split(':')[0], 10);
-        const hrVal = parseInt(hr.time24.split(':')[0], 10);
-        return bHour === hrVal;
-      });
-
-      if (b) {
-        const rawStatus = (b.status || 'pending').toLowerCase();
-        const statusClass = ['confirmed', 'pending', 'cancelled'].includes(rawStatus) ? rawStatus : 'pending';
-        timelineHtml += `
+      `),l.forEach(i=>{const u=c.find(g=>{const m=U(g.time||g.start_time);if(!m)return!1;const f=parseInt(m.split(":")[0],10),k=parseInt(i.time24.split(":")[0],10);return f===k});if(u){const g=(u.status||"pending").toLowerCase(),m=["confirmed","pending","cancelled"].includes(g)?g:"pending";p+=`
           <div class="cal-timeline-row" style="border-left: 3px solid var(--yellow); background: rgba(255, 204, 34, 0.05);">
-            <div class="cal-timeline-time">${hr.label}</div>
+            <div class="cal-timeline-time">${i.label}</div>
             <div class="cal-timeline-content">
               <div>
-                <div style="font-weight: 700; font-size: 14px;">${esc(b.customer)} — ${esc(b.package)}</div>
-                <div class="hint">${esc(b.timeRange || b.time)} · Price: ${money(b.price)} · Down Payment: ${money(b.deposit)} · Balance: ${money(b.price - b.deposit)}</div>
+                <div style="font-weight: 700; font-size: 14px;">${d(u.customer)} \u2014 ${d(u.package)}</div>
+                <div class="hint">${d(u.timeRange||u.time)} \xB7 Price: ${b(u.price)} \xB7 Down Payment: ${b(u.deposit)} \xB7 Balance: ${b(u.price-u.deposit)}</div>
               </div>
               <div>
-                <span class="status-badge status-${statusClass}">${esc(b.status || 'Pending')}</span>
+                <span class="status-badge status-${m}">${d(u.status||"Pending")}</span>
               </div>
             </div>
           </div>
-        `;
-      } else {
-        timelineHtml += `
+        `}else p+=`
           <div class="cal-timeline-row">
-            <div class="cal-timeline-time">${hr.label}</div>
+            <div class="cal-timeline-time">${i.label}</div>
             <div class="cal-timeline-content">
               <span class="hint" style="color: var(--muted);">Available slot</span>
               <span class="status-badge status-available">Open</span>
             </div>
           </div>
-        `;
-      }
-    });
-    timelineHtml += '</div>';
-
-    container.innerHTML = navPillsHtml + timelineHtml;
-  }
-
-  function moveCalendar(delta) {
-    const date = fromISODate(selectedDayDate);
-    if (currentCalView === 'day') {
-      date.setDate(date.getDate() + delta);
-    } else if (currentCalView === 'week') {
-      date.setDate(date.getDate() + (delta * 7));
-    } else {
-      const day = date.getDate();
-      date.setDate(1);
-      date.setMonth(date.getMonth() + delta);
-      const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-      date.setDate(Math.min(day, lastDay));
-    }
-    selectedDayDate = toISODate(date);
-    renderCalendar();
-  }
-
-  /* ---------- Booking Availability ---------- */
-  function renderAvailability() {
-    const container = $('#availabilityList');
-    if (!container) return;
-
-    const availability = window.R59.state.getAvailability();
-
-    container.innerHTML = availability.map(item => {
-      const isEditingThisDay = editingTimeframeDay === item.day;
-      const slotsHtml = (item.available && item.timeframes && item.timeframes.length > 0)
-        ? `
+        `}),p+="</div>",t.innerHTML=s+p}function de(t){const e=W($);if(E==="day")e.setDate(e.getDate()+t);else if(E==="week")e.setDate(e.getDate()+t*7);else{const n=e.getDate();e.setDate(1),e.setMonth(e.getMonth()+t);const a=new Date(e.getFullYear(),e.getMonth()+1,0).getDate();e.setDate(Math.min(n,a))}$=V(e),R()}function P(){const t=o("#availabilityList");if(!t)return;const e=window.R59.state.getAvailability();t.innerHTML=e.map(n=>{const a=I===n.day,s=n.available&&n.timeframes&&n.timeframes.length>0?`
           <div class="avail-slots-list">
-            ${item.timeframes.map(tf => `
+            ${n.timeframes.map(i=>`
               <div class="avail-slot-row">
                 <div>
-                  <strong>${esc(tf.label)}</strong>
-                  <span class="tf-badge ${tf.repeat === 'weekly' ? 'tf-repeat' : 'tf-norepeat'}" style="margin-left: 6px;">
-                    ${tf.repeat === 'weekly' ? 'Repeat weekly' : 'Does not repeat'}
+                  <strong>${d(i.label)}</strong>
+                  <span class="tf-badge ${i.repeat==="weekly"?"tf-repeat":"tf-norepeat"}" style="margin-left: 6px;">
+                    ${i.repeat==="weekly"?"Repeat weekly":"Does not repeat"}
                   </span>
                 </div>
                 <div class="avail-slot-actions">
-                  <button type="button" class="btn btn-sm" data-edit-timeframe-day="${esc(item.day)}" data-edit-timeframe-id="${Number(tf.id)}" style="padding: 3px 8px; font-size: 11px;">Edit</button>
-                  <button type="button" class="btn btn-danger btn-sm" data-remove-timeframe-day="${esc(item.day)}" data-remove-timeframe-id="${Number(tf.id)}" style="padding: 3px 8px; font-size: 11px;">Remove</button>
+                  <button type="button" class="btn btn-sm" data-edit-timeframe-day="${d(n.day)}" data-edit-timeframe-id="${Number(i.id)}" style="padding: 3px 8px; font-size: 11px;">Edit</button>
+                  <button type="button" class="btn btn-danger btn-sm" data-remove-timeframe-day="${d(n.day)}" data-remove-timeframe-id="${Number(i.id)}" style="padding: 3px 8px; font-size: 11px;">Remove</button>
                 </div>
               </div>
-            `).join('')}
+            `).join("")}
           </div>
-        `
-        : `<div class="hint" style="color: var(--muted); font-size: 13px;">Unavailable</div>`;
-
-      let currentRepeat = 'weekly';
-      let currentStart = '09:00';
-      let currentEnd = '17:00';
-
-      if (editingTimeframeId) {
-        const tf = item.timeframes?.find(t => t.id === editingTimeframeId);
-        if (tf) {
-          currentStart = tf.start;
-          currentEnd = tf.end;
-          currentRepeat = tf.repeat || 'weekly';
-        }
-      }
-
-      const formHtml = isEditingThisDay ? `
+        `:'<div class="hint" style="color: var(--muted); font-size: 13px;">Unavailable</div>';let l="weekly",c="09:00",r="17:00";if(S){const i=n.timeframes?.find(u=>u.id===S);i&&(c=i.start,r=i.end,l=i.repeat||"weekly")}const p=a?`
         <div class="timeframe-form">
           <div style="font-weight: 700; font-size: 13px; color: var(--accent-text);">
-            ${editingTimeframeId ? 'Edit Timeframe' : 'Add Timeframe'} for ${esc(item.day)}
+            ${S?"Edit Timeframe":"Add Timeframe"} for ${d(n.day)}
           </div>
           <div class="row" style="gap: 10px; flex-wrap: wrap;">
             <div>
               <label class="f" style="margin: 0 0 4px; font-size: 11px;">Start Time</label>
-              <input type="time" class="input" id="tfStart" style="width: auto; padding: 6px 8px;" value="${esc(currentStart)}">
+              <input type="time" class="input" id="tfStart" style="width: auto; padding: 6px 8px;" value="${d(c)}">
             </div>
             <div>
               <label class="f" style="margin: 0 0 4px; font-size: 11px;">End Time</label>
-              <input type="time" class="input" id="tfEnd" style="width: auto; padding: 6px 8px;" value="${esc(currentEnd)}">
+              <input type="time" class="input" id="tfEnd" style="width: auto; padding: 6px 8px;" value="${d(r)}">
             </div>
           </div>
           <div>
             <div class="hint" style="font-weight: 600; margin-bottom: 6px; color: var(--text-soft);">Repeat:</div>
             <div style="display: flex; gap: 16px; align-items: center;">
               <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
-                <input type="radio" name="tfRepeat" id="tfRepeatNone" value="none" ${currentRepeat === 'none' ? 'checked' : ''} style="accent-color: var(--yellow);">
+                <input type="radio" name="tfRepeat" id="tfRepeatNone" value="none" ${l==="none"?"checked":""} style="accent-color: var(--yellow);">
                 Does not repeat
               </label>
               <label style="display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
-                <input type="radio" name="tfRepeat" id="tfRepeatWeekly" value="weekly" ${currentRepeat === 'weekly' ? 'checked' : ''} style="accent-color: var(--yellow);">
+                <input type="radio" name="tfRepeat" id="tfRepeatWeekly" value="weekly" ${l==="weekly"?"checked":""} style="accent-color: var(--yellow);">
                 Repeat weekly
               </label>
             </div>
           </div>
           <div class="row" style="gap: 8px;">
-            <button type="button" class="btn btn-primary btn-sm" data-save-timeframe-day="${esc(item.day)}">Save Timeframe</button>
+            <button type="button" class="btn btn-primary btn-sm" data-save-timeframe-day="${d(n.day)}">Save Timeframe</button>
             <button type="button" class="btn btn-sm" data-cancel-timeframe="true">Cancel</button>
           </div>
         </div>
-      ` : '';
-
-      return `
+      `:"";return`
         <div class="avail-day-card">
           <div class="avail-day-head">
             <div class="avail-day-title">
-              <strong>${esc(item.day)}</strong>
-              <span class="status-badge ${item.available && item.timeframes?.length > 0 ? 'status-available' : 'status-unavailable'}">
-                ${item.available && item.timeframes?.length > 0 ? 'Available' : 'Unavailable'}
+              <strong>${d(n.day)}</strong>
+              <span class="status-badge ${n.available&&n.timeframes?.length>0?"status-available":"status-unavailable"}">
+                ${n.available&&n.timeframes?.length>0?"Available":"Unavailable"}
               </span>
             </div>
-            <button type="button" class="btn btn-sm" data-add-timeframe-day="${esc(item.day)}">+ Add Timeframe</button>
+            <button type="button" class="btn btn-sm" data-add-timeframe-day="${d(n.day)}">+ Add Timeframe</button>
           </div>
-          ${slotsHtml}
-          ${formHtml}
+          ${s}
+          ${p}
         </div>
-      `;
-    }).join('');
-  }
-
-  function showAddTimeframe(day) {
-    editingTimeframeDay = day;
-    editingTimeframeId = null;
-    renderAvailability();
-  }
-
-  function editTimeframe(day, id) {
-    editingTimeframeDay = day;
-    editingTimeframeId = id;
-    renderAvailability();
-  }
-
-  function cancelTimeframe() {
-    editingTimeframeDay = null;
-    editingTimeframeId = null;
-    renderAvailability();
-  }
-
-  function saveTimeframe(day) {
-    const start = $('#tfStart')?.value || '09:00';
-    const end = $('#tfEnd')?.value || '17:00';
-    const repeatVal = $('input[name="tfRepeat"]:checked')?.value || 'weekly';
-
-    const availability = window.R59.state.getAvailability();
-    const item = availability.find(d => d.day === day);
-    if (!item) return;
-
-    item.timeframes = item.timeframes || [];
-    const label = `${formatTime12h(start)} – ${formatTime12h(end)}`;
-
-    if (editingTimeframeId) {
-      const tf = item.timeframes.find(t => t.id === editingTimeframeId);
-      if (tf) {
-        tf.start = start;
-        tf.end = end;
-        tf.label = label;
-        tf.repeat = repeatVal;
-      }
-      window.toast('Timeframe updated');
-    } else {
-      item.timeframes.push({
-        id: ++nextTimeframeId,
-        start,
-        end,
-        label,
-        repeat: repeatVal
-      });
-      item.available = true;
-      window.toast('Timeframe added');
-    }
-
-    editingTimeframeDay = null;
-    editingTimeframeId = null;
-    renderAvailability();
-    window.R59.state.markDirty();
-  }
-
-  function removeTimeframe(day, id) {
-    const availability = window.R59.state.getAvailability();
-    const item = availability.find(d => d.day === day);
-    if (!item) return;
-    const timeframe = item.timeframes?.find(t => t.id === id);
-    if (!timeframe) return;
-
-    window.R59.confirmation.confirmRemoveTimeframe(timeframe.label, day, () => {
-      item.timeframes = item.timeframes.filter(t => t.id !== id);
-      if (item.timeframes.length === 0) item.available = false;
-      renderAvailability();
-      window.R59.state.markDirty();
-      window.toast('Timeframe removed');
-    });
-  }
-
-  /* ---------- Blocked Dates ---------- */
-  function renderBlockedDates() {
-    const container = $('#blockedDatesList');
-    if (!container) return;
-
-    const blocked = window.R59.state.getBlockedDates();
-
-    if (blocked.length === 0) {
-      container.innerHTML = '<p class="hint">No dates are currently blocked.</p>';
-      return;
-    }
-
-    container.innerHTML = blocked.map(item => `
+      `}).join("")}function G(t){I=t,S=null,P()}function K(t,e){I=t,S=e,P()}function Q(){I=null,S=null,P()}function X(t){const e=o("#tfStart")?.value||"09:00",n=o("#tfEnd")?.value||"17:00",a=o('input[name="tfRepeat"]:checked')?.value||"weekly",l=window.R59.state.getAvailability().find(r=>r.day===t);if(!l)return;l.timeframes=l.timeframes||[];const c=`${ie(e)} \u2013 ${ie(n)}`;if(S){const r=l.timeframes.find(p=>p.id===S);r&&(r.start=e,r.end=n,r.label=c,r.repeat=a),window.toast("Timeframe updated")}else l.timeframes.push({id:++he,start:e,end:n,label:c,repeat:a}),l.available=!0,window.toast("Timeframe added");I=null,S=null,P(),window.R59.state.markDirty()}function Z(t,e){const a=window.R59.state.getAvailability().find(l=>l.day===t);if(!a)return;const s=a.timeframes?.find(l=>l.id===e);s&&window.R59.confirmation.confirmRemoveTimeframe(s.label,t,()=>{a.timeframes=a.timeframes.filter(l=>l.id!==e),a.timeframes.length===0&&(a.available=!1),P(),window.R59.state.markDirty(),window.toast("Timeframe removed")})}function H(){const t=o("#blockedDatesList");if(!t)return;const e=window.R59.state.getBlockedDates();if(e.length===0){t.innerHTML='<p class="hint">No dates are currently blocked.</p>';return}t.innerHTML=e.map(n=>`
       <div class="blocked-date-item">
         <div>
-          <div style="font-family: var(--display); font-size: 15px; font-weight: 700; color: var(--text);">${esc(item.dateFormatted || item.dateStr || item.date)}</div>
-          <div class="hint" style="color: var(--muted);">${esc(item.reason || 'Blocked date')}</div>
+          <div style="font-family: var(--display); font-size: 15px; font-weight: 700; color: var(--text);">${d(n.dateFormatted||n.dateStr||n.date)}</div>
+          <div class="hint" style="color: var(--muted);">${d(n.reason||"Blocked date")}</div>
         </div>
-        <button type="button" class="btn btn-danger btn-sm" data-remove-block="${esc(item.id)}">Remove</button>
+        <button type="button" class="btn btn-danger btn-sm" data-remove-block="${d(n.id)}">Remove</button>
       </div>
-    `).join('');
-  }
-
-  function removeBlockedDate(id) {
-    const blockedList = window.R59.state.getBlockedDates();
-    const removed = blockedList.find(b => String(b.id) === String(id));
-    if (!removed) return;
-
-    window.R59.confirmation.confirmRemoveBlockedDate(removed.dateFormatted || removed.dateStr || removed.date, () => {
-      window.R59.state.setBlockedDates(blockedList.filter(b => String(b.id) !== String(id)));
-      if (removed?.id && window.R59.api?.schedule?.removeBlockedDate) {
-        window.R59.api.schedule.removeBlockedDate(removed.id).catch(err => console.warn('[schedule] Failed to remove blocked date:', err));
-      }
-      renderBlockedDates();
-      renderCalendar();
-      if (window.R59.dashboard?.renderOverview) window.R59.dashboard.renderOverview();
-      window.R59.state.markDirty();
-      window.toast('Date unblocked');
-    });
-  }
-
-  function addBlockedDate() {
-    const dateVal = $('#blockDateInput')?.value;
-    const reasonVal = $('#blockReasonInput')?.value.trim();
-    if (!dateVal || !window.R59.formValidation?.isValidISODate(dateVal)) {
-      window.toast('Please choose a valid date to block');
-      return;
-    }
-
-    const [y, m, d] = dateVal.split('-').map(Number);
-    const dateFormatted = `${MONTH_NAMES[m - 1]} ${d}, ${y}`;
-
-    const blockedList = window.R59.state.getBlockedDates();
-    const newBlock = {
-      id: Date.now(),
-      date: dateVal,
-      dateStr: dateVal,
-      dateFormatted: dateFormatted,
-      reason: reasonVal || 'Unavailable'
-    };
-    blockedList.push(newBlock);
-
-    if (window.R59.api?.schedule?.addBlockedDate) {
-      window.R59.api.schedule.addBlockedDate({ date: dateVal, reason: reasonVal || 'Unavailable' })
-        .then(res => {
-          if (res?.id) {
-            newBlock.id = res.id;
-            renderBlockedDates();
-          }
-        })
-        .catch(err => console.warn('[schedule] Failed to add blocked date:', err));
-    }
-
-    $('#blockDateInput').value = '';
-    $('#blockReasonInput').value = '';
-    renderBlockedDates();
-    renderCalendar();
-    if (window.R59.dashboard?.renderOverview) window.R59.dashboard.renderOverview();
-    window.R59.state.markDirty();
-
-    const bookings = window.R59.state.getBookings();
-    const existing = bookings.filter(b => b.date === dateVal && b.status !== 'Cancelled').length;
-    window.toast(existing
-      ? `Date blocked — note: ${existing} existing booking${existing > 1 ? 's' : ''} on that day ${existing > 1 ? 'are' : 'is'} not cancelled`
-      : 'Date blocked');
-  }
-
-  /* ---------- Bookings List & Cards ---------- */
-  function bookingCardHTML(b) {
-    const balance = Math.max(0, (b.price || 0) - (b.deposit || 0));
-    const isCancelled = b.status === 'Cancelled';
-    const rawStatus = String(b.status || 'pending').toLowerCase();
-    const safeStatus = ['confirmed', 'cancelled', 'pending'].includes(rawStatus) ? rawStatus : 'pending';
-    return `
-      <div class="booking-item ${isCancelled ? 'cancelled' : ''}">
+    `).join("")}function ee(t){const e=window.R59.state.getBlockedDates(),n=e.find(a=>String(a.id)===String(t));n&&window.R59.confirmation.confirmRemoveBlockedDate(n.dateFormatted||n.dateStr||n.date,()=>{window.R59.state.setBlockedDates(e.filter(a=>String(a.id)!==String(t))),n?.id&&window.R59.api?.schedule?.removeBlockedDate&&window.R59.api.schedule.removeBlockedDate(n.id).catch(a=>console.warn("[schedule] Failed to remove blocked date:",a)),H(),R(),window.R59.dashboard?.renderOverview&&window.R59.dashboard.renderOverview(),window.R59.state.markDirty(),window.toast("Date unblocked")})}function Le(){const t=o("#blockDateInput")?.value,e=o("#blockReasonInput")?.value.trim();if(!t||!window.R59.formValidation?.isValidISODate(t)){window.toast("Please choose a valid date to block");return}const[n,a,s]=t.split("-").map(Number),l=`${F[a-1]} ${s}, ${n}`,c=window.R59.state.getBlockedDates(),r={id:Date.now(),date:t,dateStr:t,dateFormatted:l,reason:e||"Unavailable"};c.push(r),window.R59.api?.schedule?.addBlockedDate&&window.R59.api.schedule.addBlockedDate({date:t,reason:e||"Unavailable"}).then(u=>{u?.id&&(r.id=u.id,H())}).catch(u=>console.warn("[schedule] Failed to add blocked date:",u)),o("#blockDateInput").value="",o("#blockReasonInput").value="",H(),R(),window.R59.dashboard?.renderOverview&&window.R59.dashboard.renderOverview(),window.R59.state.markDirty();const i=window.R59.state.getBookings().filter(u=>u.date===t&&u.status!=="Cancelled").length;window.toast(i?`Date blocked \u2014 note: ${i} existing booking${i>1?"s":""} on that day ${i>1?"are":"is"} not cancelled`:"Date blocked")}function Me(t){const e=Math.max(0,(t.price||0)-(t.deposit||0)),n=t.status==="Cancelled",a=String(t.status||"pending").toLowerCase(),s=["confirmed","cancelled","pending"].includes(a)?a:"pending";return`
+      <div class="booking-item ${n?"cancelled":""}">
         <div class="booking-head">
           <div>
-            <div class="booking-time">${esc(b.time || '')}</div>
-            <div class="booking-client">${esc(b.customer || 'Unknown Client')}</div>
-            <div class="booking-pkg">${esc(b.package || 'Custom Session')}</div>
-            ${(b.email || b.phone) ? `<div class="booking-pkg">${esc(b.email || '')}${b.email && b.phone ? ' · ' : ''}${esc(b.phone || '')}</div>` : ''}
-            ${b.location ? `<div class="booking-pkg">Location: ${esc(b.location)}</div>` : ''}
-            ${b.attendees ? `<div class="booking-pkg">${b.attendees} attendee${b.attendees > 1 ? 's' : ''}${b.coupon && typeof b.coupon === 'object' ? ` · Coupon ${esc(b.coupon.code)} (−${money(b.coupon.discount)})` : ''}</div>` : ''}
-            ${b.notes ? `<div class="booking-notes">Notes: ${esc(b.notes)}</div>` : ''}
+            <div class="booking-time">${d(t.time||"")}</div>
+            <div class="booking-client">${d(t.customer||"Unknown Client")}</div>
+            <div class="booking-pkg">${d(t.package||"Custom Session")}</div>
+            ${t.email||t.phone?`<div class="booking-pkg">${d(t.email||"")}${t.email&&t.phone?" \xB7 ":""}${d(t.phone||"")}</div>`:""}
+            ${t.location?`<div class="booking-pkg">Location: ${d(t.location)}</div>`:""}
+            ${t.attendees?`<div class="booking-pkg">${t.attendees} attendee${t.attendees>1?"s":""}${t.coupon&&typeof t.coupon=="object"?` \xB7 Coupon ${d(t.coupon.code)} (\u2212${b(t.coupon.discount)})`:""}</div>`:""}
+            ${t.notes?`<div class="booking-notes">Notes: ${d(t.notes)}</div>`:""}
           </div>
           <div>
-            <span class="status-badge status-${safeStatus}">${esc(b.status || 'Pending')}</span>
+            <span class="status-badge status-${s}">${d(t.status||"Pending")}</span>
           </div>
         </div>
 
         <div class="booking-financials">
           <div class="financial-stat">
             <span>Session Price</span>
-            <b>${money(b.price)}</b>
+            <b>${b(t.price)}</b>
           </div>
           <div class="financial-stat">
             <span>Down Payment</span>
-            <b>${money(b.deposit)}</b>
+            <b>${b(t.deposit)}</b>
           </div>
           <div class="financial-stat">
             <span>Remaining Balance</span>
-            <b>${money(balance)}</b>
+            <b>${b(e)}</b>
           </div>
         </div>
 
         <div class="booking-foot">
-          <button type="button" class="btn btn-sm" data-edit-booking="${esc(b.id)}">Edit</button>
-          ${isCancelled
-            ? `<button type="button" class="btn btn-danger btn-sm" data-delete-booking="${esc(b.id)}">Remove</button>`
-            : `<button type="button" class="btn btn-danger btn-sm" data-cancel-booking="${esc(b.id)}">Cancel Booking</button>`}
+          <button type="button" class="btn btn-sm" data-edit-booking="${d(t.id)}">Edit</button>
+          ${n?`<button type="button" class="btn btn-danger btn-sm" data-delete-booking="${d(t.id)}">Remove</button>`:`<button type="button" class="btn btn-danger btn-sm" data-cancel-booking="${d(t.id)}">Cancel Booking</button>`}
         </div>
-      </div>`;
-  }
-
-  function bookingsGroupedHTML(list, emptyMsg) {
-    if (!list || list.length === 0) return `<p class="hint">${emptyMsg}</p>`;
-    const sorted = [...list].sort((x, y) => bookingSortKey(x).localeCompare(bookingSortKey(y)));
-    const grouped = new Map();
-    sorted.forEach(b => {
-      const label = b.dateLabel || b.date;
-      if (!grouped.has(label)) grouped.set(label, []);
-      grouped.get(label).push(b);
-    });
-
-    return [...grouped.entries()].map(([dateKey, items]) => `
+      </div>`}function re(t,e){if(!t||t.length===0)return`<p class="hint">${e}</p>`;const n=[...t].sort((s,l)=>se(s).localeCompare(se(l))),a=new Map;return n.forEach(s=>{const l=s.dateLabel||s.date;a.has(l)||a.set(l,[]),a.get(l).push(s)}),[...a.entries()].map(([s,l])=>`
       <div class="booking-group">
         <div class="booking-date-head">
-          <span>${esc(dateKey)}</span>
-          <span class="hint">${items.length} booking${items.length > 1 ? 's' : ''}</span>
+          <span>${d(s)}</span>
+          <span class="hint">${l.length} booking${l.length>1?"s":""}</span>
         </div>
-        ${items.map(bookingCardHTML).join('')}
-      </div>`).join('');
-  }
-
-  function renderBookings() {
-    const container = $('#bookingsList');
-    const bookings = window.R59.state.getBookings();
-    if (container) {
-      container.innerHTML = bookingsGroupedHTML(bookings, 'No bookings scheduled.');
-    }
-    syncClearCancelledButtons();
-    if (window.R59.dashboard?.renderOverview) {
-      window.R59.dashboard.renderOverview();
-    }
-  }
-
-  function syncClearCancelledButtons() {
-    const bookings = window.R59.state.getBookings();
-    const allCancelled = bookings.filter(b => b.status === 'Cancelled');
-    const setBtn = (sel, count, label) => {
-      const el = $(sel);
-      if (!el) return;
-      el.style.display = count > 0 ? '' : 'none';
-      el.textContent = `${label} (${count})`;
-    };
-    setBtn('#btnClearCancelled', allCancelled.length, 'Clear all cancelled');
-
-    const ovYear = window.R59.dashboard?.getYear ? window.R59.dashboard.getYear() : new Date().getFullYear();
-    const ovMonth = window.R59.dashboard?.getMonth ? window.R59.dashboard.getMonth() : new Date().getMonth();
-    const monthCancelled = allCancelled.filter(b => {
-      const [y, m] = b.date.split('-').map(Number);
-      return y === ovYear && (m - 1) === ovMonth;
-    });
-    setBtn('#ovClearCancelled', monthCancelled.length, 'Clear cancelled');
-  }
-
-  function promptRemoveBooking(id) {
-    const bookings = window.R59.state.getBookings();
-    const b = bookings.find(item => String(item.id) === String(id));
-    if (!b || b.status !== 'Cancelled') return;
-
-    window.R59.confirmation.confirmRemoveBooking(b, () => {
-      window.R59.state.setBookings(bookings.filter(item => String(item.id) !== String(id)));
-      if (window.R59.api?.bookings?.deleteBooking) {
-        window.R59.api.bookings.deleteBooking(id).catch(err => console.warn('[schedule] Failed to delete booking:', err));
-      }
-      refreshBookingViews();
-      window.toast('Cancelled booking removed');
-    });
-  }
-
-  function promptCancelBooking(id) {
-    const bookings = window.R59.state.getBookings();
-    const b = bookings.find(item => String(item.id) === String(id));
-    if (!b || b.status === 'Cancelled') return;
-
-    window.R59.confirmation.confirmCancelBooking(b, () => {
-      b.status = 'Cancelled';
-      if (window.R59.api?.bookings?.cancelBooking) {
-        window.R59.api.bookings.cancelBooking(id).catch(err => console.warn('[schedule] Failed to cancel booking:', err));
-      }
-      refreshBookingViews();
-      window.toast(`Booking cancelled — ${money(b.deposit)} down payment marked for reimbursement`);
-    });
-  }
-
-  function promptClearCancelled(scopeLabel, ids) {
-    window.R59.confirmation.confirmClearCancelled(ids.length, scopeLabel, () => {
-      const bookings = window.R59.state.getBookings();
-      const strIds = ids.map(String);
-      window.R59.state.setBookings(bookings.filter(b => !strIds.includes(String(b.id))));
-      if (window.R59.api?.bookings?.deleteBooking) {
-        ids.forEach(id => {
-          window.R59.api.bookings.deleteBooking(id).catch(err => console.warn('[schedule] Failed to clear booking:', err));
-        });
-      }
-      refreshBookingViews();
-      window.toast(`${ids.length} cancelled booking${ids.length > 1 ? 's' : ''} cleared`);
-    });
-  }
-
-  function refreshBookingViews() {
-    renderBookings();
-    renderCalendar();
-  }
-
-  /* ---------- Booking Edit Modal ---------- */
-  function openBookingEditor(id) {
-    const bookings = window.R59.state.getBookings();
-    const b = bookings.find(item => String(item.id) === String(id));
-    if (!b) return;
-
-    editingBookingId = b.id;
-    $('#bkCustomer').value = b.customer || '';
-    $('#bkPackage').value = b.package || '';
-    $('#bkLocation').value = b.location || '';
-    $('#bkNotes').value = b.notes || '';
-    $('#bkEmail').value = b.email || '';
-    $('#bkPhone').value = b.phone || '';
-    $('#bkAttendees').value = b.attendees || '';
-    $('#bkDate').value = b.date || '';
-    $('#bkStart').value = to24(b.time);
-    $('#bkEnd').value = to24(b.end_time || (b.timeRange || '').split(/[-–]/)[1] || '');
-    $('#bkPrice').value = b.price || 0;
-    $('#bkDeposit').value = b.deposit || 0;
-    $('#bkStatus').value = b.status || 'Pending';
-    $('#bkError').textContent = '';
-    $('#bkRefundNote').style.display = 'none';
-
-    lastFocus = document.activeElement;
-    $('#bookingModal').classList.add('open');
-    $('#bkCustomer').focus();
-  }
-
-  function closeBookingEditor() {
-    $('#bookingModal')?.classList.remove('open');
-    editingBookingId = null;
-    if (lastFocus && typeof lastFocus.focus === 'function') lastFocus.focus();
-  }
-
-  function saveBookingEdit() {
-    const bookings = window.R59.state.getBookings();
-    const b = bookings.find(item => String(item.id) === String(editingBookingId));
-    if (!b) return closeBookingEditor();
-
-    const customer = $('#bkCustomer').value.trim();
-    const pkg = $('#bkPackage').value.trim();
-    const date = $('#bkDate').value;
-    const start = $('#bkStart').value;
-    const end = $('#bkEnd').value;
-    const price = parseFloat($('#bkPrice').value);
-    const deposit = parseFloat($('#bkDeposit').value);
-    const err = msg => { $('#bkError').textContent = msg; };
-
-    if (!customer) return err('Please enter the customer name.');
-    if (!pkg) return err('Please enter a package.');
-    const email = $('#bkEmail').value.trim();
-    const rawPhone = $('#bkPhone').value.trim();
-    const phone = rawPhone && window.R59.formValidation?.cleanPhone ? window.R59.formValidation.cleanPhone(rawPhone) : rawPhone;
-    const attendeesRaw = $('#bkAttendees').value.trim();
-    if (email && !window.R59.formValidation.isValidEmail(email)) return err('Please enter a valid email address.');
-    if (phone && !window.R59.formValidation.isValidPhone(phone)) return err('Please enter a valid phone number (10+ digits).');
-    if (attendeesRaw && !(parseInt(attendeesRaw, 10) >= 1)) return err('Attendees must be at least 1.');
-    if (!date || !window.R59.formValidation.isValidISODate(date)) return err('Please choose a valid date.');
-
-    const blockedList = window.R59.state.getBlockedDates();
-    const blockedDay = blockedList.find(x => x.dateStr === date);
-    if (blockedDay && date !== b.date && $('#bkStatus').value !== 'Cancelled') {
-      return err(`That date is blocked (${blockedDay.reason || 'Unavailable'}). Pick another date.`);
-    }
-
-    if (!start) return err('Please choose a start time.');
-    if (end && end <= start) return err('End time must be after the start time.');
-    if (!(price >= 0)) return err('Please enter a valid session price.');
-    if (!(deposit >= 0)) return err('Please enter a valid down payment.');
-    if (deposit > price) return err('Down payment cannot be more than the session price.');
-
-    const [y, m, d] = date.split('-').map(Number);
-    Object.assign(b, {
-      customer,
-      package: pkg,
-      date,
-      email,
-      phone,
-      location: $('#bkLocation').value.trim(),
-      notes: $('#bkNotes').value.trim(),
-      attendees: attendeesRaw ? parseInt(attendeesRaw, 10) : undefined,
-      dateFormatted: `${MONTH_NAMES[m - 1]} ${d}, ${y}`,
-      dateLabel: `${MONTH_NAMES[m - 1].toUpperCase()} ${d}, ${y}`,
-      time: from24(start),
-      timeRange: end ? `${from24(start)} – ${from24(end)}` : from24(start),
-      price,
-      deposit,
-      status: $('#bkStatus').value
-    });
-
-    if (window.R59.api?.bookings?.updateBooking) {
-      window.R59.api.bookings.updateBooking(b.id, {
-        customer_name: b.customer,
-        customer_email: b.email,
-        phone: b.phone,
-        location: b.location,
-        notes: b.notes,
-        attendees: b.attendees,
-        date: b.date,
-        startTime: start,
-        endTime: end,
-        price: b.price,
-        deposit: b.deposit,
-        status: b.status
-      }).catch(err => console.warn('[schedule] Failed to update booking:', err));
-    }
-
-    closeBookingEditor();
-    refreshBookingViews();
-    window.toast('Booking updated');
-  }
-
-  /* ---------- New Booking Modal ---------- */
-  function getDepositRate() {
-    const currentState = window.R59.state.getState();
-    const v = parseFloat(currentState.pricing.depositPercent);
-    return (isNaN(v) ? 50 : Math.min(100, Math.max(0, v))) / 100;
-  }
-
-  function getAvailablePackages() {
-    const currentState = window.R59.state.getState();
-    const packages = currentState.packages || [];
-    return packages.filter(p => p.active);
-  }
-
-  function computeBookingPrice({ pkgPrice, attendees, coupon }) {
-    const currentState = window.R59.state.getState();
-    const base = parseFloat(currentState.pricing.baseFee) || 0;
-    const perPerson = parseFloat(currentState.pricing.perPerson) || 0;
-    const attendeeFee = perPerson * attendees;
-    const subtotal = pkgPrice + base + attendeeFee;
-    let discount = 0;
-    if (coupon) {
-      discount = coupon.type === 'percent'
-        ? subtotal * coupon.amount / 100
-        : Math.min(coupon.amount, subtotal);
-    }
-    discount = round2(discount);
-    const total = round2(Math.max(0, subtotal - discount));
-    return {
-      base,
-      perPerson,
-      attendeeFee,
-      subtotal,
-      discount,
-      total,
-      deposit: round2(total * getDepositRate())
-    };
-  }
-
-  function nbSelectedPackage() {
-    const val = $('#nbPackage').value;
-    if (val === 'none') return { key: 'none', name: 'No package', price: 0, none: true };
-    return getAvailablePackages().find(p => String(p.id) === String(val)) || { key: 'custom', name: 'Custom', price: 0 };
-  }
-
-  function renderNewBookingSummary() {
-    const summaryEl = $('#nbSummary');
-    if (!summaryEl) return;
-    const pkg = nbSelectedPackage();
-    const attendees = Math.max(1, parseInt($('#nbAttendees').value, 10) || 1);
-    const c = computeBookingPrice({ pkgPrice: pkg.price || 0, attendees, coupon: nbCoupon });
-
-    summaryEl.innerHTML = `
-      ${pkg.none ? '' : `<div class="ps-row"><span>${esc(pkg.name)} package</span><b>${money(pkg.price)}</b></div>`}
-      <div class="ps-row"><span>Base fee</span><b>${money(c.base)}</b></div>
-      <div class="ps-row"><span>Attendees (${attendees} × ${money(c.perPerson)})</span><b>${money(c.attendeeFee)}</b></div>
-      ${nbCoupon ? `<div class="ps-row discount"><span>Coupon ${esc(nbCoupon.code)}</span><b>−${money(c.discount)}</b></div>` : ''}
-      <div class="ps-row total"><span>Total</span><b>${money(c.total)}</b></div>
-      <div class="ps-row"><span>Down payment (${Math.round(getDepositRate() * 100)}%)</span><b>${money(c.deposit)}</b></div>`;
-  }
-
-  function setNbCouponMsg(text, ok) {
-    const el = $('#nbCouponMsg');
-    if (!el) return;
-    el.textContent = text;
-    el.style.color = ok === undefined ? '' : (ok ? '#4ade80' : 'var(--red)');
-  }
-
-  function applyNbCoupon() {
-    $('#nbError').textContent = '';
-    const code = ($('#nbCoupon').value || '').trim().toUpperCase();
-    if (!code) {
-      nbCoupon = null;
-      setNbCouponMsg('Enter a coupon code first.', false);
-      renderNewBookingSummary();
-      return;
-    }
-    const currentState = window.R59.state.getState();
-    const c = (currentState.coupons || []).find(x => x.code === code);
-    if (!c) {
-      nbCoupon = null;
-      setNbCouponMsg('That coupon code does not exist.', false);
-    } else if (!c.active) {
-      nbCoupon = null;
-      setNbCouponMsg('That coupon code is not active.', false);
-    } else {
-      nbCoupon = c;
-      setNbCouponMsg(`Coupon applied: ${c.type === 'percent' ? c.amount + '% off' : money(c.amount) + ' off'}`, true);
-    }
-    renderNewBookingSummary();
-  }
-
-  function openNewBooking() {
-    ['#nbFirst', '#nbLast', '#nbEmail', '#nbPhone', '#nbDate', '#nbStart', '#nbEnd', '#nbCoupon', '#nbLocation', '#nbNotes'].forEach(id => {
-      const el = $(id);
-      if (el) el.value = '';
-    });
-    $('#nbAttendees').value = 1;
-    nbCoupon = null;
-    setNbCouponMsg('');
-    $('#nbError').textContent = '';
-
-    const pkgs = getAvailablePackages();
-    const pkgSelect = $('#nbPackage');
-    if (pkgSelect) {
-      pkgSelect.innerHTML = pkgs.map(p => `<option value="${esc(p.id)}">${esc(p.name)} — ${money(p.price)}</option>`).join('')
-        + '<option value="none">No package</option>';
-    }
-
-    renderNewBookingSummary();
-    lastFocus = document.activeElement;
-    $('#newBookingModal').classList.add('open');
-    $('#nbFirst').focus();
-  }
-
-  function closeNewBooking() {
-    $('#newBookingModal')?.classList.remove('open');
-    if (lastFocus && typeof lastFocus.focus === 'function') lastFocus.focus();
-  }
-
-  function createBooking() {
-    const err = msg => { $('#nbError').textContent = msg; };
-    const first = $('#nbFirst').value.trim();
-    const last = $('#nbLast').value.trim();
-    const email = $('#nbEmail').value.trim();
-    const rawPhone = $('#nbPhone').value.trim();
-    const phone = rawPhone && window.R59.formValidation?.cleanPhone ? window.R59.formValidation.cleanPhone(rawPhone) : rawPhone;
-    const attendees = parseInt($('#nbAttendees').value, 10);
-    const date = $('#nbDate').value;
-    const start = $('#nbStart').value;
-    const end = $('#nbEnd').value;
-    const pkg = nbSelectedPackage();
-    const couponText = $('#nbCoupon').value.trim();
-
-    if (!first) return err('Please enter a first name.');
-    if (!last) return err('Please enter a last name.');
-    if (!window.R59.formValidation.isValidEmail(email)) return err('Please enter a valid email address.');
-    if (!window.R59.formValidation.isValidPhone(phone)) return err('Please enter a valid phone number (10+ digits).');
-    if (!(attendees >= 1)) return err('Number of attendees must be at least 1.');
-    if (!date || !window.R59.formValidation.isValidISODate(date)) return err('Please choose a valid date for the booking.');
-    if (!start) return err('Please choose a start time.');
-    if (end && end <= start) return err('End time must be after the start time.');
-    if (couponText && (!nbCoupon || nbCoupon.code !== couponText.toUpperCase())) {
-      return err('Click “Apply” to use the coupon code, or clear the field.');
-    }
-
-    const blockedList = window.R59.state.getBlockedDates();
-    const blocked = blockedList.find(b => b.dateStr === date);
-    if (blocked) return err(`That date is blocked (${blocked.reason || 'Unavailable'}). Unblock it first or pick another date.`);
-
-    const c = computeBookingPrice({ pkgPrice: pkg.price || 0, attendees, coupon: nbCoupon });
-    const [y, m, d] = date.split('-').map(Number);
-
-    const bookings = window.R59.state.getBookings();
-    const nextId = (bookings.reduce((max, b) => Math.max(max, Number(b.id) || 0), 0)) + 1;
-
-    const newBooking = {
-      id: nextId,
-      date,
-      dateLabel: `${MONTH_NAMES[m - 1].toUpperCase()} ${d}, ${y}`,
-      dateFormatted: `${MONTH_NAMES[m - 1]} ${d}, ${y}`,
-      time: from24(start),
-      timeRange: end ? `${from24(start)} – ${from24(end)}` : from24(start),
-      customer: `${first} ${last}`,
-      firstName: first,
-      lastName: last,
-      email,
-      phone,
-      attendees,
-      location: $('#nbLocation').value.trim(),
-      notes: $('#nbNotes').value.trim(),
-      package: pkg.name,
-      price: c.total,
-      deposit: c.deposit,
-      coupon: nbCoupon ? { code: nbCoupon.code, discount: c.discount } : null,
-      status: 'Confirmed'
-    };
-
-    bookings.push(newBooking);
-
-    if (window.R59.api?.bookings?.createBooking) {
-      window.R59.api.bookings.createBooking({
-        client_name: newBooking.customer,
-        client_email: newBooking.email,
-        phone: newBooking.phone,
-        location: newBooking.location,
-        notes: newBooking.notes,
-        people: newBooking.attendees,
-        date: newBooking.date,
-        startTime: start,
-        endTime: end,
-        packageId: pkg.id && pkg.id !== 'none' && pkg.id !== 'custom' ? pkg.id : undefined,
-        totalPrice: newBooking.price,
-        deposit: newBooking.deposit,
-        coupon: nbCoupon ? nbCoupon.code : undefined,
-        status: 'confirmed'
-      }).then(res => {
-        if (res?.data?.id || res?.id) {
-          newBooking.id = res?.data?.id || res?.id;
-          refreshBookingViews();
-        }
-      }).catch(err => console.warn('[schedule] Failed to persist new booking:', err));
-    }
-
-    closeNewBooking();
-    refreshBookingViews();
-    window.toast(`Booking created for ${first} ${last}`);
-  }
-
-  function initScheduleListeners() {
-    // Calendar view buttons
-    ['Day', 'Week', 'Month'].forEach(v => {
-      document.getElementById(`calBtn${v}`)?.addEventListener('click', e => {
-        e.preventDefault();
-        e.stopPropagation();
-        currentCalView = v.toLowerCase();
-        renderCalendar();
-      });
-    });
-
-    $('#calPrev')?.addEventListener('click', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      moveCalendar(-1);
-    });
-
-    $('#calNext')?.addEventListener('click', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      moveCalendar(1);
-    });
-
-    // Block dates button
-    $('#btnBlockDate')?.addEventListener('click', addBlockedDate);
-
-    // Bookings buttons
-    $('#btnAddBooking')?.addEventListener('click', openNewBooking);
-    $('#btnClearCancelled')?.addEventListener('click', () => {
-      const bookings = window.R59.state.getBookings();
-      const ids = bookings.filter(b => b.status === 'Cancelled').map(b => b.id);
-      if (ids.length) promptClearCancelled('', ids);
-    });
-
-    // New booking modal listeners
-    $('#nbCancel')?.addEventListener('click', closeNewBooking);
-    $('#nbSave')?.addEventListener('click', createBooking);
-    $('#nbApplyCoupon')?.addEventListener('click', applyNbCoupon);
-    $('#nbCoupon')?.addEventListener('keydown', e => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        applyNbCoupon();
-      }
-    });
-    $('#nbCoupon')?.addEventListener('input', () => {
-      if (nbCoupon && $('#nbCoupon').value.trim().toUpperCase() !== nbCoupon.code) {
-        nbCoupon = null;
-        setNbCouponMsg('');
-        renderNewBookingSummary();
-      }
-    });
-    ['#nbPackage', '#nbAttendees'].forEach(sel => $(sel)?.addEventListener('input', renderNewBookingSummary));
-    $('#newBookingModal')?.addEventListener('click', e => {
-      if (e.target.id === 'newBookingModal') closeNewBooking();
-    });
-
-    // Edit booking modal listeners
-    const bkStatusEl = $('#bkStatus');
-    if (bkStatusEl) {
-      bkStatusEl.addEventListener('change', () => {
-        const bookings = window.R59.state.getBookings();
-        const b = bookings.find(item => String(item.id) === String(editingBookingId));
-        const warn = $('#bkRefundNote');
-        if (warn) warn.style.display = (bkStatusEl.value === 'Cancelled' && b && b.status !== 'Cancelled') ? 'block' : 'none';
-      });
-    }
-    $('#bkSave')?.addEventListener('click', saveBookingEdit);
-    $('#bkCancel')?.addEventListener('click', closeBookingEditor);
-    $('#bookingModal')?.addEventListener('click', e => {
-      if (e.target.id === 'bookingModal') closeBookingEditor();
-    });
-
-    // Delegated click listeners for dynamically rendered cards & calendar chips
-    document.addEventListener('click', e => {
-      const target = e.target instanceof Element ? e.target : e.target?.parentElement;
-      if (!target) return;
-
-      const openBk = target.closest('[data-open-booking]');
-      if (openBk) {
-        e.preventDefault();
-        openBookingEditor(openBk.dataset.openBooking);
-        return;
-      }
-
-      const editBk = target.closest('[data-edit-booking]');
-      if (editBk) {
-        e.preventDefault();
-        openBookingEditor(editBk.dataset.editBooking);
-        return;
-      }
-
-      const cancelBk = target.closest('[data-cancel-booking]');
-      if (cancelBk) {
-        e.preventDefault();
-        promptCancelBooking(cancelBk.dataset.cancelBooking);
-        return;
-      }
-
-      const delBk = target.closest('[data-delete-booking]');
-      if (delBk) {
-        e.preventDefault();
-        promptRemoveBooking(delBk.dataset.deleteBooking);
-        return;
-      }
-
-      const selDay = target.closest('[data-select-day]');
-      if (selDay) {
-        e.preventDefault();
-        window.R59.schedule.selectDayView(selDay.dataset.selectDay);
-        return;
-      }
-
-      const selCalDate = target.closest('[data-select-cal-date]');
-      if (selCalDate) {
-        e.preventDefault();
-        window.R59.schedule.selectCalendarDate(selCalDate.dataset.selectCalDate);
-        return;
-      }
-
-      const addTf = target.closest('[data-add-timeframe-day]');
-      if (addTf) {
-        e.preventDefault();
-        showAddTimeframe(addTf.dataset.addTimeframeDay);
-        return;
-      }
-
-      const saveTf = target.closest('[data-save-timeframe-day]');
-      if (saveTf) {
-        e.preventDefault();
-        saveTimeframe(saveTf.dataset.saveTimeframeDay);
-        return;
-      }
-
-      const cancelTf = target.closest('[data-cancel-timeframe]');
-      if (cancelTf) {
-        e.preventDefault();
-        cancelTimeframe();
-        return;
-      }
-
-      const editTf = target.closest('[data-edit-timeframe-day]');
-      if (editTf) {
-        e.preventDefault();
-        editTimeframe(editTf.dataset.editTimeframeDay, Number(editTf.dataset.editTimeframeId));
-        return;
-      }
-
-      const rmTf = target.closest('[data-remove-timeframe-day]');
-      if (rmTf) {
-        e.preventDefault();
-        removeTimeframe(rmTf.dataset.removeTimeframeDay, Number(rmTf.dataset.removeTimeframeId));
-        return;
-      }
-
-      const rmBlock = target.closest('[data-remove-block]');
-      if (rmBlock) {
-        e.preventDefault();
-        removeBlockedDate(rmBlock.dataset.removeBlock);
-        return;
-      }
-    });
-
-    // Keyboard activation for calendar day cells, chips, and day selectors
-    document.addEventListener('keydown', e => {
-      if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
-      const target = e.target instanceof Element ? e.target : e.target?.parentElement;
-      if (!target) return;
-
-      const openBk = target.closest('[data-open-booking]');
-      if (openBk) {
-        e.preventDefault();
-        openBookingEditor(openBk.dataset.openBooking);
-        return;
-      }
-
-      const selDay = target.closest('[data-select-day]');
-      if (selDay) {
-        e.preventDefault();
-        window.R59.schedule.selectDayView(selDay.dataset.selectDay);
-        return;
-      }
-
-      const selCalDate = target.closest('[data-select-cal-date]');
-      if (selCalDate) {
-        e.preventDefault();
-        window.R59.schedule.selectCalendarDate(selCalDate.dataset.selectCalDate);
-        return;
-      }
-    });
-  }
-
-  window.R59 = window.R59 || {};
-  window.R59.schedule = {
-    renderCalendar,
-    renderAvailability,
-    renderBlockedDates,
-    renderBookings,
-    refreshBookingViews,
-    buildMonthGridHTML,
-    bookingsGroupedHTML,
-    syncClearCancelledButtons,
-    selectCalendarDate: ds => { selectedDayDate = ds; renderCalendar(); },
-    selectDayView: ds => { selectedDayDate = ds; currentCalView = 'day'; renderCalendar(); },
-    showAddTimeframe,
-    editTimeframe,
-    cancelTimeframe,
-    saveTimeframe,
-    removeTimeframe,
-    removeBlockedDate,
-    promptRemoveBooking,
-    promptCancelBooking,
-    promptClearCancelled,
-    openBookingEditor,
-    closeBookingEditor,
-    openNewBooking,
-    closeNewBooking,
-    initScheduleListeners
-  };
-
-  // Expose methods for existing event handlers
-  window.renderCalendar = renderCalendar;
-  window.renderAvailability = renderAvailability;
-  window.renderBlockedDates = renderBlockedDates;
-  window.renderBookings = renderBookings;
-  window.selectCalendarDate = window.R59.schedule.selectCalendarDate;
-  window.selectDayView = window.R59.schedule.selectDayView;
-  window.showAddTimeframe = showAddTimeframe;
-  window.editTimeframe = editTimeframe;
-  window.cancelTimeframe = cancelTimeframe;
-  window.saveTimeframe = saveTimeframe;
-  window.removeTimeframe = removeTimeframe;
-  window.removeBlockedDate = removeBlockedDate;
-  window.openBookingEditor = openBookingEditor;
-  window.promptRemoveBooking = promptRemoveBooking;
-  window.promptCancelBooking = promptCancelBooking;
-})();
+        ${l.map(Me).join("")}
+      </div>`).join("")}function te(){const t=o("#bookingsList"),e=window.R59.state.getBookings();t&&(t.innerHTML=re(e,"No bookings scheduled.")),ce(),window.R59.dashboard?.renderOverview&&window.R59.dashboard.renderOverview()}function ce(){const e=window.R59.state.getBookings().filter(c=>c.status==="Cancelled"),n=(c,r,p)=>{const i=o(c);i&&(i.style.display=r>0?"":"none",i.textContent=`${p} (${r})`)};n("#btnClearCancelled",e.length,"Clear all cancelled");const a=window.R59.dashboard?.getYear?window.R59.dashboard.getYear():new Date().getFullYear(),s=window.R59.dashboard?.getMonth?window.R59.dashboard.getMonth():new Date().getMonth(),l=e.filter(c=>{const[r,p]=c.date.split("-").map(Number);return r===a&&p-1===s});n("#ovClearCancelled",l.length,"Clear cancelled")}function ne(t){const e=window.R59.state.getBookings(),n=e.find(a=>String(a.id)===String(t));!n||n.status!=="Cancelled"||window.R59.confirmation.confirmRemoveBooking(n,()=>{window.R59.state.setBookings(e.filter(a=>String(a.id)!==String(t))),window.R59.api?.bookings?.deleteBooking&&window.R59.api.bookings.deleteBooking(t).catch(a=>console.warn("[schedule] Failed to delete booking:",a)),T(),window.toast("Cancelled booking removed")})}function ae(t){const n=window.R59.state.getBookings().find(a=>String(a.id)===String(t));!n||n.status==="Cancelled"||window.R59.confirmation.confirmCancelBooking(n,()=>{n.status="Cancelled",window.R59.api?.bookings?.cancelBooking&&window.R59.api.bookings.cancelBooking(t).catch(a=>console.warn("[schedule] Failed to cancel booking:",a)),T(),window.toast(`Booking cancelled \u2014 ${b(n.deposit)} down payment marked for reimbursement`)})}function ue(t,e){window.R59.confirmation.confirmClearCancelled(e.length,t,()=>{const n=window.R59.state.getBookings(),a=e.map(String);window.R59.state.setBookings(n.filter(s=>!a.includes(String(s.id)))),window.R59.api?.bookings?.deleteBooking&&e.forEach(s=>{window.R59.api.bookings.deleteBooking(s).catch(l=>console.warn("[schedule] Failed to clear booking:",l))}),T(),window.toast(`${e.length} cancelled booking${e.length>1?"s":""} cleared`)})}function T(){te(),R()}function O(t){const n=window.R59.state.getBookings().find(a=>String(a.id)===String(t));n&&(j=n.id,o("#bkCustomer").value=n.customer||"",o("#bkPackage").value=n.package||"",o("#bkLocation").value=n.location||"",o("#bkNotes").value=n.notes||"",o("#bkEmail").value=n.email||"",o("#bkPhone").value=n.phone||"",o("#bkAttendees").value=n.attendees||"",o("#bkDate").value=n.date||"",o("#bkStart").value=U(n.time),o("#bkEnd").value=U(n.end_time||(n.timeRange||"").split(/[-–]/)[1]||""),o("#bkPrice").value=n.price||0,o("#bkDeposit").value=n.deposit||0,o("#bkStatus").value=n.status||"Pending",o("#bkError").textContent="",o("#bkRefundNote").style.display="none",x=document.activeElement,o("#bookingModal").classList.add("open"),o("#bkCustomer").focus())}function z(){o("#bookingModal")?.classList.remove("open"),j=null,x&&typeof x.focus=="function"&&x.focus()}function Ee(){const e=window.R59.state.getBookings().find(D=>String(D.id)===String(j));if(!e)return z();const n=o("#bkCustomer").value.trim(),a=o("#bkPackage").value.trim(),s=o("#bkDate").value,l=o("#bkStart").value,c=o("#bkEnd").value,r=parseFloat(o("#bkPrice").value),p=parseFloat(o("#bkDeposit").value),i=D=>{o("#bkError").textContent=D};if(!n)return i("Please enter the customer name.");if(!a)return i("Please enter a package.");const u=o("#bkEmail").value.trim(),g=o("#bkPhone").value.trim(),m=g&&window.R59.formValidation?.cleanPhone?window.R59.formValidation.cleanPhone(g):g,f=o("#bkAttendees").value.trim();if(u&&!window.R59.formValidation.isValidEmail(u))return i("Please enter a valid email address.");if(m&&!window.R59.formValidation.isValidPhone(m))return i("Please enter a valid phone number (10+ digits).");if(f&&!(parseInt(f,10)>=1))return i("Attendees must be at least 1.");if(!s||!window.R59.formValidation.isValidISODate(s))return i("Please choose a valid date.");const B=window.R59.state.getBlockedDates().find(D=>D.dateStr===s);if(B&&s!==e.date&&o("#bkStatus").value!=="Cancelled")return i(`That date is blocked (${B.reason||"Unavailable"}). Pick another date.`);if(!l)return i("Please choose a start time.");if(c&&c<=l)return i("End time must be after the start time.");if(!(r>=0))return i("Please enter a valid session price.");if(!(p>=0))return i("Please enter a valid down payment.");if(p>r)return i("Down payment cannot be more than the session price.");const[C,M,A]=s.split("-").map(Number);Object.assign(e,{customer:n,package:a,date:s,email:u,phone:m,location:o("#bkLocation").value.trim(),notes:o("#bkNotes").value.trim(),attendees:f?parseInt(f,10):void 0,dateFormatted:`${F[M-1]} ${A}, ${C}`,dateLabel:`${F[M-1].toUpperCase()} ${A}, ${C}`,time:L(l),timeRange:c?`${L(l)} \u2013 ${L(c)}`:L(l),price:r,deposit:p,status:o("#bkStatus").value}),window.R59.api?.bookings?.updateBooking&&window.R59.api.bookings.updateBooking(e.id,{customer_name:e.customer,customer_email:e.email,phone:e.phone,location:e.location,notes:e.notes,attendees:e.attendees,date:e.date,startTime:l,endTime:c,price:e.price,deposit:e.deposit,status:e.status}).catch(D=>console.warn("[schedule] Failed to update booking:",D)),z(),T(),window.toast("Booking updated")}function pe(){const t=window.R59.state.getState(),e=parseFloat(t.pricing.depositPercent);return(isNaN(e)?50:Math.min(100,Math.max(0,e)))/100}function me(){return(window.R59.state.getState().packages||[]).filter(n=>n.active)}function ge({pkgPrice:t,attendees:e,coupon:n}){const a=window.R59.state.getState(),s=parseFloat(a.pricing.baseFee)||0,l=parseFloat(a.pricing.perPerson)||0,c=l*e,r=t+s+c;let p=0;n&&(p=n.type==="percent"?r*n.amount/100:Math.min(n.amount,r)),p=q(p);const i=q(Math.max(0,r-p));return{base:s,perPerson:l,attendeeFee:c,subtotal:r,discount:p,total:i,deposit:q(i*pe())}}function fe(){const t=o("#nbPackage").value;return t==="none"?{key:"none",name:"No package",price:0,none:!0}:me().find(e=>String(e.id)===String(t))||{key:"custom",name:"Custom",price:0}}function Y(){const t=o("#nbSummary");if(!t)return;const e=fe(),n=Math.max(1,parseInt(o("#nbAttendees").value,10)||1),a=ge({pkgPrice:e.price||0,attendees:n,coupon:v});t.innerHTML=`
+      ${e.none?"":`<div class="ps-row"><span>${d(e.name)} package</span><b>${b(e.price)}</b></div>`}
+      <div class="ps-row"><span>Base fee</span><b>${b(a.base)}</b></div>
+      <div class="ps-row"><span>Attendees (${n} \xD7 ${b(a.perPerson)})</span><b>${b(a.attendeeFee)}</b></div>
+      ${v?`<div class="ps-row discount"><span>Coupon ${d(v.code)}</span><b>\u2212${b(a.discount)}</b></div>`:""}
+      <div class="ps-row total"><span>Total</span><b>${b(a.total)}</b></div>
+      <div class="ps-row"><span>Down payment (${Math.round(pe()*100)}%)</span><b>${b(a.deposit)}</b></div>`}function N(t,e){const n=o("#nbCouponMsg");n&&(n.textContent=t,n.style.color=e===void 0?"":e?"#4ade80":"var(--red)")}function ve(){o("#nbError").textContent="";const t=(o("#nbCoupon").value||"").trim().toUpperCase();if(!t){v=null,N("Enter a coupon code first.",!1),Y();return}const n=(window.R59.state.getState().coupons||[]).find(a=>a.code===t);n?n.active?(v=n,N(`Coupon applied: ${n.type==="percent"?n.amount+"% off":b(n.amount)+" off"}`,!0)):(v=null,N("That coupon code is not active.",!1)):(v=null,N("That coupon code does not exist.",!1)),Y()}function be(){["#nbFirst","#nbLast","#nbEmail","#nbPhone","#nbDate","#nbStart","#nbEnd","#nbCoupon","#nbLocation","#nbNotes"].forEach(n=>{const a=o(n);a&&(a.value="")}),o("#nbAttendees").value=1,v=null,N(""),o("#nbError").textContent="";const t=me(),e=o("#nbPackage");e&&(e.innerHTML=t.map(n=>`<option value="${d(n.id)}">${d(n.name)} \u2014 ${b(n.price)}</option>`).join("")+'<option value="none">No package</option>'),Y(),x=document.activeElement,o("#newBookingModal").classList.add("open"),o("#nbFirst").focus()}function _(){o("#newBookingModal")?.classList.remove("open"),x&&typeof x.focus=="function"&&x.focus()}function Pe(){const t=w=>{o("#nbError").textContent=w},e=o("#nbFirst").value.trim(),n=o("#nbLast").value.trim(),a=o("#nbEmail").value.trim(),s=o("#nbPhone").value.trim(),l=s&&window.R59.formValidation?.cleanPhone?window.R59.formValidation.cleanPhone(s):s,c=parseInt(o("#nbAttendees").value,10),r=o("#nbDate").value,p=o("#nbStart").value,i=o("#nbEnd").value,u=fe(),g=o("#nbCoupon").value.trim();if(!e)return t("Please enter a first name.");if(!n)return t("Please enter a last name.");if(!window.R59.formValidation.isValidEmail(a))return t("Please enter a valid email address.");if(!window.R59.formValidation.isValidPhone(l))return t("Please enter a valid phone number (10+ digits).");if(!(c>=1))return t("Number of attendees must be at least 1.");if(!r||!window.R59.formValidation.isValidISODate(r))return t("Please choose a valid date for the booking.");if(!p)return t("Please choose a start time.");if(i&&i<=p)return t("End time must be after the start time.");if(g&&(!v||v.code!==g.toUpperCase()))return t("Click \u201CApply\u201D to use the coupon code, or clear the field.");const f=window.R59.state.getBlockedDates().find(w=>w.dateStr===r);if(f)return t(`That date is blocked (${f.reason||"Unavailable"}). Unblock it first or pick another date.`);const k=ge({pkgPrice:u.price||0,attendees:c,coupon:v}),[B,C,M]=r.split("-").map(Number),A=window.R59.state.getBookings(),h={id:A.reduce((w,oe)=>Math.max(w,Number(oe.id)||0),0)+1,date:r,dateLabel:`${F[C-1].toUpperCase()} ${M}, ${B}`,dateFormatted:`${F[C-1]} ${M}, ${B}`,time:L(p),timeRange:i?`${L(p)} \u2013 ${L(i)}`:L(p),customer:`${e} ${n}`,firstName:e,lastName:n,email:a,phone:l,attendees:c,location:o("#nbLocation").value.trim(),notes:o("#nbNotes").value.trim(),package:u.name,price:k.total,deposit:k.deposit,coupon:v?{code:v.code,discount:k.discount}:null,status:"Confirmed"};A.push(h),window.R59.api?.bookings?.createBooking&&window.R59.api.bookings.createBooking({client_name:h.customer,client_email:h.email,phone:h.phone,location:h.location,notes:h.notes,people:h.attendees,date:h.date,startTime:p,endTime:i,packageId:u.id&&u.id!=="none"&&u.id!=="custom"?u.id:void 0,totalPrice:h.price,deposit:h.deposit,coupon:v?v.code:void 0,status:"confirmed"}).then(w=>{(w?.data?.id||w?.id)&&(h.id=w?.data?.id||w?.id,T())}).catch(w=>console.warn("[schedule] Failed to persist new booking:",w)),_(),T(),window.toast(`Booking created for ${e} ${n}`)}function Te(){["Day","Week","Month"].forEach(e=>{document.getElementById(`calBtn${e}`)?.addEventListener("click",n=>{n.preventDefault(),n.stopPropagation(),E=e.toLowerCase(),R()})}),o("#calPrev")?.addEventListener("click",e=>{e.preventDefault(),e.stopPropagation(),de(-1)}),o("#calNext")?.addEventListener("click",e=>{e.preventDefault(),e.stopPropagation(),de(1)}),o("#btnBlockDate")?.addEventListener("click",Le),o("#btnAddBooking")?.addEventListener("click",be),o("#btnClearCancelled")?.addEventListener("click",()=>{const n=window.R59.state.getBookings().filter(a=>a.status==="Cancelled").map(a=>a.id);n.length&&ue("",n)}),o("#nbCancel")?.addEventListener("click",_),o("#nbSave")?.addEventListener("click",Pe),o("#nbApplyCoupon")?.addEventListener("click",ve),o("#nbCoupon")?.addEventListener("keydown",e=>{e.key==="Enter"&&(e.preventDefault(),ve())}),o("#nbCoupon")?.addEventListener("input",()=>{v&&o("#nbCoupon").value.trim().toUpperCase()!==v.code&&(v=null,N(""),Y())}),["#nbPackage","#nbAttendees"].forEach(e=>o(e)?.addEventListener("input",Y)),o("#newBookingModal")?.addEventListener("click",e=>{e.target.id==="newBookingModal"&&_()});const t=o("#bkStatus");t&&t.addEventListener("change",()=>{const n=window.R59.state.getBookings().find(s=>String(s.id)===String(j)),a=o("#bkRefundNote");a&&(a.style.display=t.value==="Cancelled"&&n&&n.status!=="Cancelled"?"block":"none")}),o("#bkSave")?.addEventListener("click",Ee),o("#bkCancel")?.addEventListener("click",z),o("#bookingModal")?.addEventListener("click",e=>{e.target.id==="bookingModal"&&z()}),document.addEventListener("click",e=>{const n=e.target instanceof Element?e.target:e.target?.parentElement;if(!n)return;const a=n.closest("[data-open-booking]");if(a){e.preventDefault(),O(a.dataset.openBooking);return}const s=n.closest("[data-edit-booking]");if(s){e.preventDefault(),O(s.dataset.editBooking);return}const l=n.closest("[data-cancel-booking]");if(l){e.preventDefault(),ae(l.dataset.cancelBooking);return}const c=n.closest("[data-delete-booking]");if(c){e.preventDefault(),ne(c.dataset.deleteBooking);return}const r=n.closest("[data-select-day]");if(r){e.preventDefault(),window.R59.schedule.selectDayView(r.dataset.selectDay);return}const p=n.closest("[data-select-cal-date]");if(p){e.preventDefault(),window.R59.schedule.selectCalendarDate(p.dataset.selectCalDate);return}const i=n.closest("[data-add-timeframe-day]");if(i){e.preventDefault(),G(i.dataset.addTimeframeDay);return}const u=n.closest("[data-save-timeframe-day]");if(u){e.preventDefault(),X(u.dataset.saveTimeframeDay);return}if(n.closest("[data-cancel-timeframe]")){e.preventDefault(),Q();return}const m=n.closest("[data-edit-timeframe-day]");if(m){e.preventDefault(),K(m.dataset.editTimeframeDay,Number(m.dataset.editTimeframeId));return}const f=n.closest("[data-remove-timeframe-day]");if(f){e.preventDefault(),Z(f.dataset.removeTimeframeDay,Number(f.dataset.removeTimeframeId));return}const k=n.closest("[data-remove-block]");if(k){e.preventDefault(),ee(k.dataset.removeBlock);return}}),document.addEventListener("keydown",e=>{if(e.key!=="Enter"&&e.key!==" "&&e.key!=="Spacebar")return;const n=e.target instanceof Element?e.target:e.target?.parentElement;if(!n)return;const a=n.closest("[data-open-booking]");if(a){e.preventDefault(),O(a.dataset.openBooking);return}const s=n.closest("[data-select-day]");if(s){e.preventDefault(),window.R59.schedule.selectDayView(s.dataset.selectDay);return}const l=n.closest("[data-select-cal-date]");if(l){e.preventDefault(),window.R59.schedule.selectCalendarDate(l.dataset.selectCalDate);return}})}window.R59=window.R59||{},window.R59.schedule={renderCalendar:R,renderAvailability:P,renderBlockedDates:H,renderBookings:te,refreshBookingViews:T,buildMonthGridHTML:le,bookingsGroupedHTML:re,syncClearCancelledButtons:ce,selectCalendarDate:t=>{$=t,R()},selectDayView:t=>{$=t,E="day",R()},showAddTimeframe:G,editTimeframe:K,cancelTimeframe:Q,saveTimeframe:X,removeTimeframe:Z,removeBlockedDate:ee,promptRemoveBooking:ne,promptCancelBooking:ae,promptClearCancelled:ue,openBookingEditor:O,closeBookingEditor:z,openNewBooking:be,closeNewBooking:_,initScheduleListeners:Te},window.renderCalendar=R,window.renderAvailability=P,window.renderBlockedDates=H,window.renderBookings=te,window.selectCalendarDate=window.R59.schedule.selectCalendarDate,window.selectDayView=window.R59.schedule.selectDayView,window.showAddTimeframe=G,window.editTimeframe=K,window.cancelTimeframe=Q,window.saveTimeframe=X,window.removeTimeframe=Z,window.removeBlockedDate=ee,window.openBookingEditor=O,window.promptRemoveBooking=ne,window.promptCancelBooking=ae})();

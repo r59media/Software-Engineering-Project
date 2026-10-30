@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --minify",
-    "sync-admin": "node -e \"const fs=require('fs'); fs.mkdirSync('public/admin', {recursive:true}); fs.cpSync('../admin', 'public/admin', {recursive:true, filter: (src) => !src.endsWith('.md')});\"",
+    "sync-admin": "node -e \"const fs=require('fs'), path=require('path'); fs.mkdirSync('public/admin', {recursive:true}); fs.cpSync('../admin', 'public/admin', {recursive:true, filter: (src) => !src.endsWith('.md')}); const esbuild = (() => { try { return require('esbuild'); } catch(e) { return require('module').createRequire(require.resolve('wrangler'))('esbuild'); } })(); function minifyDir(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) minifyDir(f); else if (f.endsWith('.js') || f.endsWith('.css')) { const c = fs.readFileSync(f, 'utf8'); const res = esbuild.transformSync(c, { loader: f.endsWith('.css') ? 'css' : 'js', minify: true, legalComments: 'none' }); fs.writeFileSync(f, res.code); } } } if (fs.existsSync('public/admin/assets')) minifyDir('public/admin/assets');\"",
     "sync-frontend": "node -e \"const fs=require('fs'), cp=require('child_process'); cp.execSync('pnpm --dir ../frontend install', {stdio:'inherit'}); cp.execSync('pnpm --dir ../frontend run build', {stdio:'inherit'}); if (fs.existsSync('../frontend/dist')) { if (fs.existsSync('public/assets')) { fs.rmSync('public/assets', {recursive:true, force:true}); } fs.mkdirSync('public', {recursive:true}); fs.cpSync('../frontend/dist', 'public', {recursive:true}); }\"",
     "build": "pnpm run sync-frontend && pnpm run sync-admin",
     "db:init": "wrangler d1 create r59_db",
