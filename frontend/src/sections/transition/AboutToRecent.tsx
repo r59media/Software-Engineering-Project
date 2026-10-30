@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { About } from '../about/About'
 import { RecentPhotoshoot } from '../recent/RecentPhotoshoot'
 import { LensTransitionContext } from './LensTransitionContext'
-import { irisOpening } from './irisOpening'
+import { TransitionLens } from './TransitionLens'
+import { aboutLens } from '../../config/aboutLens'
 import './AboutToRecent.css'
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value))
@@ -10,37 +11,47 @@ const smooth = (value: number) => value * value * (3 - 2 * value)
 
 export function AboutToRecent() {
   const root = useRef<HTMLDivElement>(null)
-  const [, setLoaded] = useState(false)
-  const [fits, setFits] = useState(() => window.innerHeight >= 500)
-  const [, setFailed] = useState(false)
+  const [mobile, setMobile] = useState(() => matchMedia(aboutLens.mobileQuery).matches)
+  const [readyUrl, setReadyUrl] = useState('')
+  const url = mobile ? aboutLens.mobileUrl : aboutLens.desktopUrl
+  const [loaded, setLoaded] = useState(false)
+  const [fits, setFits] = useState(false)
+  const [failed, setFailed] = useState(false)
   const [reduced, setReduced] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
   const listeners = useRef(new Set<(value: number) => void>())
   const controller = useMemo(() => ({
+    subscribe: () => () => {},
+    ready: () => setLoaded(true),
+    fail: () => setFailed(true),
+  }), [])
+  const overlayController = useMemo(() => ({
     subscribe(listener: (value: number) => void) {
       listeners.current.add(listener)
       return () => { listeners.current.delete(listener) }
     },
-    ready: () => setLoaded(true),
+    ready: () => setReadyUrl(url),
     fail: () => setFailed(true),
-  }), [listeners])
-  const enabled = !reduced && fits
+  }), [url])
+  const canAnimate = loaded && !failed && !reduced && fits
+  const enabled = canAnimate && readyUrl === url
+
+  useEffect(() => {
+    const media = matchMedia(aboutLens.mobileQuery)
+    const update = () => setMobile(media.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
 
   useEffect(() => {
     const section = root.current?.querySelector<HTMLElement>('#recent-photoshoot')
     if (!section) return
-    let lastWidth = window.innerWidth
     // Keep all gallery content scrollable on short/landscape viewports.
-    const measure = () => setFits(window.innerHeight >= 480 && section.offsetHeight <= window.innerHeight + 80)
-    const onResize = () => {
-      if (window.innerWidth <= 1000 && Math.abs(window.innerWidth - lastWidth) < 2) return
-      lastWidth = window.innerWidth
-      measure()
-    }
+    const measure = () => setFits(section.offsetHeight <= window.innerHeight + 1)
     const observer = new ResizeObserver(measure)
     observer.observe(section)
-    window.addEventListener('resize', onResize)
+    window.addEventListener('resize', measure)
     measure()
-    return () => { observer.disconnect(); window.removeEventListener('resize', onResize) }
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure) }
   }, [])
 
   useEffect(() => {
@@ -57,7 +68,7 @@ export function AboutToRecent() {
     const stage = host.querySelector<HTMLElement>('.lens-transition__stage')!
     const about = host.querySelector<HTMLElement>('#about')!
     const lens = host.querySelector<HTMLElement>('.about__lens')!
-    const motion = lens.querySelector<HTMLElement>('.about__motion')!
+    const overlay = host.querySelector<HTMLElement>('.lens-transition__lens')!
     const recent = host.querySelector<HTMLElement>('.lens-transition__recent')!
     let frame = 0
     let height = 0
@@ -68,6 +79,7 @@ export function AboutToRecent() {
     let size = 0
     let viewport = 0
     let width = 0
+
     let targetProgress = 0
     let displayedProgress = 0
 
@@ -85,19 +97,20 @@ export function AboutToRecent() {
       const scale = 1 + zoom * (targetRadius / (size * 0.25) - 1)
       const cx = x + (width / 2 - x) * move
       const cy = y + (height - viewport / 2 - y) * move
-      const currentScale = scale * (size / 960)
-      motion.style.transform = `translate3d(${(cx - x).toFixed(2)}px, ${(cy - y).toFixed(2)}px, 0) scale(${currentScale.toFixed(5)})`
-      recent.style.clipPath = progress >= 1 ? 'none' : irisOpening(aperture, size * scale, cx, cy - height + viewport)
+      overlay.style.transform = `translate(${cx - size * scale / 2}px, ${cy - size * scale / 2}px) scale(${size * scale / 640})`
+      recent.style.clipPath = progress >= 1 ? 'none' : `circle(${size * scale * 0.32}px at ${cx}px ${cy - height + viewport}px)`
       recent.style.visibility = progress > 0 ? 'visible' : 'hidden'
-      recent.inert = progress < 1
+      overlay.style.visibility = progress > 0 && progress < 1 ? 'visible' : 'hidden'
+      lens.style.visibility = progress > 0 ? 'hidden' : ''
+      // Visible photos respond as soon as the iris starts opening.
+      recent.inert = aperture <= 0
       about.inert = progress >= 1
       host.dataset.progress = progress.toFixed(3)
-      host.dataset.zooming = String(progress > 0.005)
       subscribers.forEach(listener => listener(aperture))
     }
-
     const tick = () => {
       frame = 0
+      if (document.body.style.position === 'fixed') return
       targetProgress = calculateTarget()
       const diff = targetProgress - displayedProgress
       if (Math.abs(diff) < 0.0005) {
@@ -113,8 +126,8 @@ export function AboutToRecent() {
 
     const measure = () => {
       height = about.offsetHeight
-      viewport = window.innerHeight || 800
-      width = host.clientWidth || window.innerWidth || 1200
+      viewport = window.innerHeight
+      width = host.clientWidth
       distance = viewport * 1.6
       const bounds = host.getBoundingClientRect()
       host.style.height = `${height + distance}px`
@@ -124,18 +137,14 @@ export function AboutToRecent() {
       const aboutBounds = about.getBoundingClientRect()
       x = lensBounds.left - aboutBounds.left + lensBounds.width / 2
       y = lensBounds.top - aboutBounds.top + lensBounds.height / 2
-      size = lensBounds.width || 120
-      lens.style.setProperty('--lens-render-scale', String(size / 960))
+      size = lensBounds.width
       start = bounds.top + window.scrollY + height - viewport
       targetProgress = calculateTarget()
       displayedProgress = targetProgress
-      if (frame) {
-        cancelAnimationFrame(frame)
-        frame = 0
-      }
+      if (frame) cancelAnimationFrame(frame)
+      frame = 0
       applyProgress(displayedProgress)
     }
-
     const onResize = () => {
       // On mobile viewports (<= 1000px), scrolling dynamically hides/shows the address bar,
       // changing innerHeight continuously. Ignore height-only resizes on mobile.
@@ -144,42 +153,39 @@ export function AboutToRecent() {
     }
 
     const navigate = () => {
-      if (location.hash === '#recent-photoshoot') {
+      if (location.hash === '#recent-photoshoot') window.scrollTo({ top: start + distance, behavior: 'instant' })
+    }
+    let keyboardNavigation = false
+    const trackKey = (event: KeyboardEvent) => { keyboardNavigation = event.key === 'Tab' }
+    const trackPointer = () => { keyboardNavigation = false }
+    const focusRecent = (event: FocusEvent) => {
+      // Keyboard users should see the entire focused control; pointer focus must not move it.
+      if (keyboardNavigation && event.target instanceof HTMLElement &&
+          document.body.style.position !== 'fixed' && window.scrollY < start + distance - 1) {
         window.scrollTo({ top: start + distance, behavior: 'instant' })
-        targetProgress = 1
-        displayedProgress = 1
-        if (frame) {
-          cancelAnimationFrame(frame)
-          frame = 0
-        }
-        applyProgress(1)
       }
     }
-
-    const focusRecent = () => {
-      if (document.body.style.position !== 'fixed' && window.scrollY < start + distance - 1) navigate()
-    }
-
     const resize = new ResizeObserver(measure)
     resize.observe(about)
     window.addEventListener('scroll', schedule, { passive: true })
     window.addEventListener('resize', onResize)
     window.addEventListener('hashchange', navigate)
+    window.addEventListener('keydown', trackKey, true)
+    window.addEventListener('pointerdown', trackPointer, true)
     recent.addEventListener('focusin', focusRecent)
     measure()
     navigate()
-
     return () => {
       cancelAnimationFrame(frame)
       resize.disconnect()
       window.removeEventListener('scroll', schedule)
       window.removeEventListener('resize', onResize)
       window.removeEventListener('hashchange', navigate)
+      window.removeEventListener('keydown', trackKey, true)
+      window.removeEventListener('pointerdown', trackPointer, true)
       recent.removeEventListener('focusin', focusRecent)
-      host.style.height = ''; stage.style.top = ''; recent.style.cssText = ''
-      lens.style.removeProperty('--lens-render-scale')
-      motion.style.transform = ''
-      delete host.dataset.progress; delete host.dataset.zooming
+      host.style.height = ''; stage.style.top = ''; recent.style.cssText = ''; lens.style.visibility = ''; overlay.style.cssText = ''
+      delete host.dataset.progress
       recent.inert = false; about.inert = false
       subscribers.forEach(listener => listener(0))
     }
@@ -191,6 +197,9 @@ export function AboutToRecent() {
         {enabled && <a className="lens-transition__skip" href="#recent-photoshoot">Skip lens transition</a>}
         <About />
         <div className="lens-transition__recent"><RecentPhotoshoot /></div>
+        <div className="lens-transition__lens" aria-hidden="true">
+          {canAnimate && <TransitionLens url={url} controller={overlayController} />}
+        </div>
       </div>
     </div>
   </LensTransitionContext.Provider>
