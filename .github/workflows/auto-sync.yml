@@ -34,6 +34,7 @@ jobs:
 
       - name: Build frontend & admin into backend/public
         run: |
+          pnpm --dir backend install
           pnpm --dir backend run build
 
       - name: Commit and push changes if backend/public updated
