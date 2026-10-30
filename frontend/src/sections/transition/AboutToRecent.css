@@ -1,12 +1,6 @@
-.lens-transition {
-  overflow: clip;
-}
+.lens-transition__stage { position: relative; overflow: clip; }
 .lens-transition[data-enabled="true"] .lens-transition__stage {
   position: sticky;
-  overflow: clip;
-}
-.lens-transition[data-zooming="true"] .about {
-  overflow: visible;
 }
 .lens-transition[data-enabled="true"] .lens-transition__recent {
   position: absolute;
@@ -17,25 +11,23 @@
   overflow: clip;
   visibility: hidden;
 }
-.lens-transition[data-enabled="true"] .about__lens {
-  z-index: 5;
+/* The opaque GLB leaves cover the gallery. Its backing circle stays under the rim. */
+.lens-transition__lens {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 640px;
+  height: 640px;
+  z-index: 3;
+  visibility: hidden;
+  pointer-events: none;
+  transform-origin: top left;
+}
+.lens-transition[data-enabled="true"] .lens-transition__lens { will-change: transform; }
+@media (prefers-reduced-motion: reduce) {
+  .lens-transition__lens { display: none; will-change: auto; }
 }
 
-.lens-transition[data-enabled="true"] .about__lens > .about__motion {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 960px;
-  height: 960px;
-  margin-top: -480px;
-  margin-left: -480px;
-  transform-origin: center;
-  transform: scale(var(--lens-render-scale, 0.166667));
-  will-change: transform;
-}
-@media (prefers-reduced-motion: reduce) {
-  .lens-transition .about__lens > .about__motion { will-change: auto; }
-}
 .lens-transition__skip {
   position: absolute;
   bottom: 1rem;
@@ -47,3 +39,6 @@
   clip-path: inset(50%);
 }
 .lens-transition__skip:focus { clip-path: none; }
+
+/* R3F descendants must never intercept gallery clicks or touch gestures. */
+.lens-transition__lens * { pointer-events: none !important; }
