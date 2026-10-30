@@ -111,18 +111,12 @@ app.use('*', async (c, next) => {
       return c.text('Forbidden', 403)
     }
 
-    // Pinterest-style Anti-Scraping / Anti-Direct-Download check
+    // Strict Anti-Scraping / Anti-Direct-Download check:
+    // Standalone browser tabs, address bars, bookmarks, or external tools cannot send custom headers.
+    // Only authorized in-memory fetch requests carrying 'X-R59-Client: media-viewer' are permitted.
     const clientHeader = c.req.header('X-R59-Client')
-    const referer = c.req.header('Referer') || ''
-    const currentOrigin = url.origin
-    const isSameOrigin = referer.startsWith(currentOrigin) || referer.includes('localhost') || referer.includes('127.0.0.1')
-
-    const isAuthorized =
-      clientHeader === 'media-viewer' ||
-      (isSameOrigin && fetchDest !== 'document')
-
-    if (!isAuthorized) {
-      return c.text('Forbidden: Direct media scraping is not permitted.', 403)
+    if (clientHeader !== 'media-viewer') {
+      return c.redirect('/', 302)
     }
   }
 
@@ -334,16 +328,8 @@ app.get('/api/media/*', async (c) => {
   }
 
   const clientHeader = c.req.header('X-R59-Client')
-  const referer = c.req.header('Referer') || ''
-  const currentOrigin = new URL(c.req.url).origin
-  const isSameOrigin = referer.startsWith(currentOrigin) || referer.includes('localhost') || referer.includes('127.0.0.1')
-
-  const isAuthorized =
-    clientHeader === 'media-viewer' ||
-    (isSameOrigin && fetchDest !== 'document')
-
-  if (!isAuthorized) {
-    return c.text('Forbidden: Direct media scraping is not permitted.', 403)
+  if (clientHeader !== 'media-viewer') {
+    return c.redirect('/', 302)
   }
 
   const url = new URL(c.req.url)
@@ -419,6 +405,15 @@ app.get('*', async (c) => {
     return c.notFound()
   }
 
+  // Strict check on static assets matching protected media types
+  const isProtectedAsset =
+    !url.pathname.startsWith('/favicon') &&
+    (url.pathname.startsWith('/api/media/') || /\.(webp|png|jpe?g|glb)$/i.test(url.pathname))
+
+  if (isProtectedAsset && c.req.header('X-R59-Client') !== 'media-viewer') {
+    return c.redirect('/', 302)
+  }
+
   let assetRes: Response
   if (STATIC_EXT_REGEX.test(url.pathname)) {
     assetRes = await c.env.ASSETS.fetch(c.req.raw)
@@ -449,9 +444,6 @@ app.get('*', async (c) => {
   }
 
   const headers = new Headers(assetRes.headers)
-  const isProtectedAsset =
-    !url.pathname.startsWith('/favicon') &&
-    (url.pathname.startsWith('/api/media/') || /\.(webp|png|jpe?g|glb)$/i.test(url.pathname))
   if (isProtectedAsset) {
     headers.set('Cross-Origin-Resource-Policy', 'same-origin')
     headers.set('Content-Disposition', 'inline')

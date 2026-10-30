@@ -3,8 +3,7 @@ import { createPortal } from 'react-dom'
 import type { PhotoshootPhoto } from '../../types/recentPhotoshoot'
 import arrowLeft from '../../assets/mrphshImages/photo-arrow-left.svg'
 import arrowRight from '../../assets/mrphshImages/photo-arrow-right.svg'
-import { useProtectedImage } from '../../hooks/useProtectedImage'
-import { PhotoImage } from './PhotoImage'
+import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 
 interface PhotoViewerProps {
   photo: PhotoshootPhoto
@@ -16,8 +15,6 @@ interface PhotoViewerProps {
 
 export function PhotoViewer({ photo, position, total, onStep, onClose }: PhotoViewerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
-  const protectedUrl = useProtectedImage(photo.imageUrl)
-  const currentPhoto = { ...photo, imageUrl: protectedUrl }
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -59,8 +56,14 @@ export function PhotoViewer({ photo, position, total, onStep, onClose }: PhotoVi
     }}>
     <button type="button" className="photo-viewer__close" aria-label="Close photo viewer" onClick={onClose}>×</button>
     <div className="photo-viewer__image" data-recent-part="viewer-image" data-photo-id={photo.id}>
-      <div className="photo-shield" aria-hidden="true" />
-      <PhotoImage key={`${photo.id}:${protectedUrl}`} photo={currentPhoto} eager />
+      <ProtectedCanvasImage
+        key={photo.id}
+        src={photo.imageUrl}
+        alt={photo.alt}
+        className="photo-viewer__canvas"
+        width={photo.width}
+        height={photo.height}
+      />
     </div>
     {total > 1 && <>
       <button type="button" className="photo-viewer__previous" aria-label="Previous photo" onClick={() => onStep(-1)}><img src={arrowLeft} alt="" /></button>
