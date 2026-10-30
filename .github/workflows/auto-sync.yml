@@ -52,9 +52,11 @@ jobs:
         run: |
           git fetch origin feature/frontend || true
           if git rev-parse --verify origin/feature/frontend >/dev/null 2>&1; then
-            if git merge-base --is-ancestor origin/feature/frontend HEAD; then
+            if [ "$(git rev-parse origin/feature/frontend)" = "$(git rev-parse HEAD)" ]; then
+              echo "origin/feature/frontend is already at HEAD. No push needed."
+            elif git merge-base --is-ancestor origin/feature/frontend HEAD; then
               echo "origin/feature/frontend is an ancestor of HEAD. Fast-forwarding feature/frontend..."
-              git push origin HEAD:refs/heads/feature/frontend
+              git push origin HEAD:refs/heads/feature/frontend || true
             else
               echo "origin/feature/frontend is not an ancestor of HEAD. Skipping fast-forward."
             fi
