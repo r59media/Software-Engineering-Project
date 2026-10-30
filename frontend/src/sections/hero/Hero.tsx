@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from 'react'
 import type { HeroDestinations, HeroSlide } from '../../types/hero'
 import { ActionLink } from '../../components/ActionLink'
+import { useProtectedImage } from '../../hooks/useProtectedImage'
 import './Hero.css'
 
 export interface HeroProps {
@@ -17,6 +18,7 @@ interface HeroImageProps {
 function HeroImage({ slide, fallbackImageUrl }: HeroImageProps) {
   const [currentUrl, setCurrentUrl] = useState(slide.imageUrl)
   const [failed, setFailed] = useState(false)
+  const protectedUrl = useProtectedImage(currentUrl)
 
   const handleImageError = () => {
     if (fallbackImageUrl && currentUrl !== fallbackImageUrl) {
@@ -38,15 +40,17 @@ function HeroImage({ slide, fallbackImageUrl }: HeroImageProps) {
       data-embedded-overlay={Boolean(slide.hasEmbeddedOverlay)}
       style={position}
     >
+      <div className="hero-shield" aria-hidden="true" />
       {!failed && (
         <img
           className="hero__image"
-          src={currentUrl}
+          src={protectedUrl}
           alt={slide.alt.trim() || 'R59 Media featured automotive and portrait photography'}
           width={slide.width}
           height={slide.height}
           fetchPriority="high"
           decoding="async"
+          draggable={false}
           onError={handleImageError}
         />
       )}

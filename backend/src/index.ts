@@ -71,7 +71,7 @@ app.use('*', async (c, next) => {
   const corsMiddleware = cors({
     origin: requestOrigin,
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-R59-Client'],
     exposeHeaders: ['Content-Length', 'X-Requested-With'],
     credentials: false,
   })
@@ -87,6 +87,11 @@ app.use('*', async (c, next) => {
     return c.notFound()
   }
 
+  // Favicon exemption: allow standard browser favicon loading
+  if (url.pathname.startsWith('/favicon')) {
+    return await next()
+  }
+
   // Protect images & 3D models from direct standalone browser-tab scraping and external hotlinking
   const isProtectedAsset =
     url.pathname.startsWith('/api/media/') ||
@@ -96,15 +101,38 @@ app.use('*', async (c, next) => {
     const fetchDest = c.req.header('Sec-Fetch-Dest')
     const fetchSite = c.req.header('Sec-Fetch-Site')
 
+    // Keep direct document requests redirecting to home
     if (fetchDest === 'document') {
       return c.redirect('/', 302)
     }
+
+    // Keep cross-site requests blocked
     if (fetchSite === 'cross-site') {
       return c.text('Forbidden', 403)
+    }
+
+    // Pinterest-style Anti-Scraping / Anti-Direct-Download check
+    const clientHeader = c.req.header('X-R59-Client')
+    const referer = c.req.header('Referer') || ''
+    const currentOrigin = url.origin
+    const isSameOrigin = referer.startsWith(currentOrigin) || referer.includes('localhost') || referer.includes('127.0.0.1')
+
+    const isAuthorized =
+      clientHeader === 'media-viewer' ||
+      (isSameOrigin && fetchDest !== 'document')
+
+    if (!isAuthorized) {
+      return c.text('Forbidden: Direct media scraping is not permitted.', 403)
     }
   }
 
   await next()
+
+  if (isProtectedAsset && (c.req.method === 'GET' || c.req.method === 'HEAD')) {
+    c.header('Cross-Origin-Resource-Policy', 'same-origin')
+    c.header('Content-Disposition', 'inline')
+    c.header('X-Content-Type-Options', 'nosniff')
+  }
 })
 
 // Route /admin and /admin/* to Admin Dashboard static assets
@@ -192,6 +220,14 @@ app.get('/admin/*', async (c) => {
   // Clone with mutable headers so global security header middleware attaches headers cleanly
   const headers = new Headers(assetRes.headers)
   headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  const isProtectedAsset =
+    !url.pathname.startsWith('/favicon') &&
+    (url.pathname.startsWith('/api/media/') || /\.(webp|png|jpe?g|glb)$/i.test(url.pathname))
+  if (isProtectedAsset) {
+    headers.set('Cross-Origin-Resource-Policy', 'same-origin')
+    headers.set('Content-Disposition', 'inline')
+    headers.set('X-Content-Type-Options', 'nosniff')
+  }
   return new Response(assetRes.body, {
     status: assetRes.status,
     statusText: assetRes.statusText,
@@ -297,6 +333,19 @@ app.get('/api/media/*', async (c) => {
     return c.text('Forbidden', 403)
   }
 
+  const clientHeader = c.req.header('X-R59-Client')
+  const referer = c.req.header('Referer') || ''
+  const currentOrigin = new URL(c.req.url).origin
+  const isSameOrigin = referer.startsWith(currentOrigin) || referer.includes('localhost') || referer.includes('127.0.0.1')
+
+  const isAuthorized =
+    clientHeader === 'media-viewer' ||
+    (isSameOrigin && fetchDest !== 'document')
+
+  if (!isAuthorized) {
+    return c.text('Forbidden: Direct media scraping is not permitted.', 403)
+  }
+
   const url = new URL(c.req.url)
   const key = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
   if (!key || key.includes('..')) {
@@ -344,7 +393,10 @@ app.get('/api/media/*', async (c) => {
         headers: {
           'Content-Type': contentType,
           'Content-Length': String(totalLength),
-          'Cache-Control': 'public, max-age=31536000, immutable'
+          'Cache-Control': 'public, max-age=31536000, immutable',
+          'Cross-Origin-Resource-Policy': 'same-origin',
+          'Content-Disposition': 'inline',
+          'X-Content-Type-Options': 'nosniff'
         }
       })
     }
@@ -397,6 +449,14 @@ app.get('*', async (c) => {
   }
 
   const headers = new Headers(assetRes.headers)
+  const isProtectedAsset =
+    !url.pathname.startsWith('/favicon') &&
+    (url.pathname.startsWith('/api/media/') || /\.(webp|png|jpe?g|glb)$/i.test(url.pathname))
+  if (isProtectedAsset) {
+    headers.set('Cross-Origin-Resource-Policy', 'same-origin')
+    headers.set('Content-Disposition', 'inline')
+    headers.set('X-Content-Type-Options', 'nosniff')
+  }
   return new Response(assetRes.body, {
     status: assetRes.status,
     statusText: assetRes.statusText,
