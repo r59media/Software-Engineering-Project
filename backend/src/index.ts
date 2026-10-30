@@ -114,9 +114,12 @@ app.use('*', async (c, next) => {
     }
 
     // For images: enforce authorized in-memory fetch carrying 'X-R59-Client: media-viewer'
+    // OR authenticated admin session (allows Admin dashboard to display, preview, and replace photos)
     if (isProtectedImage) {
       const clientHeader = c.req.header('X-R59-Client')
-      if (clientHeader !== 'media-viewer') {
+      const token = extractSessionToken(c)
+      const isAuthorizedClient = clientHeader === 'media-viewer' || Boolean(token)
+      if (!isAuthorizedClient) {
         return c.redirect('/', 302)
       }
     }
@@ -330,7 +333,9 @@ app.get('/api/media/*', async (c) => {
   }
 
   const clientHeader = c.req.header('X-R59-Client')
-  if (clientHeader !== 'media-viewer') {
+  const token = extractSessionToken(c)
+  const isAuthorizedClient = clientHeader === 'media-viewer' || Boolean(token)
+  if (!isAuthorizedClient) {
     return c.redirect('/', 302)
   }
 
@@ -415,8 +420,13 @@ app.get('*', async (c) => {
   const is3DModel = /\.glb$/i.test(url.pathname)
   const isProtectedAsset = isProtectedImage || is3DModel
 
-  if (isProtectedImage && c.req.header('X-R59-Client') !== 'media-viewer') {
-    return c.redirect('/', 302)
+  if (isProtectedImage) {
+    const clientHeader = c.req.header('X-R59-Client')
+    const token = extractSessionToken(c)
+    const isAuthorizedClient = clientHeader === 'media-viewer' || Boolean(token)
+    if (!isAuthorizedClient) {
+      return c.redirect('/', 302)
+    }
   }
 
   let assetRes: Response
