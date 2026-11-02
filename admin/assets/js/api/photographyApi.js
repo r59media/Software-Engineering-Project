@@ -1,143 +1,188 @@
 /**
  * R59 Media Admin — Photography & Portfolio API Service
- * 
+ *
  * Integration layer for photo library management and image uploads.
- * Connected to Cloudflare Workers /portfolio and /upload-url backend routes.
+ * Uploads go to D1 media storage (/api/media/*); each photo is then
+ * recorded in /portfolio with the site section it belongs to.
  */
 
 (function () {
   'use strict';
 
+  const client = () => window.R59.apiClient;
+
+  // Backend caps a single page of /portfolio at 100 rows
+  const PAGE_SIZE = 100;
+
+  // Responses mirror their payload at the top level and under `data`; accept either
+  function unwrap(res) {
+    if (res && res.data && typeof res.data === 'object' && !Array.isArray(res.data)) {
+      return { ...res.data, ...res };
+    }
+    return res || {};
+  }
+
+  /**
+   * Point same-server paths like /api/media/... at the API host, so images
+   * still load when the admin is opened from a different local dev server.
+   */
+  function resolveApiUrl(path) {
+    if (!path || !path.startsWith('/')) return path || '';
+    const baseUrl = client()?.getBaseUrl?.() || '';
+    const originMatch = baseUrl.match(/^(https?:\/\/[^/]+)/);
+    return originMatch ? originMatch[1] + path : path;
+  }
+
+  function mediaUrlForKey(key) {
+    return key ? `/api/media/${String(key).replace(/^\/+/, '')}` : '';
+  }
+
+  async function readErrorMessage(response) {
+    try {
+      const body = await response.json();
+      return body?.error?.message || body?.message || '';
+    } catch {
+      return '';
+    }
+  }
+
   const photographyApi = {
+    resolveApiUrl,
+
     /**
-     * Fetch portfolio images.
-     * Established backend endpoint: GET /portfolio
+     * Fetch every portfolio image, optionally limited to one site section.
+     * Pages through results so large libraries are not silently truncated.
      */
-    async getGalleryImages({ limit = 50, offset = 0 } = {}) {
-      const data = await window.R59.apiClient.get('/portfolio', { limit, offset });
-      return (data && data.images) || [];
+    async getGalleryImages({ section } = {}) {
+      const all = [];
+      for (let offset = 0; ; offset += PAGE_SIZE) {
+        const data = await client().get('/portfolio', { limit: PAGE_SIZE, offset, section });
+        const page = (data && (data.images || data.data)) || [];
+        all.push(...page);
+        if (page.length < PAGE_SIZE) break;
+      }
+      return all;
     },
 
     /**
-     * Save an image metadata record to portfolio database.
-     * Established backend endpoint: POST /portfolio
-     */
-    async saveImageRecord({ r2ObjectKey, category = 'All', altText = '', displayOrder = 0, isFeatured = false }) {
-      return await window.R59.apiClient.post('/portfolio', {
-        r2_object_key: r2ObjectKey,
-        category,
-        alt_text: altText,
-        display_order: displayOrder,
-        is_featured: isFeatured
-      });
-    },
-
-    /**
-     * Request an upload URL for a file.
+     * Ask the backend where to store a file.
      * Established backend endpoint: POST /upload-url
      */
-    async getUploadUrl(filename, contentType) {
-      return await window.R59.apiClient.post('/upload-url', {
+    async getUploadUrl(filename, contentType, fileSize) {
+      return unwrap(await client().post('/upload-url', {
         filename,
-        contentType: contentType || 'image/webp'
-      });
+        contentType: contentType || 'image/webp',
+        fileSize
+      }));
     },
 
     /**
-     * Upload image binary directly to D1 media endpoint via uploadUrl,
-     * then save image record.
+     * Store the image bytes only (no portfolio record yet).
+     * Returns the storage key that a portfolio record can point at.
      */
-    async uploadImageFile(file, categoryOrOpts = 'All', title = '') {
-      const opts = typeof categoryOrOpts === 'string'
-        ? { category: categoryOrOpts, altText: title }
-        : (categoryOrOpts || {});
-      const { category = 'All', altText = '', displayOrder = 0, isFeatured = false } = opts;
-
-      // 1. Get upload URL from backend
-      const res = await this.getUploadUrl(file.name, file.type || 'image/webp');
-      const uploadUrl = res.uploadUrl || res.data?.uploadUrl;
-      const key = res.key || res.fileKey || res.data?.fileKey || res.data?.key;
-      const publicUrl = res.publicUrl || res.data?.publicUrl;
-
-      if (!uploadUrl) {
-        throw new Error('No upload URL returned from server.');
+    async uploadMedia(file) {
+      const contentType = file.type || 'image/webp';
+      const target = await this.getUploadUrl(file.name, contentType, file.size);
+      const key = target.fileKey || target.key;
+      if (!target.uploadUrl || !key) {
+        throw new Error('The server did not return an upload location.');
       }
 
-      // 2. Upload file directly to D1 media storage endpoint (/api/media/*)
-      const uploadHeaders = {
-        'Content-Type': file.type || 'image/webp',
+      const headers = {
+        'Content-Type': contentType,
         'X-Requested-With': 'XMLHttpRequest'
       };
-
-      const authToken = window.R59?.apiClient?.getAuthToken?.();
+      const authToken = client()?.getAuthToken?.();
       if (authToken && authToken !== 'cookie') {
-        uploadHeaders['Authorization'] = `Bearer ${authToken}`;
+        headers['Authorization'] = `Bearer ${authToken}`;
       }
 
-      // Resolve relative upload URL if apiClient has a base URL configured
-      let targetUploadUrl = uploadUrl;
-      if (uploadUrl.startsWith('/')) {
-        const baseUrl = window.R59?.apiClient?.getBaseUrl?.() || '';
-        if (baseUrl && (baseUrl.startsWith('http://') || baseUrl.startsWith('https://'))) {
-          const originMatch = baseUrl.match(/^(https?:\/\/[^/]+)/);
-          if (originMatch) {
-            targetUploadUrl = originMatch[1] + uploadUrl;
-          }
-        }
-      }
-
-      const putRes = await fetch(targetUploadUrl, {
+      const putRes = await fetch(resolveApiUrl(target.uploadUrl), {
         method: 'PUT',
-        headers: uploadHeaders,
+        headers,
         credentials: 'include',
         body: file
       });
 
       if (!putRes.ok) {
-        let errMsg = `Upload failed with status ${putRes.status}: ${putRes.statusText}`;
-        try {
-          const errBody = await putRes.json();
-          if (errBody?.error?.message) {
-            errMsg = errBody.error.message;
-          } else if (errBody?.message) {
-            errMsg = errBody.message;
-          }
-        } catch {}
-        throw new Error(errMsg);
+        const message = await readErrorMessage(putRes);
+        if (putRes.status === 401) {
+          window.dispatchEvent(new CustomEvent('r59:unauthorized', {
+            detail: { message: message || 'Session expired. Please sign in again.' }
+          }));
+        }
+        throw new Error(message || `Upload failed (${putRes.status} ${putRes.statusText})`);
       }
 
-      // 3. Save portfolio database entry
-      const saved = await this.saveImageRecord({
-        r2ObjectKey: key,
+      return { key, url: target.publicUrl || mediaUrlForKey(key) };
+    },
+
+    /**
+     * Save an image metadata record to the portfolio database.
+     * Established backend endpoint: POST /portfolio
+     * Leaving displayOrder undefined appends the photo to the end of its section.
+     */
+    async saveImageRecord({ r2ObjectKey, section = 'gallery', category = 'All', title = '', altText = '', displayOrder, isFeatured = false }) {
+      return unwrap(await client().post('/portfolio', {
+        r2_object_key: r2ObjectKey,
+        section,
         category,
-        altText: altText || file.name.replace(/\.[^.]+$/, ''),
-        displayOrder,
-        isFeatured
+        title,
+        alt_text: altText,
+        display_order: displayOrder,
+        is_featured: isFeatured
+      }));
+    },
+
+    /**
+     * Upload a file and register it in one step.
+     * Accepts either an options object or the legacy (file, category, title) form.
+     */
+    async uploadImageFile(file, categoryOrOpts = {}, legacyTitle = '') {
+      const opts = typeof categoryOrOpts === 'string'
+        ? { category: categoryOrOpts, title: legacyTitle, altText: legacyTitle }
+        : (categoryOrOpts || {});
+      const baseName = file.name.replace(/\.[^.]+$/, '');
+
+      const media = await this.uploadMedia(file);
+      const saved = await this.saveImageRecord({
+        r2ObjectKey: media.key,
+        section: opts.section || 'gallery',
+        category: opts.category || 'All',
+        title: opts.title || baseName,
+        altText: opts.altText || baseName,
+        displayOrder: opts.displayOrder,
+        isFeatured: Boolean(opts.isFeatured)
       });
 
-      const resolvedUrl = publicUrl || saved?.url || saved?.public_url || (key ? `/api/media/${String(key).replace(/^\/+/, '')}` : '');
-      return {
-        id: saved?.id,
-        key,
-        url: resolvedUrl,
-        src: resolvedUrl,
-        filename: file.name
-      };
+      const url = resolveApiUrl(saved.url || saved.public_url || media.url);
+      return { ...saved, id: saved.id, key: media.key, url, src: url, filename: file.name };
+    },
+
+    /**
+     * Swap the file behind an existing photo while keeping its id, position and captions.
+     * The backend removes the old stored file once the swap succeeds.
+     */
+    async replaceImageFile(imageId, file) {
+      const media = await this.uploadMedia(file);
+      const saved = unwrap(await client().put(`/portfolio/${imageId}`, { r2_object_key: media.key }));
+      const url = resolveApiUrl(saved.url || saved.public_url || media.url);
+      return { ...saved, id: imageId, key: media.key, url, src: url };
     },
 
     /**
      * Update an existing portfolio image metadata record.
      */
     async updateImage(imageId, data) {
-      return await window.R59.apiClient.put(`/portfolio/${imageId}`, data);
+      return await client().put(`/portfolio/${imageId}`, data);
     },
 
     /**
-     * Delete an image.
+     * Delete an image record and its stored file.
      * Established backend endpoint: DELETE /portfolio/:id
      */
     async deleteImage(id) {
-      return await window.R59.apiClient.delete(`/portfolio/${id}`);
+      return await client().delete(`/portfolio/${id}`);
     },
 
     /**
@@ -145,7 +190,7 @@
      * Established backend endpoint: PUT /portfolio/order
      */
     async updateImageOrder(orderMappings) {
-      return await window.R59.apiClient.put('/portfolio/order', { order: orderMappings });
+      return await client().put('/portfolio/order', { order: orderMappings });
     },
 
     /**
@@ -154,7 +199,7 @@
      */
     async getProfile() {
       try {
-        return await window.R59.apiClient.get('/admin/profile');
+        return await client().get('/admin/profile');
       } catch {
         return null;
       }
@@ -165,7 +210,7 @@
      * Established backend endpoint: PUT /admin/profile
      */
     async saveProfile(profileData) {
-      return await window.R59.apiClient.put('/admin/profile', profileData);
+      return await client().put('/admin/profile', profileData);
     }
   };
 

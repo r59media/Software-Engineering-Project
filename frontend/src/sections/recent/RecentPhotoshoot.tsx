@@ -3,6 +3,7 @@ import type { PhotoshootPhoto } from '../../types/recentPhotoshoot'
 import { recentInitialPhotoId, recentPhotos } from '../../config/recentPhotoshoot'
 import { PhotoImage } from './PhotoImage'
 import { PhotoViewer } from './PhotoViewer'
+import { useRecentPhotos } from './useRecentPhotos'
 import './RecentPhotoshoot.css'
 
 interface RecentPhotoshootProps {
@@ -10,7 +11,10 @@ interface RecentPhotoshootProps {
   initialPhotoId?: string
 }
 
-export function RecentPhotoshoot({ photos = recentPhotos, initialPhotoId = recentInitialPhotoId }: RecentPhotoshootProps) {
+export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = recentInitialPhotoId }: RecentPhotoshootProps) {
+  // Explicit photos (e.g. tests, previews) win; otherwise show what the admin panel manages
+  const livePhotos = useRecentPhotos(recentPhotos)
+  const photos = photosOverride ?? livePhotos
   const [activePhotoId, setActivePhotoId] = useState(initialPhotoId)
   const [viewerOpen, setViewerOpen] = useState(false)
   const items = photos.filter((photo, index) => photo.imageUrl.trim() && photos.findIndex(item => item.id === photo.id) === index)

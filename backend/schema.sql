@@ -66,7 +66,9 @@ CREATE TABLE Admin_Settings (
 CREATE TABLE Portfolio_Images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     r2_object_key TEXT NOT NULL UNIQUE,
+    section TEXT NOT NULL DEFAULT 'gallery', -- recent, gallery, about, hero (which part of the site shows it)
     category TEXT DEFAULT 'All',
+    title TEXT,
     alt_text TEXT,
     display_order INTEGER DEFAULT 0,
     is_active BOOLEAN DEFAULT 1,
@@ -104,6 +106,7 @@ CREATE TABLE IF NOT EXISTS Media_Storage (
 CREATE INDEX IF NOT EXISTS idx_slots_availability ON Schedule_Slots(is_booked, date, start_time);
 CREATE INDEX IF NOT EXISTS idx_portfolio_active ON Portfolio_Images(is_active, display_order);
 CREATE INDEX IF NOT EXISTS idx_portfolio_active_cat_order ON Portfolio_Images(is_active, category, display_order);
+CREATE INDEX IF NOT EXISTS idx_portfolio_section_order ON Portfolio_Images(is_active, section, display_order);
 CREATE INDEX IF NOT EXISTS idx_services_active ON Services(is_active);
 CREATE INDEX IF NOT EXISTS idx_bookings_slot ON Bookings(slot_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot ON Bookings(slot_id) WHERE status != 'cancelled';

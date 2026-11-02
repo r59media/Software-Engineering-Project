@@ -491,31 +491,15 @@
           }
         })(),
 
-        // 8. Portfolio / Gallery Images
+        // 8. Portfolio images, sorted into the Most Recent / Gallery / About tabs by site section
         (async () => {
-          const photosRes = await (window.R59.api?.photography
-            ? window.R59.api.photography.getGalleryImages()
-            : Promise.resolve(null)).catch(() => null);
-          if (Array.isArray(photosRes) && photosRes.length > 0) {
-            const currentState = window.R59.state.getState();
-            const mappedPhotos = photosRes.map((p, idx) => {
-              const rawUrl = p.url || p.public_url || p.src || (p.r2_object_key ? `/api/media/${String(p.r2_object_key).replace(/^\/+/, '')}` : '');
-              return {
-                id: p.id ?? idx + 1,
-                src: rawUrl,
-                url: rawUrl,
-                r2_object_key: p.r2_object_key || '',
-                label: p.title || p.label || p.alt_text || 'Photo',
-                alt: p.alt_text || p.alt || p.title || 'Photo',
-                cat: p.category || p.cat || 'Portrait',
-                display_order: p.display_order ?? idx,
-                is_featured: Boolean(p.is_featured)
-              };
-            });
-            currentState.photos = mappedPhotos;
-            currentState.images = currentState.images || { main: [], gallery: [], about: [] };
-            currentState.images.gallery = mappedPhotos;
-            window.R59.photography?.renderImages?.();
+          if (!window.R59.api?.photography) return;
+          const records = await window.R59.api.photography.getGalleryImages().catch(err => {
+            console.warn('[app] Could not load portfolio images:', err);
+            return null;
+          });
+          if (Array.isArray(records)) {
+            window.R59.photography?.setImagesFromRecords?.(records);
           }
         })()
       ]);

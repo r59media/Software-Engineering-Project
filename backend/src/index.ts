@@ -258,7 +258,10 @@ app.route('/api/portfolio', portfolioRouter)
 app.route('/api/services', servicesRouter)
 app.route('/api/admin', adminRouter)
 
-// D1 Media Storage Upload (admin only)
+// D1 Media Storage Upload (admin only) — same limits the upload-url route advertises
+const MEDIA_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic']
+const MAX_MEDIA_BYTES = 50 * 1024 * 1024
+
 app.put('/api/media/*', adminAuth, async (c) => {
   const url = new URL(c.req.url)
   const key = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
@@ -266,10 +269,17 @@ app.put('/api/media/*', adminAuth, async (c) => {
     return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid media key', details: [] } }, 400)
   }
 
-  const contentType = c.req.header('Content-Type') || 'image/webp'
+  const contentType = (c.req.header('Content-Type') || 'image/webp').split(';')[0].trim().toLowerCase()
+  if (!MEDIA_CONTENT_TYPES.includes(contentType)) {
+    return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Only JPEG, PNG, WebP or HEIC images can be stored.', details: [] } }, 400)
+  }
+
   const arrayBuffer = await c.req.arrayBuffer()
   if (!arrayBuffer || arrayBuffer.byteLength === 0) {
     return c.json({ error: { code: 'VALIDATION_FAILED', message: 'No file data received.', details: [] } }, 400)
+  }
+  if (arrayBuffer.byteLength > MAX_MEDIA_BYTES) {
+    return c.json({ error: { code: 'FILE_TOO_LARGE', message: 'File size exceeds the 50 MB maximum limit.', details: [] } }, 413)
   }
 
   try {

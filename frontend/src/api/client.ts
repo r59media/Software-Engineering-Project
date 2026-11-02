@@ -1,8 +1,14 @@
 import type { HeroSlide } from '../types/hero'
+import type { PhotoshootPhoto } from '../types/recentPhotoshoot'
+
+/** Which part of the site a portfolio photo is shown in (matches the admin "Photos" tabs). */
+export type PortfolioSection = 'recent' | 'gallery' | 'about' | 'hero'
 
 export interface PortfolioApiItem {
   id: number
+  section?: PortfolioSection
   category?: string
+  title?: string | null
   r2_object_key?: string
   url?: string
   public_url?: string
@@ -100,6 +106,37 @@ export async function fetchPortfolio(category?: string, signal?: AbortSignal): P
   const query = category ? `?category=${encodeURIComponent(category)}` : ''
   const items = await apiGet<PortfolioApiItem[]>(`/portfolio${query}`, signal)
   return Array.isArray(items) ? items : []
+}
+
+export async function fetchPortfolioSection(section: PortfolioSection, signal?: AbortSignal): Promise<PortfolioApiItem[] | null> {
+  const items = await apiGet<PortfolioApiItem[]>(`/portfolio?section=${encodeURIComponent(section)}&limit=100`, signal)
+  return Array.isArray(items) ? items : null
+}
+
+function portfolioImageUrl(item: PortfolioApiItem): string {
+  const rawUrl = item.url || item.public_url || (item.r2_object_key ? '/api/media/' + item.r2_object_key.replace(/^\/+/, '') : '')
+  return rawUrl.startsWith('https://') || rawUrl.startsWith('/') ? rawUrl : ''
+}
+
+/**
+ * Photos for the "Most recent photoshoot" carousel, as managed in the admin panel.
+ * Falls back to the bundled photos when the API is unreachable or has none yet,
+ * so the section never renders empty in development.
+ */
+export async function fetchRecentPhotos(fallbackPhotos: readonly PhotoshootPhoto[], signal?: AbortSignal): Promise<readonly PhotoshootPhoto[]> {
+  const items = await fetchPortfolioSection('recent', signal)
+  const photos = (items ?? [])
+    .map(item => ({ item, imageUrl: portfolioImageUrl(item) }))
+    .filter(({ imageUrl }) => imageUrl)
+    .map(({ item, imageUrl }) => ({
+      id: `api-recent-${item.id}`,
+      imageUrl,
+      alt: item.alt_text?.trim() || item.title?.trim() || 'R59 Media recent photoshoot',
+      // Carousel slots are portrait and crop with object-fit, so a nominal size is enough
+      width: 720,
+      height: 1020,
+    }))
+  return photos.length > 0 ? photos : fallbackPhotos
 }
 
 export async function fetchHeroSlides(fallbackSlides: readonly HeroSlide[], signal?: AbortSignal): Promise<readonly HeroSlide[]> {
