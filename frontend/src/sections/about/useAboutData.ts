@@ -14,17 +14,17 @@ export interface UseAboutDataResult {
   loading: boolean
 }
 
+const FALLBACK_PORTRAIT: AboutPortraitData = (aboutContent as unknown as { portrait?: AboutPortraitData }).portrait || {
+  src: aboutImages.portrait.imageUrl,
+  alt: aboutImages.portrait.alt,
+}
+
+const FALLBACK_PARAGRAPHS: string[] = (aboutContent as unknown as { paragraphs?: string[] }).paragraphs ||
+  (aboutContent.biography ? [aboutContent.biography] : [])
+
 export function useAboutData(): UseAboutDataResult {
-  const fallbackPortrait: AboutPortraitData = (aboutContent as unknown as { portrait?: AboutPortraitData }).portrait || {
-    src: aboutImages.portrait.imageUrl,
-    alt: aboutImages.portrait.alt,
-  }
-
-  const fallbackParagraphs: string[] = (aboutContent as unknown as { paragraphs?: string[] }).paragraphs ||
-    (aboutContent.biography ? [aboutContent.biography] : [])
-
-  const [portrait, setPortrait] = useState<AboutPortraitData>(fallbackPortrait)
-  const [paragraphs, setParagraphs] = useState<string[]>(fallbackParagraphs)
+  const [portrait, setPortrait] = useState<AboutPortraitData>(FALLBACK_PORTRAIT)
+  const [paragraphs, setParagraphs] = useState<string[]>(FALLBACK_PARAGRAPHS)
   const [profile, setProfile] = useState<PublicProfileData | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -43,7 +43,7 @@ export function useAboutData(): UseAboutDataResult {
           if (data.portrait?.src) {
             setPortrait(data.portrait)
           } else {
-            setPortrait(fallbackPortrait)
+            setPortrait(FALLBACK_PORTRAIT)
           }
 
           if (data.profile?.bio && typeof data.profile.bio === 'string' && data.profile.bio.trim()) {
@@ -51,9 +51,9 @@ export function useAboutData(): UseAboutDataResult {
               .split(/\r?\n\r?\n+/)
               .map(p => p.trim())
               .filter(Boolean)
-            setParagraphs(bioParagraphs.length > 0 ? bioParagraphs : fallbackParagraphs)
+            setParagraphs(bioParagraphs.length > 0 ? bioParagraphs : FALLBACK_PARAGRAPHS)
           } else {
-            setParagraphs(fallbackParagraphs)
+            setParagraphs(FALLBACK_PARAGRAPHS)
           }
 
           setProfile(data.profile)
