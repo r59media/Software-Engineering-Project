@@ -67,7 +67,7 @@ const hero = heroAssets.map((item, idx) => ({
   alt_text: item.alt,
   display_order: idx + 1,
   order: idx + 1,
-  r2_object_key: resolveAssetUrl(item.file, item.fallback),
+  media_key: resolveAssetUrl(item.file, item.fallback),
   seed_key: `hero-${idx + 1}`,
   is_featured: 1,
   is_active: 1
@@ -93,7 +93,7 @@ const recent = recentPhotosData.map((item, idx) => ({
   alt_text: item.alt,
   display_order: idx + 1,
   order: idx + 1,
-  r2_object_key: resolveAssetUrl(item.file, item.fallback),
+  media_key: resolveAssetUrl(item.file, item.fallback),
   seed_key: `recent-${idx + 1}`,
   is_featured: 0,
   is_active: 1
@@ -120,7 +120,7 @@ const gallery = galleryPhotosData.map((item, idx) => ({
   alt_text: item.alt,
   display_order: idx + 1,
   order: idx + 1,
-  r2_object_key: resolveAssetUrl(item.file, item.fallback),
+  media_key: resolveAssetUrl(item.file, item.fallback),
   seed_key: `gallery-${idx + 1}`,
   is_featured: 0,
   is_active: 1
@@ -135,7 +135,7 @@ const about = [
     alt_text: 'Portrait of the photographer behind R59',
     display_order: 1,
     order: 1,
-    r2_object_key: resolveAssetUrl("aboutMeImages/kevin'sPortrait.webp", 'Bw-T4hID.webp'),
+    media_key: resolveAssetUrl("aboutMeImages/kevin'sPortrait.webp", 'Bw-T4hID.webp'),
     seed_key: 'about-1',
     is_featured: 0,
     is_active: 1

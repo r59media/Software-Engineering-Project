@@ -176,12 +176,14 @@
         tab = SECTION_TO_TAB[secLower || 'gallery'] || 'gallery';
       }
 
-      const rawUrl = p.url || p.public_url || (p.r2_object_key ? `/api/media/${String(p.r2_object_key).replace(/^\/+/, '')}` : '');
+      const key = p.media_key || '';
+      const rawUrl = p.url || p.public_url || (key ? `/api/media/${String(key).replace(/^\/+/, '')}` : '');
       const order = p.order !== undefined && p.order !== null ? Number(p.order) : (p.display_order ?? 0);
       grouped[tab].push({
         id: p.id,
         src: resolve(rawUrl),
-        key: p.r2_object_key || '',
+        key: key,
+        media_key: key,
         section: tab === 'hero' ? 'hero' : (p.section || sectionForTab(tab)),
         label: p.title || p.alt_text || 'Photo',
         alt: p.alt_text || p.title || '',

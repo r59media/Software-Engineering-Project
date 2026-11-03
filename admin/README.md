@@ -31,7 +31,7 @@ admin/
         │   ├── bookingsApi.js   # Bookings list, create, update, and cancellation endpoints
         │   ├── paymentsApi.js   # Pricing rules and coupon code services
         │   ├── packagesApi.js   # Photography packages / services CRUD
-        │   ├── photographyApi.js# Portfolio gallery image records & presigned R2 upload service
+        │   ├── photographyApi.js# Portfolio gallery image records & media upload service
         │   └── scheduleApi.js   # Timeslots, availability rules, and blocked dates services
         ├── components/
         │   ├── modal.js         # Accessible modal dialogs with focus trapping and Escape key
@@ -116,8 +116,8 @@ The following endpoints match the existing backend implementation in `backend/sr
   - `PUT /api/services/:id` — Update service
 - **Portfolio Images & Uploads**:
   - `GET /api/portfolio` — List portfolio images
-  - `POST /api/portfolio` — Save image metadata (`{ r2_object_key, category, alt_text, display_order, is_featured }`)
-  - `POST /api/upload-url` — Request presigned Cloudflare R2 upload URL (`{ filename, contentType }`)
+  - `POST /api/portfolio` — Save image metadata (`{ media_key, category, alt_text, display_order, is_featured }`)
+  - `POST /api/upload-url` — Request upload URL (`{ filename, contentType }`)
 - **System**:
   - `GET /api/health` — Database and worker healthcheck
 

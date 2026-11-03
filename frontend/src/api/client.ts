@@ -4,12 +4,12 @@ import type { PhotoshootPhoto } from '../types/recentPhotoshoot'
 /** Which part of the site a portfolio photo is shown in (matches the admin "Photos" tabs). */
 export type PortfolioSection = 'recent' | 'gallery' | 'about' | 'hero'
 
-export interface PortfolioApiItem {
+export interface PortfolioImageRecord {
   id: number
   section?: PortfolioSection
   category?: string
   title?: string | null
-  r2_object_key?: string
+  media_key?: string
   url?: string
   public_url?: string
   is_featured?: number | boolean
@@ -17,6 +17,8 @@ export interface PortfolioApiItem {
   display_order?: number
   is_active?: number
 }
+
+export type PortfolioApiItem = PortfolioImageRecord
 
 export interface ServicePackageItem {
   id: number
@@ -121,8 +123,8 @@ export function resolveMediaUrl(key?: string | null): string {
   return `/api/media/${key.replace(/^\/+/, '')}`
 }
 
-function portfolioImageUrl(item: PortfolioApiItem): string {
-  const rawUrl = item.url || item.public_url || (item.r2_object_key ? resolveMediaUrl(item.r2_object_key) : '')
+function portfolioImageUrl(item: PortfolioImageRecord): string {
+  const rawUrl = item.url || item.public_url || (item.media_key ? resolveMediaUrl(item.media_key) : '')
   return rawUrl.startsWith('https://') || rawUrl.startsWith('/') ? rawUrl : ''
 }
 
@@ -190,7 +192,7 @@ export async function fetchGalleryPhotos(fallbackPhotos: readonly PhotoshootPhot
 
     const photos: GalleryPhoto[] = items
       .map(item => {
-        const src = portfolioImageUrl(item) || resolveMediaUrl(item.r2_object_key)
+        const src = portfolioImageUrl(item) || resolveMediaUrl(item.media_key)
         return {
           id: String(item.id),
           src,
@@ -233,7 +235,7 @@ export async function fetchAboutData(signal?: AbortSignal): Promise<AboutData> {
   let portrait: { src: string; alt: string } | null = null
   if (aboutRes.status === 'fulfilled' && Array.isArray(aboutRes.value) && aboutRes.value.length > 0) {
     const active = aboutRes.value.find(item => item.is_active !== 0) || aboutRes.value[0]
-    const src = portfolioImageUrl(active) || resolveMediaUrl(active.r2_object_key)
+    const src = portfolioImageUrl(active) || resolveMediaUrl(active.media_key)
     if (src) {
       portrait = {
         src,
@@ -259,7 +261,7 @@ export async function fetchHeroSlides(fallbackSlides: readonly HeroSlide[], sign
   const items = await fetchPortfolio('hero', signal)
   const validItems = items
     .map(item => {
-      const rawUrl = item.url || item.public_url || (item.r2_object_key ? '/api/media/' + item.r2_object_key.replace(/^\/+/, '') : '')
+      const rawUrl = item.url || item.public_url || (item.media_key ? resolveMediaUrl(item.media_key) : '')
       return { item, rawUrl }
     })
     .filter(

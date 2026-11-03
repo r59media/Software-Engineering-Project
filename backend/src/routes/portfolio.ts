@@ -9,7 +9,7 @@ export type PortfolioSection = (typeof PORTFOLIO_SECTIONS)[number]
 export const VALID_SECTIONS = new Set(['recent', 'gallery', 'about', 'hero'])
 
 const SELECT_COLUMNS =
-  'id, r2_object_key, section, category, title, alt_text, display_order, is_featured, is_active'
+  'id, media_key, section, category, title, alt_text, display_order, is_featured, is_active'
 
 function isValidId(id: string | undefined): boolean {
   return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
@@ -42,8 +42,8 @@ export function resolveMediaUrl(key: string): string {
   return `/api/media/${key.replace(/^\/+/, '')}`
 }
 
-function withUrls<T extends { r2_object_key: string }>(row: T) {
-  const url = resolveMediaUrl(row.r2_object_key)
+function withUrls<T extends { media_key: string }>(row: T) {
+  const url = resolveMediaUrl(row.media_key)
   return { ...row, url, public_url: url }
 }
 
@@ -66,8 +66,8 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
       for (const item of defaults) {
         statements.push(
           db.prepare(
-            'UPDATE Portfolio_Images SET r2_object_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND r2_object_key LIKE "/assets/%" AND r2_object_key != ?'
-          ).bind(item.r2_object_key, sec, item.title, item.display_order ?? item.order ?? 1, item.r2_object_key)
+            'UPDATE Portfolio_Images SET media_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND media_key LIKE "/assets/%" AND media_key != ?'
+          ).bind(item.media_key, sec, item.title, item.display_order ?? item.order ?? 1, item.media_key)
         )
       }
     }
@@ -80,12 +80,12 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
         const featured = item.is_featured ? 1 : (sec === 'hero' ? 1 : 0)
         statements.push(
           db.prepare(
-            'INSERT INTO Portfolio_Images (r2_object_key, section, category, title, alt_text, display_order, is_featured, is_active) ' +
+            'INSERT INTO Portfolio_Images (media_key, section, category, title, alt_text, display_order, is_featured, is_active) ' +
             'SELECT ?, ?, ?, ?, ?, ?, ?, 1 WHERE NOT EXISTS (' +
             '  SELECT 1 FROM Portfolio_Images WHERE LOWER(section) = ? AND (title = ? OR display_order = ?)' +
             ')'
           ).bind(
-            item.r2_object_key,
+            item.media_key,
             sec,
             item.category || (sec === 'hero' ? 'hero' : 'Portrait'),
             item.title || null,
@@ -116,7 +116,7 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
 let portfolioSchemaReady = false
 export async function ensurePortfolioSchema(db: D1Database): Promise<void> {
   if (!portfolioSchemaReady) {
-    const info = await db.prepare('PRAGMA table_info(Portfolio_Images)').all<{ name: string }>()
+    const info = await db.prepare('PRAGMA table_info(Portfolio_Images)').all<{ name: string }>().catch(() => ({ results: [] }))
     const columns = new Set((info.results || []).map(col => col.name))
 
     const migrations: string[] = []
@@ -287,12 +287,12 @@ portfolioRouter.post('/', adminAuth, async (c) => {
     await ensurePortfolioSchema(c.env.DB)
 
     const body = await c.req.json().catch(() => ({}))
-    const { r2_object_key, is_featured = false } = body
+    const { media_key, is_featured = false } = body
 
-    if (!isValidObjectKey(r2_object_key)) {
-      return c.json(validationError('A valid r2_object_key (1-1024 characters, no path traversal) is required.', 'r2_object_key'), 400)
+    if (!isValidObjectKey(media_key)) {
+      return c.json(validationError('A valid media_key (1-1024 characters, no path traversal) is required.', 'media_key'), 400)
     }
-    const cleanKey = r2_object_key.trim()
+    const cleanKey = media_key.trim()
 
     const section = body.section === undefined ? 'gallery' : parseSection(body.section)
     if (!section) {
@@ -307,7 +307,7 @@ portfolioRouter.post('/', adminAuth, async (c) => {
     }
 
     if (!(await mediaExists(c.env.DB, cleanKey))) {
-      return c.json(validationError('The uploaded image could not be found. Please upload it again.', 'r2_object_key'), 400)
+      return c.json(validationError('The uploaded image could not be found. Please upload it again.', 'media_key'), 400)
     }
 
     // New photos go to the end of their section unless the caller asks for a specific position
@@ -324,12 +324,12 @@ portfolioRouter.post('/', adminAuth, async (c) => {
     const featured = is_featured ? 1 : 0
 
     const result = await c.env.DB.prepare(
-      'INSERT INTO Portfolio_Images (r2_object_key, section, category, title, alt_text, display_order, is_featured) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO Portfolio_Images (media_key, section, category, title, alt_text, display_order, is_featured) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).bind(cleanKey, section, String(category), title, altText, displayOrder, featured).run()
 
     const record = withUrls({
       id: result.meta.last_row_id,
-      r2_object_key: cleanKey,
+      media_key: cleanKey,
       section,
       category: String(category),
       title,
@@ -426,14 +426,14 @@ portfolioRouter.put('/:id', adminAuth, async (c) => {
     }
 
     // Replacing the photo keeps its id, position and captions; only the stored file changes
-    let objectKey = existing.r2_object_key
-    if (body.r2_object_key !== undefined && body.r2_object_key !== existing.r2_object_key) {
-      if (!isValidObjectKey(body.r2_object_key)) {
-        return c.json(validationError('A valid r2_object_key (1-1024 characters, no path traversal) is required.', 'r2_object_key'), 400)
+    let objectKey = existing.media_key
+    if (body.media_key !== undefined && body.media_key !== existing.media_key) {
+      if (!isValidObjectKey(body.media_key)) {
+        return c.json(validationError('A valid media_key (1-1024 characters, no path traversal) is required.', 'media_key'), 400)
       }
-      objectKey = body.r2_object_key.trim()
+      objectKey = body.media_key.trim()
       if (!(await mediaExists(c.env.DB, objectKey))) {
-        return c.json(validationError('The uploaded image could not be found. Please upload it again.', 'r2_object_key'), 400)
+        return c.json(validationError('The uploaded image could not be found. Please upload it again.', 'media_key'), 400)
       }
     }
 
@@ -452,12 +452,12 @@ portfolioRouter.put('/:id', adminAuth, async (c) => {
       : existing.display_order
 
     await c.env.DB.prepare(
-      'UPDATE Portfolio_Images SET r2_object_key = ?, section = ?, category = ?, title = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
+      'UPDATE Portfolio_Images SET media_key = ?, section = ?, category = ?, title = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
     ).bind(objectKey, section, category, title, alt_text, is_active, is_featured, display_order, id).run()
 
     // The old file is no longer referenced by anything once it has been swapped out
-    if (objectKey !== existing.r2_object_key) {
-      await deleteStoredMedia(c.env.DB, existing.r2_object_key)
+    if (objectKey !== existing.media_key) {
+      await deleteStoredMedia(c.env.DB, existing.media_key)
     }
 
     return c.json({
@@ -465,7 +465,7 @@ portfolioRouter.put('/:id', adminAuth, async (c) => {
       status: 'success',
       data: withUrls({
         id: Number(id),
-        r2_object_key: objectKey,
+        media_key: objectKey,
         section,
         category,
         title,
@@ -497,15 +497,15 @@ portfolioRouter.delete('/:id', adminAuth, async (c) => {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const existing = await c.env.DB.prepare(
-      'SELECT id, r2_object_key FROM Portfolio_Images WHERE id = ?'
-    ).bind(id).first<{ id: number; r2_object_key: string }>()
+      'SELECT id, media_key FROM Portfolio_Images WHERE id = ?'
+    ).bind(id).first<{ id: number; media_key: string }>()
 
     if (!existing) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
     }
 
     await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
-    await deleteStoredMedia(c.env.DB, existing.r2_object_key)
+    await deleteStoredMedia(c.env.DB, existing.media_key)
 
     return c.json({ success: true, status: 'success', data: { id: Number(id), deleted: true } })
   } catch (e: any) {

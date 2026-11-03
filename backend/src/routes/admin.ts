@@ -1508,8 +1508,8 @@ adminRouter.delete('/portfolio/:id', async (c) => {
     }
 
     const existing = await c.env.DB.prepare(
-      'SELECT id, r2_object_key FROM Portfolio_Images WHERE id = ?'
-    ).bind(id).first<{ id: number; r2_object_key: string }>()
+      'SELECT id, media_key FROM Portfolio_Images WHERE id = ?'
+    ).bind(id).first<{ id: number; media_key: string }>()
 
     if (!existing) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
@@ -1517,8 +1517,8 @@ adminRouter.delete('/portfolio/:id', async (c) => {
 
     await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
 
-    if (existing.r2_object_key && !existing.r2_object_key.startsWith('/assets/')) {
-      await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(existing.r2_object_key).run().catch(() => {})
+    if (existing.media_key && !existing.media_key.startsWith('/assets/')) {
+      await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(existing.media_key).run().catch(() => {})
     }
 
     return c.json({ success: true, status: 'success' })

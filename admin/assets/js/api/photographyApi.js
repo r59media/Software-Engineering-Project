@@ -122,9 +122,9 @@
      * Established backend endpoint: POST /portfolio
      * Leaving displayOrder undefined appends the photo to the end of its section.
      */
-    async saveImageRecord({ r2ObjectKey, section = 'gallery', category = 'All', title = '', altText = '', displayOrder, isFeatured = false }) {
+    async saveImageRecord({ mediaKey, section = 'gallery', category = 'All', title = '', altText = '', displayOrder, isFeatured = false }) {
       return unwrap(await client().post('/portfolio', {
-        r2_object_key: r2ObjectKey,
+        media_key: mediaKey,
         section,
         category,
         title,
@@ -146,7 +146,7 @@
 
       const media = await this.uploadMedia(file);
       const saved = await this.saveImageRecord({
-        r2ObjectKey: media.key,
+        mediaKey: media.key,
         section: opts.section || 'gallery',
         category: opts.category || 'All',
         title: opts.title || baseName,
@@ -165,7 +165,7 @@
      */
     async replaceImageFile(imageId, file) {
       const media = await this.uploadMedia(file);
-      const saved = unwrap(await client().put(`/portfolio/${imageId}`, { r2_object_key: media.key }));
+      const saved = unwrap(await client().put(`/portfolio/${imageId}`, { media_key: media.key }));
       const url = resolveApiUrl(saved.url || saved.public_url || media.url);
       return { ...saved, id: imageId, key: media.key, url, src: url };
     },
