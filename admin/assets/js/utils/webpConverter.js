@@ -249,7 +249,7 @@
    * @param {number} [quality=0.92]
    * @returns {Promise<{ webpBlob: Blob, width: number, height: number, canvas: HTMLCanvasElement }>}
    */
-  async function bitmapToWebPBlob(bitmap, maxDimension = Infinity, quality = 0.92) {
+  async function bitmapToWebPBlob(bitmap, maxDimension = 2560, quality = 0.92) {
     let width = bitmap.naturalWidth || bitmap.width;
     let height = bitmap.naturalHeight || bitmap.height;
 
@@ -257,7 +257,7 @@
       throw new Error('Invalid bitmap dimensions for WebP conversion');
     }
 
-    // Preserve 100% 1:1 resolution by default unless finite maxDimension is explicitly requested
+    // Scale down proportionally if longest edge exceeds maxDimension (2560px)
     if (Number.isFinite(maxDimension) && Math.max(width, height) > maxDimension) {
       const scale = maxDimension / Math.max(width, height);
       width = Math.round(width * scale);
@@ -294,13 +294,13 @@
   }
 
   /**
-   * Convert any supported image (JPG, PNG, HEIC, Camera RAW, etc.) into a visually lossless WebP File
-   * preserving 1:1 original dimensions without downsampling. Existing WebP files pass through untouched.
+   * Convert any supported image (JPG, PNG, WebP, GIF, AVIF, BMP, HEIC, Camera RAW, etc.)
+   * into a visually lossless WebP File (quality = 0.92, max 2560px on longest edge).
    * 
    * @param {File} file - Source file
-   * @param {Object} [options]
-   * @param {number} [options.maxDimension=Infinity] - Max dimension (defaults to Infinity for 1:1 100% resolution)
-   * @param {number} [options.quality=0.92] - WebP encoding quality (defaults to 0.92 visually lossless)
+   * @param {number|Object} [options] - Quality number (e.g. 0.92) or options object
+   * @param {number} [options.maxDimension=2560] - Max dimension on longest edge (default 2560px)
+   * @param {number} [options.quality=0.92] - WebP encoding quality (default 0.92)
    * @returns {Promise<{
    *   file: File,
    *   originalSize: number,
@@ -311,8 +311,9 @@
    * }>}
    */
   async function convertToWebP(file, options = {}) {
-    const maxDimension = options.maxDimension !== undefined ? options.maxDimension : Infinity;
-    const requestedQuality = options.quality !== undefined ? options.quality : 0.92;
+    const opts = typeof options === 'number' ? { quality: options } : (options || {});
+    const maxDimension = opts.maxDimension !== undefined ? opts.maxDimension : 2560;
+    const requestedQuality = opts.quality !== undefined ? opts.quality : 0.92;
 
     const name = file.name || 'image';
     const lastDot = name.lastIndexOf('.');
@@ -321,30 +322,46 @@
 
     let sourceFormat = ext || (file.type ? file.type.replace('image/', '') : 'unknown');
 
-    // If already WebP, pass through untouched (never re-encoded)
+    // If already WebP, verify resolution doesn't exceed maxDimension
     if (file.type === 'image/webp' || ext === 'webp') {
       let width = 0;
       let height = 0;
+      let bitmap = null;
       try {
-        const bitmap = await decodeToBitmap(file);
+        bitmap = await decodeToBitmap(file);
         width = bitmap.naturalWidth || bitmap.width;
         height = bitmap.naturalHeight || bitmap.height;
-        if (typeof bitmap.close === 'function') bitmap.close();
       } catch {
         // Dimensions probe optional
       }
 
-      const webpFile = file.name.endsWith('.webp')
-        ? file
-        : new File([file], `${baseName}.webp`, { type: 'image/webp', lastModified: Date.now() });
+      // If dimensions are within 2560px, pass through
+      if (!bitmap || Math.max(width, height) <= maxDimension) {
+        if (bitmap && typeof bitmap.close === 'function') bitmap.close();
+        const webpFile = file.name.endsWith('.webp') && file.type === 'image/webp'
+          ? file
+          : new File([file], `${baseName}.webp`, { type: 'image/webp', lastModified: Date.now() });
 
+        return {
+          file: webpFile,
+          originalSize: file.size,
+          convertedSize: webpFile.size,
+          width,
+          height,
+          sourceFormat: 'webp'
+        };
+      }
+
+      // Re-encode WebP that exceeds 2560px
+      const { webpBlob, width: newW, height: newH } = await bitmapToWebPBlob(bitmap, maxDimension, requestedQuality);
+      const webpFile = new File([webpBlob], `${baseName}.webp`, { type: 'image/webp', lastModified: Date.now() });
       return {
         file: webpFile,
         originalSize: file.size,
         convertedSize: webpFile.size,
-        width,
-        height,
-        sourceFormat: 'webp'
+        width: newW,
+        height: newH,
+        sourceFormat: 'webp (downscaled)'
       };
     }
 
@@ -365,8 +382,8 @@
     let { webpBlob, width, height, canvas } = await bitmapToWebPBlob(bitmap, maxDimension, requestedQuality);
 
     // If converted WebP equals or exceeds original file size (e.g. converting an already compressed JPEG),
-    // attempt slightly tighter quality (0.88, visually lossless at 1:1 resolution) and pick the smaller blob.
-    if (options.quality === undefined && file.size && webpBlob.size >= file.size && canvas) {
+    // attempt slightly tighter quality (0.88, visually lossless) and pick the smaller blob.
+    if (opts.quality === undefined && file.size && webpBlob.size >= file.size && canvas) {
       try {
         const fallbackBlob = await new Promise((resolve, reject) => {
           canvas.toBlob(

@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react'
 import { fetchRecentPhotos } from '../../api/client'
 import type { PhotoshootPhoto } from '../../types/recentPhotoshoot'
 
-const signature = (photos: readonly PhotoshootPhoto[]) => photos.map(photo => `${photo.id}|${photo.imageUrl}|${photo.alt}`).join('\n')
+const signature = (photos: readonly PhotoshootPhoto[]) =>
+  photos.map(photo => `${photo.id}|${photo.imageUrl}|${photo.alt}`).join('\n')
 
 /**
  * Live list of carousel photos from the admin-managed portfolio.
- * Re-checks whenever the visitor returns to the tab, so uploads or removals
- * made in the admin panel show up without a hard refresh.
+ * Re-checks whenever the visitor focuses the window or returns to the tab,
+ * so uploads or removals made in the admin panel show up without a hard refresh.
  */
 export function useRecentPhotos(fallbackPhotos: readonly PhotoshootPhoto[]): readonly PhotoshootPhoto[] {
   const [photos, setPhotos] = useState(fallbackPhotos)
@@ -28,15 +29,17 @@ export function useRecentPhotos(fallbackPhotos: readonly PhotoshootPhoto[]): rea
         .catch(() => {})
     }
 
-    const onVisibilityChange = () => {
+    const onRevalidate = () => {
       if (document.visibilityState === 'visible') load()
     }
 
     load()
-    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', onRevalidate)
+    document.addEventListener('visibilitychange', onRevalidate)
     return () => {
       controller?.abort()
-      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', onRevalidate)
+      document.removeEventListener('visibilitychange', onRevalidate)
     }
   }, [fallbackPhotos])
 

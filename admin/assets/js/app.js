@@ -338,6 +338,13 @@
    */
   async function loadInitialBackendData() {
     try {
+      const initCurrentState = window.R59.state.getState();
+      initCurrentState.images = initCurrentState.images || {};
+      initCurrentState.images.main = Array.isArray(initCurrentState.images.main) ? initCurrentState.images.main : [];
+      initCurrentState.images.gallery = Array.isArray(initCurrentState.images.gallery) ? initCurrentState.images.gallery : [];
+      initCurrentState.images.about = Array.isArray(initCurrentState.images.about) ? initCurrentState.images.about : [];
+      initCurrentState.images.hero = Array.isArray(initCurrentState.images.hero) ? initCurrentState.images.hero : [];
+
       await Promise.allSettled([
         // 1. Packages / Services
         (async () => {
@@ -491,15 +498,46 @@
           }
         })(),
 
-        // 8. Portfolio images, sorted into the Most Recent / Gallery / About tabs by site section
+        // 8. Portfolio images, sorted into Most Recent / Gallery / Hero / About tabs by site section
         (async () => {
+          const SECTION_TO_TAB = { recent: 'main', gallery: 'gallery', about: 'about', hero: 'hero' };
+          const currentState = window.R59.state.getState();
+          currentState.images = currentState.images || {};
+          currentState.images.main = Array.isArray(currentState.images.main) ? currentState.images.main : [];
+          currentState.images.gallery = Array.isArray(currentState.images.gallery) ? currentState.images.gallery : [];
+          currentState.images.about = Array.isArray(currentState.images.about) ? currentState.images.about : [];
+          currentState.images.hero = Array.isArray(currentState.images.hero) ? currentState.images.hero : [];
+
           if (!window.R59.api?.photography) return;
           const records = await window.R59.api.photography.getGalleryImages().catch(err => {
             console.warn('[app] Could not load portfolio images:', err);
             return null;
           });
           if (Array.isArray(records)) {
-            window.R59.photography?.setImagesFromRecords?.(records);
+            if (window.R59.photography?.setImagesFromRecords) {
+              window.R59.photography.setImagesFromRecords(records);
+            } else {
+              const grouped = { main: [], gallery: [], about: [], hero: [] };
+              records.forEach(p => {
+                let tab;
+                const secLower = (p.section || '').toLowerCase();
+                const catLower = (p.category || '').toLowerCase();
+                if (secLower === 'hero' || ((!p.section || secLower === 'gallery') && (catLower === 'hero' || p.is_featured === 1))) {
+                  tab = 'hero';
+                } else {
+                  tab = SECTION_TO_TAB[secLower || 'gallery'] || 'gallery';
+                }
+                const order = p.order !== undefined && p.order !== null ? Number(p.order) : (p.display_order ?? 0);
+                grouped[tab].push({
+                  ...p,
+                  section: tab === 'hero' ? 'hero' : (p.section || (tab === 'main' ? 'recent' : tab)),
+                  order,
+                  display_order: order
+                });
+              });
+              Object.values(grouped).forEach(list => list.sort((a, b) => (a.order ?? a.display_order ?? 0) - (b.order ?? b.display_order ?? 0) || a.id - b.id));
+              currentState.images = grouped;
+            }
           }
         })()
       ]);

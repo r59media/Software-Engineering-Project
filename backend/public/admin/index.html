@@ -115,6 +115,11 @@
           <rect x="3" y="15" width="8" height="6" />
         </svg>Gallery
       </button>
+      <button class="nav-link" data-go="images" data-tab="hero">
+        <svg class="i" viewBox="0 0 24 24">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+        </svg>Hero
+      </button>
       <button class="nav-link" data-go="images" data-tab="about">
         <svg class="i" viewBox="0 0 24 24">
           <circle cx="12" cy="8" r="4" />
@@ -289,10 +294,11 @@
       <h1 id="h-images">Photo <em>library</em></h1>
       <p class="lead">Click an image to replace it, or drop a file onto any card. (JPG, PNG, HEIC, RAW → auto-converted to WebP)</p>
 
-      <div class="tabs" role="tablist">
-        <button class="tab" role="tab" data-tab="main" aria-selected="true">Most Recent</button>
-        <button class="tab" role="tab" data-tab="gallery" aria-selected="false">Gallery</button>
-        <button class="tab" role="tab" data-tab="about" aria-selected="false">About me</button>
+      <div class="tabs" id="photoTabs" role="tablist">
+        <button class="tab" role="tab" data-tab="main" type="button" aria-selected="true">Most Recent</button>
+        <button class="tab" role="tab" data-tab="gallery" type="button" aria-selected="false">Gallery</button>
+        <button class="tab" role="tab" data-tab="hero" type="button" aria-selected="false">Hero</button>
+        <button class="tab" role="tab" data-tab="about" type="button" aria-selected="false">About me</button>
       </div>
 
       <div class="toolbar">
@@ -301,9 +307,10 @@
       </div>
 
       <div class="img-grid" id="imgGrid"></div>
-      <input type="file" id="filePick" accept="image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" hidden>
-      <input type="file" id="fileAdd" accept="image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" multiple hidden>
-      <input type="file" id="photo-file-input" accept="image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" multiple hidden>
+      <input type="file" id="filePick" data-replace accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" hidden>
+      <input type="file" id="fileInput" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" multiple hidden>
+      <input type="file" id="fileAdd" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" multiple hidden>
+      <input type="file" id="photo-file-input" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" multiple hidden>
     </section>
 
     <!-- PAYMENT -->

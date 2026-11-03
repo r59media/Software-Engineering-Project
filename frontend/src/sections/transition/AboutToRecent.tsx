@@ -155,6 +155,17 @@ export function AboutToRecent() {
     const navigate = () => {
       if (location.hash === '#recent-photoshoot') window.scrollTo({ top: start + distance, behavior: 'instant' })
     }
+    const handleRecentLinkClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null
+      const link = target?.closest('a[href="#recent-photoshoot"]')
+      if (link) {
+        event.preventDefault()
+        if (location.hash !== '#recent-photoshoot') {
+          history.pushState(null, '', '#recent-photoshoot')
+        }
+        window.scrollTo({ top: start + distance, behavior: 'smooth' })
+      }
+    }
     let keyboardNavigation = false
     const trackKey = (event: KeyboardEvent) => { keyboardNavigation = event.key === 'Tab' }
     const trackPointer = () => { keyboardNavigation = false }
@@ -170,6 +181,7 @@ export function AboutToRecent() {
     window.addEventListener('scroll', schedule, { passive: true })
     window.addEventListener('resize', onResize)
     window.addEventListener('hashchange', navigate)
+    document.addEventListener('click', handleRecentLinkClick)
     window.addEventListener('keydown', trackKey, true)
     window.addEventListener('pointerdown', trackPointer, true)
     recent.addEventListener('focusin', focusRecent)
@@ -181,6 +193,7 @@ export function AboutToRecent() {
       window.removeEventListener('scroll', schedule)
       window.removeEventListener('resize', onResize)
       window.removeEventListener('hashchange', navigate)
+      document.removeEventListener('click', handleRecentLinkClick)
       window.removeEventListener('keydown', trackKey, true)
       window.removeEventListener('pointerdown', trackPointer, true)
       recent.removeEventListener('focusin', focusRecent)

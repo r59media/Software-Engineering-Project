@@ -249,6 +249,56 @@ app.get('/api/health', async (c) => {
   }
 })
 
+export const DEFAULT_PROFILE = {
+  bio: "I'm the photographer behind R59—drawn to quiet frames, honest light, and the small gestures that make a portrait feel lived-in.\n\nMost of my work sits between editorial portraiture and documentary storytelling. Whether we're in a studio or chasing late-afternoon sun on location, the goal is always the same: images that still feel like you ten years from now.",
+  email: "hello@r59.Portraits",
+  phone: "123-456-7890",
+  location: "Studio & On-Location",
+  travel: true,
+  social: {
+    instagram: "https://www.instagram.com",
+    facebook: "https://www.facebook.com",
+    pinterest: "https://www.pinterest.com",
+    x: "",
+    tiktok: "",
+    youtube: ""
+  }
+}
+
+// Public studio profile endpoint
+app.get('/api/profile', async (c) => {
+  try {
+    let parsed: any = null
+    if (c.env.DB) {
+      try {
+        const row = await c.env.DB.prepare(
+          "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'profile'"
+        ).first<{ setting_value: string }>()
+        if (row?.setting_value) {
+          parsed = JSON.parse(row.setting_value)
+        }
+      } catch {}
+    }
+
+    const profile = {
+      bio: (parsed?.bio && String(parsed.bio).trim()) || DEFAULT_PROFILE.bio,
+      email: (parsed?.email && String(parsed.email).trim()) || DEFAULT_PROFILE.email,
+      phone: (parsed?.phone && String(parsed.phone).trim()) || DEFAULT_PROFILE.phone,
+      location: (parsed?.location && String(parsed.location).trim()) || DEFAULT_PROFILE.location,
+      travel: parsed?.travel !== undefined ? Boolean(parsed.travel) : DEFAULT_PROFILE.travel,
+      social: parsed?.social || DEFAULT_PROFILE.social
+    }
+
+    c.header('Cache-Control', 'no-store')
+    return c.json({
+      status: 'success',
+      profile
+    })
+  } catch {
+    return c.json({ status: 'success', profile: { ...DEFAULT_PROFILE } })
+  }
+})
+
 // Mount routes
 app.route('/api/contact', contactRouter)
 app.route('/api/schedule', scheduleRouter)

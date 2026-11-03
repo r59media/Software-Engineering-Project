@@ -1,0 +1,298 @@
+{
+  "hero": [
+    {
+      "section": "hero",
+      "category": "hero",
+      "title": "Twilight Highway Rolling Shot",
+      "alt_text": "High-contrast automotive rolling shot on the open highway at twilight.",
+      "display_order": 1,
+      "order": 1,
+      "r2_object_key": "/assets/CdWg9zPd.webp",
+      "seed_key": "hero-1",
+      "is_featured": 1,
+      "is_active": 1
+    },
+    {
+      "section": "hero",
+      "category": "hero",
+      "title": "Studio Automotive Silhouette",
+      "alt_text": "Dramatic studio automotive detail capturing reflections and sleek body lines.",
+      "display_order": 2,
+      "order": 2,
+      "r2_object_key": "/assets/Sd96gpHk.webp",
+      "seed_key": "hero-2",
+      "is_featured": 1,
+      "is_active": 1
+    },
+    {
+      "section": "hero",
+      "category": "hero",
+      "title": "Cinematic Ambient Portrait",
+      "alt_text": "Atmospheric portrait photography with warm cinematic lighting.",
+      "display_order": 3,
+      "order": 3,
+      "r2_object_key": "/assets/D2thO5N_.webp",
+      "seed_key": "hero-3",
+      "is_featured": 1,
+      "is_active": 1
+    },
+    {
+      "section": "hero",
+      "category": "hero",
+      "title": "Sunset Automotive Portrait",
+      "alt_text": "Artistic urban automotive portrait during sunset in New Jersey.",
+      "display_order": 4,
+      "order": 4,
+      "r2_object_key": "/assets/agEA14ZU.webp",
+      "seed_key": "hero-4",
+      "is_featured": 1,
+      "is_active": 1
+    },
+    {
+      "section": "hero",
+      "category": "hero",
+      "title": "Twilight Highway Rolling Shot II",
+      "alt_text": "Atmospheric automotive perspective at dusk.",
+      "display_order": 5,
+      "order": 5,
+      "r2_object_key": "/assets/CdWg9zPd.webp",
+      "seed_key": "hero-5",
+      "is_featured": 1,
+      "is_active": 1
+    }
+  ],
+  "recent": [
+    {
+      "section": "recent",
+      "category": "Portrait",
+      "title": "Recent Look 1",
+      "alt_text": "Studio portrait in a black suit and patterned tie.",
+      "display_order": 1,
+      "order": 1,
+      "r2_object_key": "/assets/D4wMHJae.webp",
+      "seed_key": "recent-1",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "recent",
+      "category": "Portrait",
+      "title": "Recent Look 2",
+      "alt_text": "Smiling studio portrait in a blue suit.",
+      "display_order": 2,
+      "order": 2,
+      "r2_object_key": "/assets/CcvhJ4K9.webp",
+      "seed_key": "recent-2",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "recent",
+      "category": "Portrait",
+      "title": "Recent Look 3",
+      "alt_text": "Studio portrait in a black suit with hands clasped.",
+      "display_order": 3,
+      "order": 3,
+      "r2_object_key": "/assets/Dw5-qK75.webp",
+      "seed_key": "recent-3",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "recent",
+      "category": "Portrait",
+      "title": "Recent Look 4",
+      "alt_text": "Studio portrait in a white short-sleeved top.",
+      "display_order": 4,
+      "order": 4,
+      "r2_object_key": "/assets/BUO1aQbc.webp",
+      "seed_key": "recent-4",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "recent",
+      "category": "Portrait",
+      "title": "Recent Look 5",
+      "alt_text": "Studio portrait in a white blouse and beige trousers.",
+      "display_order": 5,
+      "order": 5,
+      "r2_object_key": "/assets/BW89yckM.webp",
+      "seed_key": "recent-5",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "recent",
+      "category": "Portrait",
+      "title": "Recent Look 6",
+      "alt_text": "Studio portrait in a black blazer and white top.",
+      "display_order": 6,
+      "order": 6,
+      "r2_object_key": "/assets/Dhi-pdrR.webp",
+      "seed_key": "recent-6",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "recent",
+      "category": "Portrait",
+      "title": "Recent Look 7",
+      "alt_text": "Studio portrait with glasses, a patterned blouse, and black blazer.",
+      "display_order": 7,
+      "order": 7,
+      "r2_object_key": "/assets/CsJVCPMF.webp",
+      "seed_key": "recent-7",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "recent",
+      "category": "Portrait",
+      "title": "Recent Look 8",
+      "alt_text": "Studio portrait in a grey suit and black tie.",
+      "display_order": 8,
+      "order": 8,
+      "r2_object_key": "/assets/BL_DFc6O.webp",
+      "seed_key": "recent-8",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "recent",
+      "category": "Portrait",
+      "title": "Recent Look 9",
+      "alt_text": "Studio portrait with glasses, a white shirt, and black blazer.",
+      "display_order": 9,
+      "order": 9,
+      "r2_object_key": "/assets/MIyZqOug.webp",
+      "seed_key": "recent-9",
+      "is_featured": 0,
+      "is_active": 1
+    }
+  ],
+  "gallery": [
+    {
+      "section": "gallery",
+      "category": "Portrait",
+      "title": "Studio Series 1",
+      "alt_text": "Studio series portrait in black blazer.",
+      "display_order": 1,
+      "order": 1,
+      "r2_object_key": "/assets/Dhi-pdrR.webp",
+      "seed_key": "gallery-1",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "gallery",
+      "category": "Editorial",
+      "title": "Studio Series 2",
+      "alt_text": "Editorial series portrait with glasses.",
+      "display_order": 2,
+      "order": 2,
+      "r2_object_key": "/assets/CsJVCPMF.webp",
+      "seed_key": "gallery-2",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "gallery",
+      "category": "Commercial",
+      "title": "Studio Series 3",
+      "alt_text": "Commercial series portrait in grey suit.",
+      "display_order": 3,
+      "order": 3,
+      "r2_object_key": "/assets/BL_DFc6O.webp",
+      "seed_key": "gallery-3",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "gallery",
+      "category": "Events",
+      "title": "Studio Series 4",
+      "alt_text": "Events series portrait in black suit.",
+      "display_order": 4,
+      "order": 4,
+      "r2_object_key": "/assets/D4wMHJae.webp",
+      "seed_key": "gallery-4",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "gallery",
+      "category": "Portrait",
+      "title": "Studio Series 5",
+      "alt_text": "Studio series portrait in white shirt.",
+      "display_order": 5,
+      "order": 5,
+      "r2_object_key": "/assets/MIyZqOug.webp",
+      "seed_key": "gallery-5",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "gallery",
+      "category": "Editorial",
+      "title": "Studio Series 6",
+      "alt_text": "Editorial series portrait in white top.",
+      "display_order": 6,
+      "order": 6,
+      "r2_object_key": "/assets/BUO1aQbc.webp",
+      "seed_key": "gallery-6",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "gallery",
+      "category": "Commercial",
+      "title": "Studio Series 7",
+      "alt_text": "Commercial series portrait in blue suit.",
+      "display_order": 7,
+      "order": 7,
+      "r2_object_key": "/assets/CcvhJ4K9.webp",
+      "seed_key": "gallery-7",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "gallery",
+      "category": "Events",
+      "title": "Studio Series 8",
+      "alt_text": "Events series portrait in beige trousers.",
+      "display_order": 8,
+      "order": 8,
+      "r2_object_key": "/assets/BW89yckM.webp",
+      "seed_key": "gallery-8",
+      "is_featured": 0,
+      "is_active": 1
+    },
+    {
+      "section": "gallery",
+      "category": "Portrait",
+      "title": "Studio Series 9",
+      "alt_text": "Studio series portrait with hands clasped.",
+      "display_order": 9,
+      "order": 9,
+      "r2_object_key": "/assets/Dw5-qK75.webp",
+      "seed_key": "gallery-9",
+      "is_featured": 0,
+      "is_active": 1
+    }
+  ],
+  "about": [
+    {
+      "section": "about",
+      "category": "Portrait",
+      "title": "About Portrait",
+      "alt_text": "Portrait of the photographer behind R59",
+      "display_order": 1,
+      "order": 1,
+      "r2_object_key": "/assets/Bw-T4hID.webp",
+      "seed_key": "about-1",
+      "is_featured": 0,
+      "is_active": 1
+    }
+  ]
+}

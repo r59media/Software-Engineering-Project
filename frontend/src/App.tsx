@@ -4,6 +4,7 @@ import { fetchHeroSlides } from './api/client'
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
 import { AboutToRecent } from './sections/transition/AboutToRecent'
+import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
@@ -12,15 +13,38 @@ function App() {
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
 
   useEffect(() => {
-    const controller = new AbortController()
-    void fetchHeroSlides(heroSlides, controller.signal)
-      .then(remoteSlides => {
-        if (!controller.signal.aborted && remoteSlides !== heroSlides && remoteSlides.length > 0) {
-          setSlides(remoteSlides)
-        }
-      })
-      .catch(() => {})
-    return () => controller.abort()
+    let controller: AbortController | null = null
+
+    const load = () => {
+      controller?.abort()
+      const current = new AbortController()
+      controller = current
+      void fetchHeroSlides(heroSlides, current.signal)
+        .then(remoteSlides => {
+          if (current.signal.aborted) return
+          if (remoteSlides && remoteSlides.length > 0) {
+            setSlides(prev => {
+              const prevSig = prev.map(s => `${s.id}|${s.imageUrl}|${s.alt}`).join('\n')
+              const nextSig = remoteSlides.map(s => `${s.id}|${s.imageUrl}|${s.alt}`).join('\n')
+              return prevSig === nextSig ? prev : remoteSlides
+            })
+          }
+        })
+        .catch(() => {})
+    }
+
+    const onRevalidate = () => {
+      if (document.visibilityState === 'visible') load()
+    }
+
+    load()
+    window.addEventListener('focus', onRevalidate)
+    document.addEventListener('visibilitychange', onRevalidate)
+    return () => {
+      controller?.abort()
+      window.removeEventListener('focus', onRevalidate)
+      document.removeEventListener('visibilitychange', onRevalidate)
+    }
   }, [])
 
   useEffect(() => {
@@ -78,6 +102,7 @@ function App() {
         <Hero slides={slides} destinations={heroDestinations} />
       </div>
       <AboutToRecent />
+      <PortfolioGallery />
     </main>
     <SiteFooter />
   </div>

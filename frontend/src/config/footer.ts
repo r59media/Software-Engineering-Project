@@ -8,6 +8,8 @@ export const footerContent = {
   photographer: 'Kevin D Gonzalez',
   brand: 'R59 MEDIA',
   adminHref: '/admin/',
+  email: 'hello@r59.Portraits',
+  phone: '123-456-7890',
 }
 
 // Supply approved public profile URLs when available. Do not call authenticated admin APIs here.

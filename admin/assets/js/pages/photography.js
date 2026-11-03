@@ -28,8 +28,8 @@
   const PLATFORMS = ['Instagram', 'TikTok', 'X', 'Threads', 'Facebook', 'YouTube', 'LinkedIn', 'Website'];
 
   // Each admin tab maps to the section of the public site that displays its photos
-  const TAB_TO_SECTION = { main: 'recent', gallery: 'gallery', about: 'about' };
-  const SECTION_TO_TAB = { recent: 'main', gallery: 'gallery', about: 'about' };
+  const TAB_TO_SECTION = { main: 'recent', gallery: 'gallery', about: 'about', hero: 'hero' };
+  const SECTION_TO_TAB = { recent: 'main', gallery: 'gallery', about: 'about', hero: 'hero' };
   const META_SAVE_DELAY_MS = 600;
   const metaSaveTimers = new Map();
 
@@ -37,11 +37,19 @@
     return TAB_TO_SECTION[tab] || 'gallery';
   }
 
+  function ensureImageBuckets(st = window.R59.state.getState()) {
+    st.images = st.images || {};
+    st.images.main = Array.isArray(st.images.main) ? st.images.main : [];
+    st.images.gallery = Array.isArray(st.images.gallery) ? st.images.gallery : [];
+    st.images.about = Array.isArray(st.images.about) ? st.images.about : [];
+    st.images.hero = Array.isArray(st.images.hero) ? st.images.hero : [];
+    return st.images;
+  }
+
   function imagesFor(tab) {
-    const currentState = window.R59.state.getState();
-    currentState.images = currentState.images || { main: [], gallery: [], about: [] };
-    currentState.images[tab] = currentState.images[tab] || [];
-    return currentState.images[tab];
+    const images = ensureImageBuckets();
+    images[tab] = images[tab] || [];
+    return images[tab];
   }
 
   /**
@@ -63,10 +71,83 @@
     return (err && err.message) || 'Unknown error';
   }
 
+  function setTabUI() {
+    const list = imagesFor(currentTab);
+    const hintEl = $('#imgHint');
+    if (hintEl) {
+      hintEl.textContent = {
+        main: list.length ? `${list.length} photo(s) · “Most recent photoshoot” carousel on the home page` : 'No photos in the Most Recent carousel yet',
+        gallery: list.length ? `${list.length} photo(s) · order = display order on site` : 'No gallery photos uploaded yet',
+        hero: list.length ? `${list.length} photo(s) · Homepage hero slideshow background` : 'No hero photos uploaded yet',
+        about: list.length ? `${list.length} photo(s) · Polaroid cards + banner` : 'No About me photos uploaded yet'
+      }[currentTab] || '';
+    }
+
+    const filterWrap = $('#filterWrap') || $('#filters');
+    if (filterWrap) {
+      filterWrap.style.display = currentTab === 'gallery' ? '' : 'none';
+      if (currentTab === 'gallery') {
+        filterWrap.innerHTML = ['All', ...CATS].map(c => `<button class="chip ${c === currentFilter ? 'on' : ''}" data-filter="${c}">${c}</button>`).join('');
+      } else {
+        filterWrap.innerHTML = '';
+      }
+    }
+
+    const aboutProfileCard = $('#aboutProfileCard');
+    if (aboutProfileCard) {
+      aboutProfileCard.style.display = currentTab === 'about' ? '' : 'none';
+    }
+  }
+
+  const DEFAULT_PROFILE = {
+    bio: "I'm the photographer behind R59—drawn to quiet frames, honest light, and the small gestures that make a portrait feel lived-in.\n\nMost of my work sits between editorial portraiture and documentary storytelling. Whether we're in a studio or chasing late-afternoon sun on location, the goal is always the same: images that still feel like you ten years from now.",
+    email: "hello@r59.Portraits",
+    phone: "123-456-7890",
+    location: "Studio & On-Location",
+    travel: true,
+    social: [
+      { platform: 'Instagram', url: 'https://www.instagram.com' },
+      { platform: 'Facebook', url: 'https://www.facebook.com' },
+      { platform: 'Pinterest', url: 'https://www.pinterest.com' }
+    ]
+  };
+
+  function initProfileCard() {
+    const currentState = window.R59.state.getState();
+    if (!currentState.bio) currentState.bio = DEFAULT_PROFILE.bio;
+    if (!currentState.email) currentState.email = DEFAULT_PROFILE.email;
+    if (!currentState.phone) currentState.phone = DEFAULT_PROFILE.phone;
+    if (!currentState.location) currentState.location = DEFAULT_PROFILE.location;
+    if (currentState.travel === undefined || currentState.travel === '') {
+      currentState.travel = DEFAULT_PROFILE.travel ? 'Studio & On-Location (Worldwide)' : 'Studio only';
+    }
+    if (!Array.isArray(currentState.social) || currentState.social.length === 0) {
+      currentState.social = DEFAULT_PROFILE.social;
+    }
+
+    const bioEl = $('#bio');
+    if (bioEl && !bioEl.value) bioEl.value = currentState.bio;
+    const emailEl = $('#email');
+    if (emailEl && !emailEl.value) emailEl.value = currentState.email;
+    const phoneEl = $('#phone');
+    if (phoneEl && !phoneEl.value) phoneEl.value = currentState.phone;
+    const locEl = $('#location');
+    if (locEl && !locEl.value) locEl.value = currentState.location;
+    const travelEl = $('#travel');
+    if (travelEl && !travelEl.value) travelEl.value = currentState.travel;
+
+    updateBioCount();
+    renderSocial();
+  }
+
   function setTab(tab) {
     currentTab = tab;
     currentFilter = 'All';
     $$('.tab').forEach(t => t.setAttribute('aria-selected', t.dataset.tab === tab));
+    setTabUI();
+    if (tab === 'about') {
+      initProfileCard();
+    }
     renderImages();
   }
 
@@ -79,30 +160,41 @@
    * grouped by the site section they belong to.
    */
   function setImagesFromRecords(records) {
-    const grouped = { main: [], gallery: [], about: [] };
+    const currentState = window.R59.state.getState();
+    const st = currentState;
+    const grouped = { main: [], gallery: [], about: [], hero: [] };
     const resolve = api()?.resolveApiUrl || (u => u);
 
     (records || []).forEach(p => {
-      const tab = SECTION_TO_TAB[(p.section || 'gallery').toLowerCase()];
-      if (!tab) return; // hero slides have no tab here yet
+      let tab;
+      const secLower = (p.section || '').toLowerCase();
+      const catLower = (p.category || '').toLowerCase();
+
+      if (secLower === 'hero' || ((!p.section || secLower === 'gallery') && (catLower === 'hero' || p.is_featured === 1))) {
+        tab = 'hero';
+      } else {
+        tab = SECTION_TO_TAB[secLower || 'gallery'] || 'gallery';
+      }
+
       const rawUrl = p.url || p.public_url || (p.r2_object_key ? `/api/media/${String(p.r2_object_key).replace(/^\/+/, '')}` : '');
+      const order = p.order !== undefined && p.order !== null ? Number(p.order) : (p.display_order ?? 0);
       grouped[tab].push({
         id: p.id,
         src: resolve(rawUrl),
         key: p.r2_object_key || '',
-        section: p.section || 'gallery',
+        section: tab === 'hero' ? 'hero' : (p.section || sectionForTab(tab)),
         label: p.title || p.alt_text || 'Photo',
         alt: p.alt_text || p.title || '',
-        cat: p.category && CATS.includes(p.category) ? p.category : 'Portrait',
-        display_order: p.display_order ?? 0,
+        cat: p.category && CATS.includes(p.category) ? p.category : (tab === 'hero' ? 'hero' : 'Portrait'),
+        order,
+        display_order: order,
         is_featured: Boolean(p.is_featured)
       });
     });
 
-    Object.values(grouped).forEach(list => list.sort((a, b) => a.display_order - b.display_order || a.id - b.id));
+    Object.values(grouped).forEach(list => list.sort((a, b) => (a.order ?? a.display_order ?? 0) - (b.order ?? b.display_order ?? 0) || a.id - b.id));
 
-    const currentState = window.R59.state.getState();
-    currentState.images = grouped;
+    st.images = grouped;
     commitImages();
     renderImages();
   }
@@ -158,24 +250,10 @@
     const grid = $('#imgGrid');
     if (!grid) return;
 
+    setTabUI();
+
     const list = imagesFor(currentTab);
     const isGallery = currentTab === 'gallery';
-
-    const filtersEl = $('#filters');
-    if (filtersEl) {
-      filtersEl.innerHTML = isGallery
-        ? ['All', ...CATS].map(c => `<button class="chip ${c === currentFilter ? 'on' : ''}" data-filter="${c}">${c}</button>`).join('')
-        : '';
-    }
-
-    const hintEl = $('#imgHint');
-    if (hintEl) {
-      hintEl.textContent = {
-        main: list.length ? `${list.length} photo(s) · “Most recent photoshoot” carousel on the home page` : 'No photos in the Most Recent carousel yet',
-        gallery: list.length ? `${list.length} photo(s) · order = display order on site` : 'No gallery photos uploaded yet',
-        about: list.length ? `${list.length} photo(s) · Polaroid cards + banner` : 'No About me photos uploaded yet'
-      }[currentTab];
-    }
 
     const shown = list
       .map((it, i) => ({ it, i }))
@@ -190,6 +268,7 @@
             <button class="icon-btn" data-act="replace" aria-label="Replace ${esc(it.label || 'image')}" ${it.busy ? 'disabled' : ''}>
               <svg class="i" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></svg>
             </button>
+            <input type="file" class="card-replace-input" data-replace data-idx="${i}" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.pef,.srw" hidden>
             <button class="icon-btn del" data-act="delete" aria-label="Remove ${esc(it.label || 'image')}" ${it.busy ? 'disabled' : ''}>
               <svg class="i" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>
             </button>
@@ -234,7 +313,7 @@
     const message = `Converting ${file.name} (${rawExt} → WebP)${progressLabel ? ` ${progressLabel}` : ''}...`;
     setAddTileStatus(message);
     toast(message);
-    const { file: webpFile } = await convertToWebP(file);
+    const { file: webpFile } = await convertToWebP(file, { quality: 0.92, maxDimension: 2560 });
     return webpFile;
   }
 
@@ -290,8 +369,8 @@
 
     // Lock in the destination now so switching tabs mid-upload can't misfile photos
     const tab = currentTab;
-    const section = sectionForTab(tab);
-    const category = tab === 'gallery' ? (currentFilter === 'All' ? 'Portrait' : currentFilter) : 'All';
+    const section = tab === 'hero' ? 'hero' : sectionForTab(tab);
+    const category = tab === 'hero' ? 'hero' : (tab === 'gallery' ? (currentFilter === 'All' ? 'Portrait' : currentFilter) : 'All');
     const list = imagesFor(tab);
 
     uploading = true;
@@ -308,6 +387,7 @@
           const label = webpFile.name.replace(/\.[^.]+$/, '');
           const saved = await api().uploadImageFile(webpFile, { section, category, title: label, altText: label });
 
+          const orderVal = saved.order ?? saved.display_order ?? list.length;
           list.push({
             id: saved.id,
             src: safeImgSrc(saved.src || saved.url),
@@ -315,8 +395,9 @@
             section,
             label,
             alt: label,
-            cat: tab === 'gallery' ? category : 'Portrait',
-            display_order: saved.display_order ?? list.length
+            cat: tab === 'hero' ? 'hero' : (tab === 'gallery' ? category : 'Portrait'),
+            order: orderVal,
+            display_order: orderVal
           });
           added++;
           // Show each photo as soon as it lands rather than waiting for the whole batch
@@ -498,7 +579,12 @@
           moveImage(idx, act === 'left' ? -1 : 1);
         } else if (act === 'replace' || e.target.tagName === 'IMG') {
           replaceTarget = idx;
-          $('#filePick')?.click();
+          const cardInput = card.querySelector('input[data-replace]');
+          if (cardInput) {
+            cardInput.click();
+          } else {
+            $('#filePick')?.click();
+          }
         }
       });
 
@@ -551,12 +637,24 @@
     const filePick = $('#filePick');
     if (filePick) {
       filePick.onchange = e => {
-        replaceAt(replaceTarget, e.target.files[0]);
+        if (e.target.files && e.target.files[0]) {
+          replaceAt(replaceTarget, e.target.files[0]);
+        }
         e.target.value = '';
       };
     }
 
-    ['#fileAdd', '#photo-file-input'].forEach(sel => {
+    grid?.addEventListener('change', e => {
+      const t = e.target;
+      if (!t.matches?.('input[data-replace]')) return;
+      if (t.files && t.files[0]) {
+        const targetIdx = t.dataset.idx !== undefined ? +t.dataset.idx : replaceTarget;
+        replaceAt(targetIdx, t.files[0]);
+      }
+      t.value = '';
+    });
+
+    ['#fileAdd', '#photo-file-input', '#fileInput'].forEach(sel => {
       const input = $(sel);
       if (!input) return;
       input.onchange = e => {
@@ -564,6 +662,9 @@
         e.target.value = '';
       };
     });
+
+    // Initialize profile card with default content if needed
+    initProfileCard();
 
     // Text field data bindings
     $$('[data-bind]').forEach(el => {
@@ -580,6 +681,9 @@
   window.R59 = window.R59 || {};
   window.R59.photography = {
     setTab,
+    setTabUI,
+    initProfileCard,
+    ensureImageBuckets,
     getCurrentTab,
     updateBioCount,
     renderSocial,
@@ -592,6 +696,9 @@
     initPhotographyListeners
   };
   window.setTab = setTab;
+  window.setTabUI = setTabUI;
+  window.initProfileCard = initProfileCard;
+  window.ensureImageBuckets = ensureImageBuckets;
   window.updateBioCount = updateBioCount;
   window.renderSocial = renderSocial;
   window.renderImages = renderImages;

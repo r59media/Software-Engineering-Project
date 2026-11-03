@@ -39,7 +39,9 @@ export async function ensureSchemaReady(db: D1Database): Promise<void> {
       'ALTER TABLE Bookings ADD COLUMN attendees INTEGER DEFAULT 1',
       'ALTER TABLE Bookings ADD COLUMN deposit_paid INTEGER DEFAULT 0',
       "ALTER TABLE Bookings ADD COLUMN coupon_code TEXT DEFAULT ''",
-      'ALTER TABLE Bookings ADD COLUMN custom_price INTEGER'
+      'ALTER TABLE Bookings ADD COLUMN custom_price INTEGER',
+      "ALTER TABLE Portfolio_Images ADD COLUMN section TEXT NOT NULL DEFAULT 'gallery'",
+      'ALTER TABLE Portfolio_Images ADD COLUMN title TEXT'
     ]
 
     for (const sql of alterStatements) {
@@ -1451,8 +1453,24 @@ adminRouter.put('/portfolio/:id', async (c) => {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
     }
 
+    let section = existing.section || 'gallery'
+    if (body.section !== undefined) {
+      const s = String(body.section).trim().toLowerCase()
+      if (!['recent', 'gallery', 'about', 'hero'].includes(s)) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Unknown section. Use one of: recent, gallery, about, hero.',
+            details: [{ field: 'section', message: 'Invalid section', code: 'INVALID_VALUE' }]
+          }
+        }, 400)
+      }
+      section = s
+    }
+
+    const title = body.title !== undefined ? (body.title === null ? null : String(body.title).slice(0, 200)) : existing.title
     const category = body.category !== undefined ? String(body.category) : existing.category
-    const alt_text = body.alt_text !== undefined ? (body.alt_text === null ? null : String(body.alt_text)) : existing.alt_text
+    const alt_text = body.alt_text !== undefined ? (body.alt_text === null ? null : String(body.alt_text).slice(0, 500)) : existing.alt_text
     const is_active =
       body.is_active !== undefined
         ? (body.is_active ? 1 : 0)
@@ -1463,13 +1481,13 @@ adminRouter.put('/portfolio/:id', async (c) => {
     const display_order = body.display_order !== undefined ? Number(body.display_order) : existing.display_order
 
     await c.env.DB.prepare(
-      'UPDATE Portfolio_Images SET category = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
-    ).bind(category, alt_text, is_active, is_featured, display_order, id).run()
+      'UPDATE Portfolio_Images SET section = ?, title = ?, category = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
+    ).bind(section, title, category, alt_text, is_active, is_featured, display_order, id).run()
 
     return c.json({
       success: true,
       status: 'success',
-      data: { id: Number(id), category, alt_text, is_active, is_featured, display_order }
+      data: { id: Number(id), section, title, category, alt_text, is_active, is_featured, display_order }
     })
   } catch (e: any) {
     return c.json({
@@ -1499,7 +1517,7 @@ adminRouter.delete('/portfolio/:id', async (c) => {
 
     await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
 
-    if (existing.r2_object_key) {
+    if (existing.r2_object_key && !existing.r2_object_key.startsWith('/assets/')) {
       await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(existing.r2_object_key).run().catch(() => {})
     }
 
@@ -1516,6 +1534,18 @@ adminRouter.delete('/portfolio/:id', async (c) => {
 })
 
 // ── Profile ──────────────────────────────────────────────────────
+const DEFAULT_PROFILE = {
+  bio: "I'm the photographer behind R59—drawn to quiet frames, honest light, and the small gestures that make a portrait feel lived-in.\n\nMost of my work sits between editorial portraiture and documentary storytelling. Whether we're in a studio or chasing late-afternoon sun on location, the goal is always the same: images that still feel like you ten years from now.",
+  email: "hello@r59.Portraits",
+  phone: "123-456-7890",
+  location: "Studio & On-Location",
+  travel: 'Studio & On-Location (Worldwide)',
+  social: [
+    { platform: 'Instagram', url: 'https://www.instagram.com' },
+    { platform: 'Facebook', url: 'https://www.facebook.com' },
+    { platform: 'Pinterest', url: 'https://www.pinterest.com' }
+  ]
+}
 
 // GET: Studio profile information
 adminRouter.get('/profile', async (c) => {
@@ -1524,7 +1554,34 @@ adminRouter.get('/profile', async (c) => {
       "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'profile'"
     ).first<{ setting_value: string }>()
 
-    const profile = row?.setting_value ? JSON.parse(row.setting_value) : { bio: '', email: '', phone: '', location: '', travel: '', social: [] }
+    let parsed: any = null
+    if (row?.setting_value) {
+      try { parsed = JSON.parse(row.setting_value) } catch {}
+    }
+
+    let socialList = DEFAULT_PROFILE.social
+    if (Array.isArray(parsed?.social) && parsed.social.length > 0) {
+      socialList = parsed.social
+    } else if (parsed?.social && typeof parsed.social === 'object') {
+      const entries = Object.entries(parsed.social)
+        .filter(([_, url]) => Boolean(url))
+        .map(([platform, url]) => ({
+          platform: platform.charAt(0).toUpperCase() + platform.slice(1),
+          url: String(url)
+        }))
+      if (entries.length > 0) socialList = entries
+    }
+
+    const profile = {
+      bio: (parsed?.bio && String(parsed.bio).trim()) || DEFAULT_PROFILE.bio,
+      email: (parsed?.email && String(parsed.email).trim()) || DEFAULT_PROFILE.email,
+      phone: (parsed?.phone && String(parsed.phone).trim()) || DEFAULT_PROFILE.phone,
+      location: (parsed?.location && String(parsed.location).trim()) || DEFAULT_PROFILE.location,
+      travel: parsed?.travel !== undefined
+        ? (typeof parsed.travel === 'string' ? parsed.travel : (parsed.travel ? 'Studio & On-Location (Worldwide)' : 'Studio only'))
+        : DEFAULT_PROFILE.travel,
+      social: socialList
+    }
     return c.json({ ...profile, status: 'success', data: profile })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch profile.', details: [] } }, 500)
