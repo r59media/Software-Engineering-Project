@@ -57,58 +57,51 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
       'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
     ).run().catch(() => {})
 
-    await db.prepare(
-      'ALTER TABLE Admin_Settings ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP'
-    ).run().catch(() => {})
-
     const sections = ['hero', 'recent', 'gallery', 'about'] as const
+    const statements: any[] = []
 
     // 1. Update any existing /assets/ rows whose hash changed on rebuild
     for (const sec of sections) {
       const defaults = (defaultPortfolioSeed as any)[sec] || []
       for (const item of defaults) {
-        await db.prepare(
-          'UPDATE Portfolio_Images SET r2_object_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND r2_object_key LIKE "/assets/%" AND r2_object_key != ?'
-        ).bind(item.r2_object_key, sec, item.title, item.display_order ?? item.order ?? 1, item.r2_object_key).run().catch(() => {})
+        statements.push(
+          db.prepare(
+            'UPDATE Portfolio_Images SET r2_object_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND r2_object_key LIKE "/assets/%" AND r2_object_key != ?'
+          ).bind(item.r2_object_key, sec, item.title, item.display_order ?? item.order ?? 1, item.r2_object_key)
+        )
       }
     }
 
-    // 2. Seed sections with 0 images if not yet marked as seeded
+    // 2. Seed default images for any missing display_order / title per section
     for (const sec of sections) {
-      const flagKey = `seeded_section_${sec}`
-      const setting = await db.prepare(
-        'SELECT setting_value FROM Admin_Settings WHERE setting_key = ?'
-      ).bind(flagKey).first<{ setting_value: string }>().catch(() => null)
-
-      if (!setting) {
-        const row = await db.prepare(
-          'SELECT COUNT(*) as cnt FROM Portfolio_Images WHERE LOWER(section) = ? AND is_active = 1'
-        ).bind(sec).first<{ cnt: number }>().catch(() => null)
-
-        const count = row?.cnt ?? 0
-        if (count === 0) {
-          const items = (defaultPortfolioSeed as any)[sec] || []
-          for (const item of items) {
-            const displayOrder = item.display_order ?? item.order ?? 1
-            const featured = item.is_featured ? 1 : (sec === 'hero' ? 1 : 0)
-            await db.prepare(
-              'INSERT INTO Portfolio_Images (r2_object_key, section, category, title, alt_text, display_order, is_featured, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)'
-            ).bind(
-              item.r2_object_key,
-              sec,
-              item.category || (sec === 'hero' ? 'hero' : 'Portrait'),
-              item.title || null,
-              item.alt_text || null,
-              displayOrder,
-              featured
-            ).run().catch(() => {})
-          }
-        }
-
-        await db.prepare(
-          'INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value'
-        ).bind(flagKey, '1').run().catch(() => {})
+      const items = (defaultPortfolioSeed as any)[sec] || []
+      for (const item of items) {
+        const displayOrder = item.display_order ?? item.order ?? 1
+        const featured = item.is_featured ? 1 : (sec === 'hero' ? 1 : 0)
+        statements.push(
+          db.prepare(
+            'INSERT INTO Portfolio_Images (r2_object_key, section, category, title, alt_text, display_order, is_featured, is_active) ' +
+            'SELECT ?, ?, ?, ?, ?, ?, ?, 1 WHERE NOT EXISTS (' +
+            '  SELECT 1 FROM Portfolio_Images WHERE LOWER(section) = ? AND (title = ? OR display_order = ?)' +
+            ')'
+          ).bind(
+            item.r2_object_key,
+            sec,
+            item.category || (sec === 'hero' ? 'hero' : 'Portrait'),
+            item.title || null,
+            item.alt_text || null,
+            displayOrder,
+            featured,
+            sec,
+            item.title || '',
+            displayOrder
+          )
+        )
       }
+    }
+
+    if (statements.length > 0) {
+      await db.batch(statements)
     }
   } catch (err) {
     console.error('ensurePortfolioDefaults warning:', err)
@@ -122,32 +115,36 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
  */
 let portfolioSchemaReady = false
 export async function ensurePortfolioSchema(db: D1Database): Promise<void> {
-  if (portfolioSchemaReady) return
+  if (!portfolioSchemaReady) {
+    const info = await db.prepare('PRAGMA table_info(Portfolio_Images)').all<{ name: string }>()
+    const columns = new Set((info.results || []).map(col => col.name))
 
-  const info = await db.prepare('PRAGMA table_info(Portfolio_Images)').all<{ name: string }>()
-  const columns = new Set((info.results || []).map(col => col.name))
+    const migrations: string[] = []
+    if (!columns.has('section')) {
+      migrations.push("ALTER TABLE Portfolio_Images ADD COLUMN section TEXT NOT NULL DEFAULT 'gallery'")
+    }
+    if (!columns.has('title')) {
+      migrations.push('ALTER TABLE Portfolio_Images ADD COLUMN title TEXT')
+    }
 
-  const migrations: string[] = []
-  if (!columns.has('section')) {
-    migrations.push("ALTER TABLE Portfolio_Images ADD COLUMN section TEXT NOT NULL DEFAULT 'gallery'")
+    for (const sql of migrations) {
+      // Another isolate may win the race and add the column first; that is fine
+      await db.prepare(sql).run().catch(err => {
+        if (!String(err?.message || err).includes('duplicate column')) throw err
+      })
+    }
+    await db.prepare(
+      'CREATE INDEX IF NOT EXISTS idx_portfolio_section_order ON Portfolio_Images(is_active, section, display_order)'
+    ).run().catch(() => {})
+
+    portfolioSchemaReady = true
   }
-  if (!columns.has('title')) {
-    migrations.push('ALTER TABLE Portfolio_Images ADD COLUMN title TEXT')
+
+  // Ensure default portfolio seed images exist if database is fresh or missing sections
+  const countRow = await db.prepare('SELECT COUNT(*) as cnt FROM Portfolio_Images WHERE is_active = 1').first<{ cnt: number }>().catch(() => null)
+  if ((countRow?.cnt ?? 0) < 24) {
+    await ensurePortfolioDefaults(db)
   }
-
-  for (const sql of migrations) {
-    // Another isolate may win the race and add the column first; that is fine
-    await db.prepare(sql).run().catch(err => {
-      if (!String(err?.message || err).includes('duplicate column')) throw err
-    })
-  }
-  await db.prepare(
-    'CREATE INDEX IF NOT EXISTS idx_portfolio_section_order ON Portfolio_Images(is_active, section, display_order)'
-  ).run()
-
-  await ensurePortfolioDefaults(db)
-
-  portfolioSchemaReady = true
 }
 
 /** Confirm uploaded bytes actually exist before a record points at them, so the site never shows a broken image. */

@@ -65,7 +65,7 @@ CREATE TABLE Admin_Settings (
 
 CREATE TABLE Portfolio_Images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    r2_object_key TEXT NOT NULL UNIQUE,
+    r2_object_key TEXT NOT NULL,
     section TEXT NOT NULL DEFAULT 'gallery', -- recent, gallery, about, hero (which part of the site shows it)
     category TEXT DEFAULT 'All',
     title TEXT,

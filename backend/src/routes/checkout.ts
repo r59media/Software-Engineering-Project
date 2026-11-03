@@ -1,8 +1,15 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
-import { SquareClient, SquareEnvironment } from 'square'
 import { ensureSchemaReady } from './admin'
 import { getTrustedClientIp, hasForbiddenPaymentFields } from '../middleware/auth'
+
+let squareSdkPromise: Promise<typeof import('square')> | null = null
+function getSquareSdk() {
+  if (!squareSdkPromise) {
+    squareSdkPromise = import('square')
+  }
+  return squareSdkPromise
+}
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const IDEMPOTENCY_KEY_REGEX = /^[a-zA-Z0-9_-]{8,36}$/
@@ -216,6 +223,7 @@ checkoutRouter.post('/', async (c) => {
       throw new Error('SQUARE_LOCATION_ID is not configured on the server. Cannot process payment.')
     }
 
+    const { SquareClient, SquareEnvironment } = await getSquareSdk()
     const client = new SquareClient({
       token: c.env.SQUARE_ACCESS_TOKEN,
       environment: c.env.SQUARE_ENVIRONMENT === 'production' ? SquareEnvironment.Production : SquareEnvironment.Sandbox,
