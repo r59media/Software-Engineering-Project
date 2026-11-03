@@ -1,5 +1,6 @@
 @import './fonts.css';
 @import './tokens.css';
+@import './animations.css';
 
 * { box-sizing: border-box; }
 html { min-width: 320px; background: var(--color-brand-black); }

@@ -1,0 +1,84 @@
+/* ==========================================
+   COMPONENT & BUTTON ANIMATIONS
+   ========================================== */
+
+:root {
+  --transition-smooth: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  --color-accent-red: #e53e3e;
+}
+
+/* 1. Navigation & Header Buttons */
+.site-header nav a,
+.site-header button,
+.nav-link {
+  transition: var(--transition-smooth);
+}
+
+.site-header nav a:hover,
+.nav-link:hover {
+  color: var(--color-accent-red);
+  transform: translateY(-1px);
+}
+
+.site-header .btn-primary:hover,
+.nav-cta-btn:hover {
+  background-color: var(--color-accent-red) !important;
+  color: #ffffff !important;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(229, 62, 62, 0.3);
+}
+
+/* 2. Hero CTA Buttons ("Book Your Session" / "Explore My Work") */
+.hero-cta-btn,
+.btn-book,
+.btn-explore {
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), 
+              background-color 0.2s ease, 
+              box-shadow 0.3s ease,
+              color 0.2s ease;
+}
+
+.hero-cta-btn:hover,
+.btn-book:hover,
+.btn-explore:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.15);
+}
+
+.hero-cta-btn:active,
+.btn-book:active,
+.btn-explore:active {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+}
+
+/* 3. Scroll Indicator ("SCROLL TO DISCOVER +") */
+.scroll-indicator,
+.scroll-discover {
+  display: inline-block;
+  cursor: pointer;
+  transition: letter-spacing 0.35s cubic-bezier(0.16, 1, 0.3, 1), 
+              opacity 0.3s ease,
+              color 0.3s ease;
+  opacity: 0.85;
+}
+
+.scroll-indicator:hover,
+.scroll-discover:hover {
+  letter-spacing: 0.1em;
+  opacity: 1;
+  color: var(--color-accent-red);
+}
+
+/* 4. About Section Elements & Polaroid */
+.about-polaroid-wrapper,
+.camera-graphic-container,
+.about-lens-wrapper {
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), 
+              box-shadow 0.4s ease;
+}
+
+.about-polaroid-wrapper:hover {
+  transform: translateY(-6px) rotate(1.5deg);
+  box-shadow: 0 16px 35px rgba(0, 0, 0, 0.18);
+}
