@@ -11,7 +11,7 @@
       background: var(--panel);
       border: 1px solid var(--yellow);
       border-radius: 12px;
-      padding: 10px 12px 10px 18px;
+      padding: 10px clamp(12px, 2vw, 20px);
       display: flex;
       align-items: center;
       gap: 12px;
@@ -19,7 +19,7 @@
       transition: transform .3s ease;
       z-index: 25;
       width: max-content;
-      max-width: calc(100vw - 32px)
+      max-width: min(90vw, 560px);
     }
 
     .savebar.show {
@@ -76,9 +76,14 @@
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 12px;
-      padding: 24px;
-      max-width: 380px;
-      width: 100%
+      padding: clamp(16px, 3vw, 28px);
+      width: min(92vw, 680px);
+      max-height: 90vh;
+      overflow-y: auto;
+    }
+
+    #modal .modal-box {
+      max-width: 420px;
     }
 
     .modal-box p {
@@ -94,8 +99,9 @@
 
     /* Edit booking modal */
     .modal-box.modal-wide {
-      max-width: 520px;
-      max-height: calc(100vh - 32px);
+      width: min(92vw, 680px);
+      max-width: 680px;
+      max-height: 90vh;
       overflow-y: auto;
     }
 
@@ -201,23 +207,6 @@
     }
 
     @media (max-width:860px) {
-      .text-grid {
-        grid-template-columns: 1fr
-      }
-
-      .stats {
-        grid-template-columns: repeat(2, 1fr)
-      }
-
-      .quick {
-        grid-template-columns: 1fr
-      }
-
-      .pricing-grid,
-      .packages-grid {
-        grid-template-columns: 1fr
-      }
-
       .schedule-grid-2col {
         grid-template-columns: 1fr;
       }
@@ -230,23 +219,9 @@
     }
 
     @media (max-width:560px) {
-      .topbar {
-        padding: 0 12px;
-        gap: 10px
-      }
-
       .logo small,
       .status {
         display: none
-      }
-
-      main {
-        padding: 22px 16px 120px
-      }
-
-      .img-grid {
-        grid-template-columns: repeat(2, 1fr);
-        gap: 10px
       }
 
       .thumb .actions {
@@ -268,10 +243,6 @@
 
       .social-row select {
         grid-column: 1 / -1
-      }
-
-      .preview-bio {
-        grid-template-columns: 1fr
       }
 
       .cal-views-wrap {

@@ -23,7 +23,6 @@
   let editingTimeframeId = null;
 
   let editingBookingId = null;
-  let nbCoupon = null;
   let lastFocus = null;
 
   /* ---------- Date Utilities ---------- */
@@ -954,56 +953,22 @@
     if (!summaryEl) return;
     const pkg = nbSelectedPackage();
     const attendees = Math.max(1, parseInt($('#nbAttendees').value, 10) || 1);
-    const c = computeBookingPrice({ pkgPrice: pkg.price || 0, attendees, coupon: nbCoupon });
+    const c = computeBookingPrice({ pkgPrice: pkg.price || 0, attendees });
 
     summaryEl.innerHTML = `
       ${pkg.none ? '' : `<div class="ps-row"><span>${esc(pkg.name)} package</span><b>${money(pkg.price)}</b></div>`}
       <div class="ps-row"><span>Base fee</span><b>${money(c.base)}</b></div>
       <div class="ps-row"><span>Attendees (${attendees} × ${money(c.perPerson)})</span><b>${money(c.attendeeFee)}</b></div>
-      ${nbCoupon ? `<div class="ps-row discount"><span>Coupon ${esc(nbCoupon.code)}</span><b>−${money(c.discount)}</b></div>` : ''}
       <div class="ps-row total"><span>Total</span><b>${money(c.total)}</b></div>
       <div class="ps-row"><span>Down payment (${Math.round(getDepositRate() * 100)}%)</span><b>${money(c.deposit)}</b></div>`;
   }
 
-  function setNbCouponMsg(text, ok) {
-    const el = $('#nbCouponMsg');
-    if (!el) return;
-    el.textContent = text;
-    el.style.color = ok === undefined ? '' : (ok ? '#4ade80' : 'var(--red)');
-  }
-
-  function applyNbCoupon() {
-    $('#nbError').textContent = '';
-    const code = ($('#nbCoupon').value || '').trim().toUpperCase();
-    if (!code) {
-      nbCoupon = null;
-      setNbCouponMsg('Enter a coupon code first.', false);
-      renderNewBookingSummary();
-      return;
-    }
-    const currentState = window.R59.state.getState();
-    const c = (currentState.coupons || []).find(x => x.code === code);
-    if (!c) {
-      nbCoupon = null;
-      setNbCouponMsg('That coupon code does not exist.', false);
-    } else if (!c.active) {
-      nbCoupon = null;
-      setNbCouponMsg('That coupon code is not active.', false);
-    } else {
-      nbCoupon = c;
-      setNbCouponMsg(`Coupon applied: ${c.type === 'percent' ? c.amount + '% off' : money(c.amount) + ' off'}`, true);
-    }
-    renderNewBookingSummary();
-  }
-
   function openNewBooking() {
-    ['#nbFirst', '#nbLast', '#nbEmail', '#nbPhone', '#nbDate', '#nbStart', '#nbEnd', '#nbCoupon', '#nbLocation', '#nbNotes'].forEach(id => {
+    ['#nbFirst', '#nbLast', '#nbEmail', '#nbPhone', '#nbDate', '#nbStart', '#nbEnd', '#nbLocation', '#nbNotes'].forEach(id => {
       const el = $(id);
       if (el) el.value = '';
     });
     $('#nbAttendees').value = 1;
-    nbCoupon = null;
-    setNbCouponMsg('');
     $('#nbError').textContent = '';
 
     const pkgs = getAvailablePackages();
@@ -1036,7 +1001,6 @@
     const start = $('#nbStart').value;
     const end = $('#nbEnd').value;
     const pkg = nbSelectedPackage();
-    const couponText = $('#nbCoupon').value.trim();
 
     if (!first) return err('Please enter a first name.');
     if (!last) return err('Please enter a last name.');
@@ -1046,15 +1010,12 @@
     if (!date || !window.R59.formValidation.isValidISODate(date)) return err('Please choose a valid date for the booking.');
     if (!start) return err('Please choose a start time.');
     if (end && end <= start) return err('End time must be after the start time.');
-    if (couponText && (!nbCoupon || nbCoupon.code !== couponText.toUpperCase())) {
-      return err('Click “Apply” to use the coupon code, or clear the field.');
-    }
 
     const blockedList = window.R59.state.getBlockedDates();
     const blocked = blockedList.find(b => b.dateStr === date);
     if (blocked) return err(`That date is blocked (${blocked.reason || 'Unavailable'}). Unblock it first or pick another date.`);
 
-    const c = computeBookingPrice({ pkgPrice: pkg.price || 0, attendees, coupon: nbCoupon });
+    const c = computeBookingPrice({ pkgPrice: pkg.price || 0, attendees });
     const [y, m, d] = date.split('-').map(Number);
 
     window.R59.confirmation.confirmSaveBooking(`${first} ${last}`, `${MONTH_NAMES[m - 1]} ${d}, ${y}`, true, () => {
@@ -1080,7 +1041,7 @@
         package: pkg.name,
         price: c.total,
         deposit: c.deposit,
-        coupon: nbCoupon ? { code: nbCoupon.code, discount: c.discount } : null,
+        coupon: null,
         status: 'Confirmed'
       };
 
@@ -1100,7 +1061,6 @@
           packageId: pkg.id && pkg.id !== 'none' && pkg.id !== 'custom' ? pkg.id : undefined,
           totalPrice: newBooking.price,
           deposit: newBooking.deposit,
-          coupon: nbCoupon ? nbCoupon.code : undefined,
           status: 'confirmed'
         }).then(res => {
           if (res?.data?.id || res?.id) {
@@ -1153,20 +1113,6 @@
     // New booking modal listeners
     $('#nbCancel')?.addEventListener('click', closeNewBooking);
     $('#nbSave')?.addEventListener('click', createBooking);
-    $('#nbApplyCoupon')?.addEventListener('click', applyNbCoupon);
-    $('#nbCoupon')?.addEventListener('keydown', e => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        applyNbCoupon();
-      }
-    });
-    $('#nbCoupon')?.addEventListener('input', () => {
-      if (nbCoupon && $('#nbCoupon').value.trim().toUpperCase() !== nbCoupon.code) {
-        nbCoupon = null;
-        setNbCouponMsg('');
-        renderNewBookingSummary();
-      }
-    });
     ['#nbPackage', '#nbAttendees'].forEach(sel => $(sel)?.addEventListener('input', renderNewBookingSummary));
     $('#newBookingModal')?.addEventListener('click', e => {
       if (e.target.id === 'newBookingModal') closeNewBooking();

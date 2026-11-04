@@ -4,8 +4,9 @@
 
     /* ---------- Payment & Pricing ---------- */
     .pricing-grid {
-      grid-template-columns: repeat(3, 1fr);
-      margin-bottom: 24px
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+      gap: clamp(12px, 1.5vw, 18px);
+      margin-bottom: 24px;
     }
 
     .price-display {
@@ -13,7 +14,7 @@
       font-size: 26px;
       font-weight: 900;
       color: var(--accent-text);
-      margin-bottom: 12px
+      margin-bottom: 12px;
     }
 
     /* Locked price fields */
@@ -41,15 +42,16 @@
     }
 
     .section-head {
-      margin: 28px 0 14px
+      margin: 28px 0 14px;
     }
 
     .packages-grid {
-      grid-template-columns: repeat(3, 1fr)
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+      gap: clamp(14px, 2vw, 20px);
     }
 
     textarea.input.desc-input {
-      min-height: 80px
+      min-height: 80px;
     }
 
     .add-package-card {
@@ -124,9 +126,24 @@
 
     .coupon-form {
       display: grid;
-      grid-template-columns: 1.3fr 1fr 1fr auto;
-      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)) auto;
+      gap: clamp(8px, 1.5vw, 12px);
       align-items: end;
+    }
+
+    @media (max-width: 700px) {
+      .coupon-form {
+        grid-template-columns: 1fr;
+      }
+
+      .coupon-form-actions {
+        width: 100%;
+      }
+
+      .coupon-form-actions .btn {
+        flex: 1;
+        justify-content: center;
+      }
     }
 
     .coupon-form label.f {
@@ -139,3 +156,37 @@
     }
 
     .coupon-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin-bottom: 8px;
+    }
+
+    .coupon-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .coupon-item.inactive .coupon-code,
+    .coupon-item.inactive .hint {
+      opacity: .5;
+    }
+
+    .coupon-code {
+      font-family: var(--display);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      color: var(--text);
+    }
+
+    .coupon-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }

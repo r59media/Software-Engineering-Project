@@ -112,9 +112,12 @@
 
     /* ---------- Layout ---------- */
     main {
-      max-width: 1120px;
+      width: 100%;
+      max-width: var(--admin-max-width);
       margin: 0 auto;
-      padding: 28px 20px 120px
+      padding: var(--admin-padding-y) var(--admin-gutter) clamp(90px, 10vh, 130px);
+      padding-left: max(var(--admin-gutter), env(safe-area-inset-left));
+      padding-right: max(var(--admin-gutter), env(safe-area-inset-right));
     }
 
     .eyebrow {
@@ -190,15 +193,23 @@
     }
 
     .text-grid {
+      display: grid;
       grid-template-columns: 1.4fr 1fr;
-      align-items: start
+      gap: clamp(14px, 2vw, 24px);
+      align-items: start;
+    }
+
+    @media (max-width: 900px) {
+      .text-grid {
+        grid-template-columns: 1fr;
+      }
     }
 
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      padding: 20px;
+      padding: clamp(16px, 2.5vw, 24px);
       scroll-margin-top: 84px
     }
 

@@ -7,6 +7,10 @@
       --radius: 10px;
       --display: 'Poppins', system-ui, sans-serif;
       --body: 'Space Grotesk', system-ui, sans-serif;
+      /* fluid layout tokens */
+      --admin-max-width: min(1380px, 94vw);
+      --admin-gutter: clamp(16px, 3.5vw, 44px);
+      --admin-padding-y: clamp(20px, 3vw, 36px);
       /* dark theme tokens (default) */
       color-scheme: dark;
       --bg: #111111;
@@ -114,9 +118,11 @@
       z-index: 30;
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: clamp(10px, 1.5vw, 14px);
       height: 64px;
-      padding: 0 20px;
+      padding: 0 var(--admin-gutter);
+      padding-left: max(var(--admin-gutter), env(safe-area-inset-left));
+      padding-right: max(var(--admin-gutter), env(safe-area-inset-right));
       background: var(--bg);
       border-bottom: 1px solid var(--line)
     }
@@ -180,7 +186,8 @@
       gap: 10px;
       font-family: var(--display);
       font-weight: 900;
-      letter-spacing: .02em
+      letter-spacing: .02em;
+      white-space: nowrap
     }
 
     .logo-mark {
