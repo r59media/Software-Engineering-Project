@@ -10,7 +10,8 @@ declare module '../../components/ProtectedCanvasImage' {
   }
 }
 
-const STANDARD_CATEGORIES = ['Portrait', 'Editorial', 'Weddings', 'Commercial', 'Events', 'Product']
+// Filters shown in the design; they match the categories the admin can assign
+const STANDARD_CATEGORIES = ['Portrait', 'Lifestyle', 'Events', 'Extras']
 
 export function PortfolioGallery() {
   const { photos, loading } = useGalleryPhotos()
@@ -18,7 +19,7 @@ export function PortfolioGallery() {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
 
   const categories = useMemo(() => {
-    const found = new Set<string>()
+    const found = new Set<string>(STANDARD_CATEGORIES)
     photos.forEach(p => {
       if (p.category && p.category.trim() && p.category.toLowerCase() !== 'all') {
         found.add(p.category.trim())
@@ -42,19 +43,17 @@ export function PortfolioGallery() {
     return photos.filter(p => p.category.toLowerCase() === activeCategory.toLowerCase())
   }, [photos, activeCategory])
 
-  const showFilters = !(categories.length <= 2 && photos.length < 4)
-
   return (
     <section id="portfolio" className="portfolio-gallery" aria-labelledby="portfolio-heading">
       <div className="portfolio-gallery__inner">
         <header className="portfolio-gallery__header">
           <p className="portfolio-gallery__eyebrow">
-            <span aria-hidden="true" />PORTFOLIO
+            <span aria-hidden="true" />Portfolio
           </p>
           <h2 id="portfolio-heading" className="portfolio-gallery__title">
-            Selected Works & Gallery
+            Work Speaks for Itself
           </h2>
-          {showFilters && categories.length > 1 && (
+          {(
             <div className="portfolio-gallery__filters" role="tablist" aria-label="Filter gallery by category">
               {categories.map(category => (
                 <button
@@ -100,7 +99,6 @@ export function PortfolioGallery() {
                 />
                 <div className="portfolio-gallery__meta" aria-hidden="true">
                   <span className="portfolio-gallery__badge">{photo.category}</span>
-                  {photo.title && <h3 className="portfolio-gallery__card-title">{photo.title}</h3>}
                 </div>
               </button>
             ))}

@@ -145,6 +145,10 @@
         return;
       }
 
+      window.R59.confirmation.confirmSaveChanges(saveChanges);
+    });
+
+    async function saveChanges() {
       const currentState = window.R59.state.getState();
       window.R59.state.setSaved(window.R59.state.clone(currentState));
       window.R59.state.setDirty(false);
@@ -155,41 +159,47 @@
       window.R59.state.syncStatus();
       if (window.R59.dashboard?.refreshOverview) window.R59.dashboard.refreshOverview();
 
-      // Persist changes to backend if available
-      (async () => {
-        try {
-          if (window.R59.paymentsApi) {
-            await window.R59.paymentsApi.updatePricingSettings(currentState.pricing);
-          }
-          if (window.R59.scheduleApi) {
-            await window.R59.scheduleApi.saveWeeklyAvailability(window.R59.state.getAvailability());
-          }
-          if (window.R59.photographyApi) {
-            await window.R59.photographyApi.saveProfile({
-              bio: currentState.bio || '',
-              email: currentState.email || '',
-              phone: currentState.phone || '',
-              location: currentState.location || '',
-              travel: currentState.travel || '',
-              social: currentState.social || []
-            });
-          }
-        } catch (err) {
-          console.warn('[app] Could not persist changes to backend:', err);
+      // Persist changes to the backend, and only report success once every request has gone through
+      try {
+        if (window.R59.paymentsApi) {
+          await window.R59.paymentsApi.updatePricingSettings(currentState.pricing);
         }
-      })();
+        if (window.R59.scheduleApi) {
+          await window.R59.scheduleApi.saveWeeklyAvailability(window.R59.state.getAvailability());
+        }
+        if (window.R59.photographyApi) {
+          await window.R59.photographyApi.saveProfile({
+            bio: currentState.bio || '',
+            email: currentState.email || '',
+            phone: currentState.phone || '',
+            location: currentState.location || '',
+            travel: currentState.travel || '',
+            social: currentState.social || []
+          });
+        }
+      } catch (err) {
+        console.warn('[app] Could not persist changes to backend:', err);
+        window.R59.state.setDirty(true);
+        window.R59.state.syncStatus();
+        window.toast('Some changes could not be saved. Check your connection and save again.', 5000);
+        return;
+      }
 
       window.toast('Changes saved');
-    });
+    }
 
     $('#discard')?.addEventListener('click', () => {
+      window.R59.confirmation.confirmDiscardChanges(discardChanges);
+    });
+
+    function discardChanges() {
       const savedState = window.R59.state.getSaved();
       window.R59.state.setState(window.R59.state.clone(savedState));
       window.R59.state.setDirty(false);
       window.R59.state.syncStatus();
       renderAll();
       window.toast('Changes discarded');
-    });
+    }
 
     window.addEventListener('beforeunload', e => {
       if (window.R59.state?.isDirty && window.R59.state.isDirty()) {

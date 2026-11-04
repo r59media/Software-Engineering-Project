@@ -1,0 +1,6 @@
+{
+  "excludes": [
+    "backend/public",
+    "backend/dist"
+  ]
+}

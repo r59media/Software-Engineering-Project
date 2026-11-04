@@ -99,8 +99,8 @@ const recent = recentPhotosData.map((item, idx) => ({
   is_active: 1
 }));
 
-// 3. Gallery portfolio images (9 images cycling across Portrait, Editorial, Commercial, Events)
-const galleryCategories = ['Portrait', 'Editorial', 'Commercial', 'Events'];
+// 3. Gallery portfolio images (all 9 bundled shots are portraits, matching the design's category tags)
+const galleryCategories = ['Portrait'];
 const galleryPhotosData = [
   { file: 'mrphshImages/mrphsh_img01.webp', fallback: 'Dhi-pdrR.webp', alt: 'Studio series portrait in black blazer.' },
   { file: 'mrphshImages/mrphsh_img02.webp', fallback: 'CsJVCPMF.webp', alt: 'Editorial series portrait with glasses.' },

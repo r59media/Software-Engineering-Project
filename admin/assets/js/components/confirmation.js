@@ -16,11 +16,174 @@
     });
   }
 
+  // Non-destructive changes (uploads, edits, saves) get the same dialog without the danger styling.
+  // onCancel lets the caller roll back an edit the admin decided not to keep.
+  function confirmChange(title, text, okLabel, action, onCancel, cancelLabel = 'Cancel') {
+    window.R59.modal.openModal(title, text, okLabel, action, {
+      isDanger: false,
+      cancelLabel,
+      onCancel
+    });
+  }
+
   const confirmation = {
     /**
      * Generic destructive action confirmation
      */
     confirmDanger,
+
+    /**
+     * Generic confirmation for any change that will be written to the live site
+     */
+    confirmChange,
+
+    /**
+     * Confirm uploading new photos to a section of the public site
+     */
+    confirmUploadImages(count, sectionLabel, onConfirm, onCancel) {
+      const photos = `${count} photo${count === 1 ? '' : 's'}`;
+      confirmChange(
+        `Upload ${photos}?`,
+        `${photos} will be converted to WebP and published to ${sectionLabel || 'this section'} right away.`,
+        'Upload',
+        onConfirm,
+        onCancel
+      );
+    },
+
+    /**
+     * Confirm swapping a published photo for a new file
+     */
+    confirmReplaceImage(imageLabel, fileName, onConfirm, onCancel) {
+      confirmChange(
+        'Replace photo?',
+        `“${imageLabel || 'This photo'}” will be replaced with ${fileName || 'the new file'} on the live site. The current file is deleted.`,
+        'Replace',
+        onConfirm,
+        onCancel
+      );
+    },
+
+    /**
+     * Confirm moving a photo to a new position
+     */
+    confirmReorderImages(imageLabel, onConfirm, onCancel) {
+      confirmChange(
+        'Change photo order?',
+        `Move “${imageLabel || 'this photo'}” to its new position on the live site?`,
+        'Move photo',
+        onConfirm,
+        onCancel
+      );
+    },
+
+    /**
+     * Confirm saving a photo's caption or category
+     */
+    confirmSavePhotoDetails(imageLabel, onConfirm, onCancel) {
+      confirmChange(
+        'Save photo details?',
+        `Update the details for “${imageLabel || 'this photo'}” on the live site?`,
+        'Save',
+        onConfirm,
+        onCancel,
+        'Undo edit'
+      );
+    },
+
+    /**
+     * Confirm publishing everything changed in the save bar (profile, pricing, availability)
+     */
+    confirmSaveChanges(onConfirm) {
+      confirmChange(
+        'Save changes?',
+        'Your edits to the profile, pricing and availability will be published to the live site.',
+        'Save changes',
+        onConfirm
+      );
+    },
+
+    /**
+     * Confirm throwing away unsaved edits
+     */
+    confirmDiscardChanges(onConfirm) {
+      confirmDanger(
+        'Discard changes?',
+        'All unsaved edits will be lost and the last saved version restored.',
+        'Discard',
+        onConfirm,
+        'Keep editing'
+      );
+    },
+
+    /**
+     * Confirm creating or updating a coupon code
+     */
+    confirmSaveCoupon(couponCode, isEdit, onConfirm) {
+      confirmChange(
+        isEdit ? 'Update coupon?' : 'Add coupon?',
+        isEdit
+          ? `Changes to “${couponCode}” apply to all future checkouts.`
+          : `“${couponCode}” will be usable at checkout right away.`,
+        isEdit ? 'Update coupon' : 'Add coupon',
+        onConfirm
+      );
+    },
+
+    /**
+     * Confirm creating or updating a photography package
+     */
+    confirmSavePackage(packageName, isNew, onConfirm) {
+      confirmChange(
+        isNew ? 'Add package?' : 'Save package?',
+        isNew
+          ? `“${packageName}” will be added to the packages clients can book.`
+          : `Changes to “${packageName}” will show on the booking page right away.`,
+        isNew ? 'Add package' : 'Save package',
+        onConfirm
+      );
+    },
+
+    /**
+     * Confirm turning a package or coupon on or off
+     */
+    confirmToggleActive(kindLabel, name, willBeActive, onConfirm, onCancel) {
+      confirmChange(
+        `${willBeActive ? 'Activate' : 'Deactivate'} ${kindLabel}?`,
+        willBeActive
+          ? `“${name}” will be available to clients again.`
+          : `“${name}” will no longer be available to clients.`,
+        willBeActive ? 'Activate' : 'Deactivate',
+        onConfirm,
+        onCancel
+      );
+    },
+
+    /**
+     * Confirm blocking a calendar date
+     */
+    confirmBlockDate(dateFormatted, onConfirm) {
+      confirmChange(
+        'Block this date?',
+        `Clients won't be able to book ${dateFormatted || 'this date'}.`,
+        'Block date',
+        onConfirm
+      );
+    },
+
+    /**
+     * Confirm creating or editing a booking
+     */
+    confirmSaveBooking(client, dateFormatted, isNew, onConfirm) {
+      confirmChange(
+        isNew ? 'Create booking?' : 'Save booking changes?',
+        isNew
+          ? `Book ${client}${dateFormatted ? ' on ' + dateFormatted : ''}? That time will no longer be open to clients.`
+          : `Update ${client}'s booking${dateFormatted ? ' on ' + dateFormatted : ''}?`,
+        isNew ? 'Create booking' : 'Save changes',
+        onConfirm
+      );
+    },
 
     /**
      * Confirm removal of a cancelled booking

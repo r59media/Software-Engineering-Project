@@ -63,6 +63,11 @@
       padding: 16px
     }
 
+    /* The confirmation dialog can open on top of the booking forms, so it stacks above them */
+    #modal {
+      z-index: 75;
+    }
+
     .modal.open {
       display: grid
     }

@@ -186,7 +186,7 @@
     },
     {
       "section": "gallery",
-      "category": "Editorial",
+      "category": "Portrait",
       "title": "Studio Series 2",
       "alt_text": "Editorial series portrait with glasses.",
       "display_order": 2,
@@ -198,7 +198,7 @@
     },
     {
       "section": "gallery",
-      "category": "Commercial",
+      "category": "Portrait",
       "title": "Studio Series 3",
       "alt_text": "Commercial series portrait in grey suit.",
       "display_order": 3,
@@ -210,7 +210,7 @@
     },
     {
       "section": "gallery",
-      "category": "Events",
+      "category": "Portrait",
       "title": "Studio Series 4",
       "alt_text": "Events series portrait in black suit.",
       "display_order": 4,
@@ -234,7 +234,7 @@
     },
     {
       "section": "gallery",
-      "category": "Editorial",
+      "category": "Portrait",
       "title": "Studio Series 6",
       "alt_text": "Editorial series portrait in white top.",
       "display_order": 6,
@@ -246,7 +246,7 @@
     },
     {
       "section": "gallery",
-      "category": "Commercial",
+      "category": "Portrait",
       "title": "Studio Series 7",
       "alt_text": "Commercial series portrait in blue suit.",
       "display_order": 7,
@@ -258,7 +258,7 @@
     },
     {
       "section": "gallery",
-      "category": "Events",
+      "category": "Portrait",
       "title": "Studio Series 8",
       "alt_text": "Events series portrait in beige trousers.",
       "display_order": 8,

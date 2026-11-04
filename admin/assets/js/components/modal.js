@@ -9,6 +9,7 @@
   'use strict';
 
   let modalAction = null;
+  let modalCancelAction = null;
   let lastFocus = null;
 
   function $(s) { return document.querySelector(s); }
@@ -37,6 +38,8 @@
     cancelBtn.textContent = options.cancelLabel || 'Cancel';
 
     modalAction = action;
+    // Runs when the dialog is dismissed without confirming, so callers can roll back pending edits
+    modalCancelAction = typeof options.onCancel === 'function' ? options.onCancel : null;
     modalEl.classList.add('open');
     cancelBtn.focus();
   }
@@ -56,9 +59,12 @@
     if (cancelBtn) cancelBtn.textContent = 'Cancel';
 
     modalAction = null;
+    const cancelAction = modalCancelAction;
+    modalCancelAction = null;
     if (lastFocus && typeof lastFocus.focus === 'function') {
       lastFocus.focus();
     }
+    if (typeof cancelAction === 'function') cancelAction();
   }
 
   function getActiveModal() {
@@ -68,10 +74,11 @@
         return login;
       }
     }
+    // Ordered lowest to highest: the confirmation dialog sits above the booking forms
     const openModals = [
-      $('#modal.open'),
       $('#newBookingModal.open'),
-      $('#bookingModal.open')
+      $('#bookingModal.open'),
+      $('#modal.open')
     ].filter(Boolean);
     return openModals[openModals.length - 1] || null;
   }
@@ -87,6 +94,7 @@
 
     $('#modalOk')?.addEventListener('click', () => {
       const action = modalAction;
+      modalCancelAction = null; // confirmed, so there is nothing to roll back
       closeModal();
       if (typeof action === 'function') {
         action();
@@ -123,6 +131,8 @@
         }
       } else if (e.key === 'Escape') {
         if (modalEl.classList.contains('open')) {
+          // Close only the confirmation, not the booking form underneath it
+          e.stopImmediatePropagation();
           closeModal();
         }
       }

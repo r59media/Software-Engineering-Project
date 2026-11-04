@@ -248,6 +248,11 @@
       return err('A coupon with that code already exists.');
     }
 
+    window.R59.confirmation.confirmSaveCoupon(code, Boolean(editingCouponId), () => commitCoupon({ code, type, amount }));
+  }
+
+  function commitCoupon({ code, type, amount }) {
+    const currentState = window.R59.state.getState();
     if (editingCouponId) {
       const target = currentState.coupons.find(c => String(c.id) === String(editingCouponId));
       if (target) {
@@ -396,53 +401,62 @@
             window.toast?.('Please enter a valid package price');
             return;
           }
-          pkg.name = card.querySelector('.package-name')?.value.trim() || 'Package';
-          pkg.price = parseFloat(rawPrice) || 0;
-          pkg.description = card.querySelector('.desc-input')?.value.trim() || '';
-          pkg.active = card.querySelector('.pkg-active-toggle')?.checked ?? true;
-
-          const priceInput = card.querySelector('.package-price');
-          const priceBtn = card.querySelector('.package-price-edit');
-          if (priceInput) {
-            priceInput.readOnly = true;
-            priceInput.classList.add('price-locked');
-          }
-          if (priceBtn) priceBtn.textContent = 'Edit price';
-
-          const isNewPkg = pkg.isNew || String(pkg.id).startsWith('pkg_');
-          try {
-            if (isNewPkg && window.R59.api?.packages?.createPackage) {
-              const created = await window.R59.api.packages.createPackage({
-                title: pkg.name,
-                description: pkg.description,
-                price: Math.round((Number(pkg.price) || 0) * 100),
-                duration_minutes: Number(pkg.duration_minutes) || 60,
-                category: pkg.category || 'General',
-                is_active: pkg.active !== false ? 1 : 0
-              });
-              if (created?.id) {
-                pkg.id = created.id;
-                delete pkg.isNew;
-                renderPackages();
-              }
-            } else if (!isNewPkg && window.R59.api?.packages?.updatePackage) {
-              await window.R59.api.packages.updatePackage(pkg.id, {
-                title: pkg.name,
-                description: pkg.description,
-                price: Math.round((Number(pkg.price) || 0) * 100),
-                duration_minutes: Number(pkg.duration_minutes) || 60,
-                category: pkg.category || 'General',
-                is_active: pkg.active !== false ? 1 : 0
-              });
-            }
-          } catch (err) {
-            console.warn('[payments] Failed to persist package:', err);
-          }
+          const pendingName = card.querySelector('.package-name')?.value.trim() || 'Package';
+          const isNewPending = pkg.isNew || String(pkg.id).startsWith('pkg_');
+          window.R59.confirmation.confirmSavePackage(pendingName, isNewPending, () => savePackage(card, pkg, rawPrice));
         }
-        window.R59.state.markDirty();
-        window.toast('Package saved');
+        return;
       }
     });
+
+    async function savePackage(card, pkg, rawPrice) {
+      pkg.name = card.querySelector('.package-name')?.value.trim() || 'Package';
+      pkg.price = parseFloat(rawPrice) || 0;
+      pkg.description = card.querySelector('.desc-input')?.value.trim() || '';
+      pkg.active = card.querySelector('.pkg-active-toggle')?.checked ?? true;
+
+      const priceInput = card.querySelector('.package-price');
+      const priceBtn = card.querySelector('.package-price-edit');
+      if (priceInput) {
+        priceInput.readOnly = true;
+        priceInput.classList.add('price-locked');
+      }
+      if (priceBtn) priceBtn.textContent = 'Edit price';
+
+      const isNewPkg = pkg.isNew || String(pkg.id).startsWith('pkg_');
+      try {
+        if (isNewPkg && window.R59.api?.packages?.createPackage) {
+          const created = await window.R59.api.packages.createPackage({
+            title: pkg.name,
+            description: pkg.description,
+            price: Math.round((Number(pkg.price) || 0) * 100),
+            duration_minutes: Number(pkg.duration_minutes) || 60,
+            category: pkg.category || 'General',
+            is_active: pkg.active !== false ? 1 : 0
+          });
+          if (created?.id) {
+            pkg.id = created.id;
+            delete pkg.isNew;
+            renderPackages();
+          }
+        } else if (!isNewPkg && window.R59.api?.packages?.updatePackage) {
+          await window.R59.api.packages.updatePackage(pkg.id, {
+            title: pkg.name,
+            description: pkg.description,
+            price: Math.round((Number(pkg.price) || 0) * 100),
+            duration_minutes: Number(pkg.duration_minutes) || 60,
+            category: pkg.category || 'General',
+            is_active: pkg.active !== false ? 1 : 0
+          });
+        }
+      } catch (err) {
+        console.warn('[payments] Failed to persist package:', err);
+        window.toast(`Could not save ${pkg.name}. Please try again.`, 4000);
+        return;
+      }
+      window.R59.state.markDirty();
+      window.toast('Package saved');
+    }
 
     // Package active toggle listener
     document.addEventListener('change', e => {
@@ -454,7 +468,18 @@
       const currentState = window.R59.state.getState();
       const pkg = currentState.packages?.find(p => String(p.id) === String(pkgId));
       if (!pkg) return;
-      pkg.active = toggle.checked;
+      const nextActive = toggle.checked;
+      window.R59.confirmation.confirmToggleActive(
+        'package',
+        pkg.name || 'This package',
+        nextActive,
+        () => applyPackageActive(pkg, nextActive),
+        () => { toggle.checked = !nextActive; }
+      );
+    });
+
+    function applyPackageActive(pkg, nextActive) {
+      pkg.active = nextActive;
       window.R59.state.markDirty();
       if (!pkg.isNew && !String(pkg.id).startsWith('pkg_') && window.R59.api?.packages?.updatePackage) {
         window.R59.api.packages.updatePackage(pkg.id, {
@@ -464,7 +489,7 @@
           is_active: pkg.active ? 1 : 0
         }).catch(err => console.warn('[payments] Failed to toggle package active status:', err));
       }
-    });
+    }
 
     // Package card live inputs
     document.addEventListener('input', e => {
@@ -537,21 +562,31 @@
       const rawId = t.dataset.couponToggle || t.dataset.couponActive;
       const currentState = window.R59.state.getState();
       const target = currentState.coupons.find(c => String(c.id) === String(rawId));
-      if (target) {
-        target.active = t.checked;
-        if (window.R59.api?.payments?.updateCoupon) {
-          const amt = Number(target.amount ?? target.discount ?? 0);
-          window.R59.api.payments.updateCoupon(target.id, {
-            ...target,
-            amount: amt,
-            discount: amt,
-            active: target.active
-          }).catch(err => console.warn('[payments] Failed to toggle coupon:', err));
-        }
-        renderCoupons();
-        window.R59.state.markDirty();
-      }
+      if (!target) return;
+      const nextActive = t.checked;
+      window.R59.confirmation.confirmToggleActive(
+        'coupon',
+        target.code,
+        nextActive,
+        () => applyCouponActive(target, nextActive),
+        () => { t.checked = !nextActive; }
+      );
     });
+
+    function applyCouponActive(target, nextActive) {
+      target.active = nextActive;
+      if (window.R59.api?.payments?.updateCoupon) {
+        const amt = Number(target.amount ?? target.discount ?? 0);
+        window.R59.api.payments.updateCoupon(target.id, {
+          ...target,
+          amount: amt,
+          discount: amt,
+          active: target.active
+        }).catch(err => console.warn('[payments] Failed to toggle coupon:', err));
+      }
+      renderCoupons();
+      window.R59.state.markDirty();
+    }
   }
 
   window.R59 = window.R59 || {};
