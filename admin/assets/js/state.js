@@ -9,7 +9,7 @@
   'use strict';
 
   const PLATFORMS = ['Instagram', 'TikTok', 'X', 'Threads', 'Facebook', 'YouTube', 'LinkedIn', 'Website'];
-  const CATEGORIES = ['Portrait', 'Lifestyle', 'Events', 'Video'];
+  const CATEGORIES = ['Portrait', 'Lifestyle', 'Events', 'Extras']; // matches the public portfolio filters
 
   // Initial clean application state (no fake bookings, no fake revenue, no sample packages or coupons)
   const initialState = {

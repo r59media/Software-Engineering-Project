@@ -293,8 +293,9 @@ checkoutRouter.post('/', async (c) => {
     let bookingId: number | undefined
     try {
       const bookingInsert = await c.env.DB.prepare(
-        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, price_at_booking, square_payment_id, status, coupon_code) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?)"
-      ).bind(service.id, slotId, clientName, clientEmail, finalPriceCents, paymentId, couponCode || null).run()
+        // Online checkout collects the full price up front, so the amount paid is recorded as deposit_paid
+        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, price_at_booking, square_payment_id, status, coupon_code, deposit_paid) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)"
+      ).bind(service.id, slotId, clientName, clientEmail, finalPriceCents, paymentId, couponCode, finalPriceCents).run()
       bookingId = bookingInsert.meta?.last_row_id
     } catch (bookingErr) {
       console.error('CRITICAL: Payment succeeded but booking insert failed:', {

@@ -8,6 +8,7 @@ DROP TABLE IF EXISTS Portfolio_Images;
 DROP TABLE IF EXISTS Services;
 DROP TABLE IF EXISTS Coupons;
 DROP TABLE IF EXISTS Blocked_Dates;
+DROP TABLE IF EXISTS Media_Storage; -- uploaded image bytes; without this a reset leaves orphaned blobs
 
 CREATE TABLE Services (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +94,7 @@ CREATE TABLE Blocked_Dates (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS Media_Storage (
+CREATE TABLE Media_Storage (
     file_key TEXT NOT NULL,
     chunk_index INTEGER NOT NULL,
     content_type TEXT NOT NULL DEFAULT 'image/webp',

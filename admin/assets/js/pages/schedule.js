@@ -603,6 +603,10 @@
     const [y, m, d] = dateVal.split('-').map(Number);
     const dateFormatted = `${MONTH_NAMES[m - 1]} ${d}, ${y}`;
 
+    window.R59.confirmation.confirmBlockDate(dateFormatted, () => commitBlockedDate(dateVal, reasonVal, dateFormatted));
+  }
+
+  function commitBlockedDate(dateVal, reasonVal, dateFormatted) {
     const blockedList = window.R59.state.getBlockedDates();
     const newBlock = {
       id: Date.now(),
@@ -859,22 +863,23 @@
     if (deposit > price) return err('Down payment cannot be more than the session price.');
 
     const [y, m, d] = date.split('-').map(Number);
-    Object.assign(b, {
-      customer,
-      package: pkg,
-      date,
-      email,
-      phone,
-      location: $('#bkLocation').value.trim(),
-      notes: $('#bkNotes').value.trim(),
-      attendees: attendeesRaw ? parseInt(attendeesRaw, 10) : undefined,
-      dateFormatted: `${MONTH_NAMES[m - 1]} ${d}, ${y}`,
-      dateLabel: `${MONTH_NAMES[m - 1].toUpperCase()} ${d}, ${y}`,
-      time: from24(start),
-      timeRange: end ? `${from24(start)} – ${from24(end)}` : from24(start),
-      price,
-      deposit,
-      status: $('#bkStatus').value
+    window.R59.confirmation.confirmSaveBooking(customer, `${MONTH_NAMES[m - 1]} ${d}, ${y}`, false, () => {
+      Object.assign(b, {
+        customer,
+        package: pkg,
+        date,
+        email,
+        phone,
+        location: $('#bkLocation').value.trim(),
+        notes: $('#bkNotes').value.trim(),
+        attendees: attendeesRaw ? parseInt(attendeesRaw, 10) : undefined,
+        dateFormatted: `${MONTH_NAMES[m - 1]} ${d}, ${y}`,
+        dateLabel: `${MONTH_NAMES[m - 1].toUpperCase()} ${d}, ${y}`,
+        time: from24(start),
+        timeRange: end ? `${from24(start)} – ${from24(end)}` : from24(start),
+        price,
+        deposit,
+        status: $('#bkStatus').value
     });
 
     if (window.R59.api?.bookings?.updateBooking) {
@@ -897,6 +902,7 @@
     closeBookingEditor();
     refreshBookingViews();
     window.toast('Booking updated');
+    });
   }
 
   /* ---------- New Booking Modal ---------- */
@@ -1051,60 +1057,63 @@
     const c = computeBookingPrice({ pkgPrice: pkg.price || 0, attendees, coupon: nbCoupon });
     const [y, m, d] = date.split('-').map(Number);
 
-    const bookings = window.R59.state.getBookings();
-    const nextId = (bookings.reduce((max, b) => Math.max(max, Number(b.id) || 0), 0)) + 1;
+    window.R59.confirmation.confirmSaveBooking(`${first} ${last}`, `${MONTH_NAMES[m - 1]} ${d}, ${y}`, true, () => {
 
-    const newBooking = {
-      id: nextId,
-      date,
-      dateLabel: `${MONTH_NAMES[m - 1].toUpperCase()} ${d}, ${y}`,
-      dateFormatted: `${MONTH_NAMES[m - 1]} ${d}, ${y}`,
-      time: from24(start),
-      timeRange: end ? `${from24(start)} – ${from24(end)}` : from24(start),
-      customer: `${first} ${last}`,
-      firstName: first,
-      lastName: last,
-      email,
-      phone,
-      attendees,
-      location: $('#nbLocation').value.trim(),
-      notes: $('#nbNotes').value.trim(),
-      package: pkg.name,
-      price: c.total,
-      deposit: c.deposit,
-      coupon: nbCoupon ? { code: nbCoupon.code, discount: c.discount } : null,
-      status: 'Confirmed'
-    };
+      const bookings = window.R59.state.getBookings();
+      const nextId = (bookings.reduce((max, b) => Math.max(max, Number(b.id) || 0), 0)) + 1;
 
-    bookings.push(newBooking);
+      const newBooking = {
+        id: nextId,
+        date,
+        dateLabel: `${MONTH_NAMES[m - 1].toUpperCase()} ${d}, ${y}`,
+        dateFormatted: `${MONTH_NAMES[m - 1]} ${d}, ${y}`,
+        time: from24(start),
+        timeRange: end ? `${from24(start)} – ${from24(end)}` : from24(start),
+        customer: `${first} ${last}`,
+        firstName: first,
+        lastName: last,
+        email,
+        phone,
+        attendees,
+        location: $('#nbLocation').value.trim(),
+        notes: $('#nbNotes').value.trim(),
+        package: pkg.name,
+        price: c.total,
+        deposit: c.deposit,
+        coupon: nbCoupon ? { code: nbCoupon.code, discount: c.discount } : null,
+        status: 'Confirmed'
+      };
 
-    if (window.R59.api?.bookings?.createBooking) {
-      window.R59.api.bookings.createBooking({
-        client_name: newBooking.customer,
-        client_email: newBooking.email,
-        phone: newBooking.phone,
-        location: newBooking.location,
-        notes: newBooking.notes,
-        people: newBooking.attendees,
-        date: newBooking.date,
-        startTime: start,
-        endTime: end,
-        packageId: pkg.id && pkg.id !== 'none' && pkg.id !== 'custom' ? pkg.id : undefined,
-        totalPrice: newBooking.price,
-        deposit: newBooking.deposit,
-        coupon: nbCoupon ? nbCoupon.code : undefined,
-        status: 'confirmed'
-      }).then(res => {
-        if (res?.data?.id || res?.id) {
-          newBooking.id = res?.data?.id || res?.id;
-          refreshBookingViews();
-        }
-      }).catch(err => console.warn('[schedule] Failed to persist new booking:', err));
-    }
+      bookings.push(newBooking);
 
-    closeNewBooking();
-    refreshBookingViews();
-    window.toast(`Booking created for ${first} ${last}`);
+      if (window.R59.api?.bookings?.createBooking) {
+        window.R59.api.bookings.createBooking({
+          client_name: newBooking.customer,
+          client_email: newBooking.email,
+          phone: newBooking.phone,
+          location: newBooking.location,
+          notes: newBooking.notes,
+          people: newBooking.attendees,
+          date: newBooking.date,
+          startTime: start,
+          endTime: end,
+          packageId: pkg.id && pkg.id !== 'none' && pkg.id !== 'custom' ? pkg.id : undefined,
+          totalPrice: newBooking.price,
+          deposit: newBooking.deposit,
+          coupon: nbCoupon ? nbCoupon.code : undefined,
+          status: 'confirmed'
+        }).then(res => {
+          if (res?.data?.id || res?.id) {
+            newBooking.id = res?.data?.id || res?.id;
+            refreshBookingViews();
+          }
+        }).catch(err => console.warn('[schedule] Failed to persist new booking:', err));
+      }
+
+      closeNewBooking();
+      refreshBookingViews();
+      window.toast(`Booking created for ${first} ${last}`);
+    });
   }
 
   function initScheduleListeners() {

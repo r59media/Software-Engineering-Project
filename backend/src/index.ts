@@ -285,7 +285,10 @@ app.get('/api/profile', async (c) => {
       email: (parsed?.email && String(parsed.email).trim()) || DEFAULT_PROFILE.email,
       phone: (parsed?.phone && String(parsed.phone).trim()) || DEFAULT_PROFILE.phone,
       location: (parsed?.location && String(parsed.location).trim()) || DEFAULT_PROFILE.location,
-      travel: parsed?.travel !== undefined ? Boolean(parsed.travel) : DEFAULT_PROFILE.travel,
+      // The admin saves travel as a label (e.g. "Studio only"); keep that text instead of coercing it to true
+      travel: parsed?.travel !== undefined
+        ? (typeof parsed.travel === 'string' ? parsed.travel : Boolean(parsed.travel))
+        : DEFAULT_PROFILE.travel,
       social: parsed?.social || DEFAULT_PROFILE.social
     }
 

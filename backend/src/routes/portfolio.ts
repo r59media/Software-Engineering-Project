@@ -54,7 +54,7 @@ function withUrls<T extends { media_key: string }>(row: T) {
 export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
   try {
     await db.prepare(
-      'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
+      'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)'
     ).run().catch(() => {})
 
     const sections = ['hero', 'recent', 'gallery', 'about'] as const
@@ -66,14 +66,34 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
       for (const item of defaults) {
         statements.push(
           db.prepare(
-            'UPDATE Portfolio_Images SET media_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND media_key LIKE "/assets/%" AND media_key != ?'
+            "UPDATE Portfolio_Images SET media_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND media_key LIKE '/assets/%' AND media_key != ?"
           ).bind(item.media_key, sec, item.title, item.display_order ?? item.order ?? 1, item.media_key)
         )
       }
     }
 
-    // 2. Seed default images for any missing display_order / title per section
+    // 2. Seed each section's default images exactly once. A flag in Admin_Settings records the
+    //    first run so photos the admin later deletes are not re-inserted. Sections that already
+    //    hold photos (databases seeded before the flag existed) are only marked, never re-seeded.
+    const flagRows = await db.prepare(
+      "SELECT setting_key FROM Admin_Settings WHERE setting_key LIKE 'portfolio_seeded_%'"
+    ).all<{ setting_key: string }>().catch(() => ({ results: [] as { setting_key: string }[] }))
+    const seededFlags = new Set((flagRows.results || []).map(row => row.setting_key))
+    const countRows = await db.prepare(
+      'SELECT LOWER(section) AS section, COUNT(*) AS cnt FROM Portfolio_Images GROUP BY LOWER(section)'
+    ).all<{ section: string; cnt: number }>().catch(() => ({ results: [] as { section: string; cnt: number }[] }))
+    const existingCounts = new Map((countRows.results || []).map(row => [row.section, Number(row.cnt) || 0]))
+
     for (const sec of sections) {
+      const flagKey = `portfolio_seeded_${sec}`
+      if (seededFlags.has(flagKey)) continue
+      statements.push(
+        db.prepare(
+          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, 'true') ON CONFLICT(setting_key) DO NOTHING"
+        ).bind(flagKey)
+      )
+      if ((existingCounts.get(sec) ?? 0) > 0) continue
+
       const items = (defaultPortfolioSeed as any)[sec] || []
       for (const item of items) {
         const displayOrder = item.display_order ?? item.order ?? 1
@@ -120,6 +140,10 @@ export async function ensurePortfolioSchema(db: D1Database): Promise<void> {
     const columns = new Set((info.results || []).map(col => col.name))
 
     const migrations: string[] = []
+    // Databases created before the r2_object_key -> media_key rename still carry the old column
+    if (columns.has('r2_object_key') && !columns.has('media_key')) {
+      migrations.push('ALTER TABLE Portfolio_Images RENAME COLUMN r2_object_key TO media_key')
+    }
     if (!columns.has('section')) {
       migrations.push("ALTER TABLE Portfolio_Images ADD COLUMN section TEXT NOT NULL DEFAULT 'gallery'")
     }
@@ -130,20 +154,18 @@ export async function ensurePortfolioSchema(db: D1Database): Promise<void> {
     for (const sql of migrations) {
       // Another isolate may win the race and add the column first; that is fine
       await db.prepare(sql).run().catch(err => {
-        if (!String(err?.message || err).includes('duplicate column')) throw err
+        const message = String(err?.message || err)
+        if (!message.includes('duplicate column') && !message.includes('no such column')) throw err
       })
     }
     await db.prepare(
       'CREATE INDEX IF NOT EXISTS idx_portfolio_section_order ON Portfolio_Images(is_active, section, display_order)'
     ).run().catch(() => {})
 
-    portfolioSchemaReady = true
-  }
-
-  // Ensure default portfolio seed images exist if database is fresh or missing sections
-  const countRow = await db.prepare('SELECT COUNT(*) as cnt FROM Portfolio_Images WHERE is_active = 1').first<{ cnt: number }>().catch(() => null)
-  if ((countRow?.cnt ?? 0) < 24) {
+    // Seed empty sections and refresh rebuilt asset hashes once per isolate (i.e. once per deploy)
     await ensurePortfolioDefaults(db)
+
+    portfolioSchemaReady = true
   }
 }
 
@@ -212,7 +234,10 @@ portfolioRouter.get('/profile', async (c) => {
       email: (parsed?.email && String(parsed.email).trim()) || DEFAULT_PROFILE.email,
       phone: (parsed?.phone && String(parsed.phone).trim()) || DEFAULT_PROFILE.phone,
       location: (parsed?.location && String(parsed.location).trim()) || DEFAULT_PROFILE.location,
-      travel: parsed?.travel !== undefined ? Boolean(parsed.travel) : DEFAULT_PROFILE.travel,
+      // The admin saves travel as a label (e.g. "Studio only"); keep that text instead of coercing it to true
+      travel: parsed?.travel !== undefined
+        ? (typeof parsed.travel === 'string' ? parsed.travel : Boolean(parsed.travel))
+        : DEFAULT_PROFILE.travel,
       social: parsed?.social || DEFAULT_PROFILE.social
     }
 
@@ -370,11 +395,19 @@ portfolioRouter.put('/order', adminAuth, async (c) => {
       }, 400)
     }
 
-    const statements = orderMappings.map((item: any, idx: number) => {
-      const id = item.id !== undefined ? item.id : item
-      const displayOrder = item.display_order !== undefined ? item.display_order : idx
-      return c.env.DB.prepare('UPDATE Portfolio_Images SET display_order = ? WHERE id = ?').bind(displayOrder, id)
-    })
+    const entries = orderMappings.map((item: any, idx: number) => ({
+      id: String(item?.id !== undefined ? item.id : item),
+      displayOrder: Number(item?.display_order !== undefined ? item.display_order : idx)
+    }))
+    if (entries.some(entry => !isValidId(entry.id) || !Number.isFinite(entry.displayOrder))) {
+      return c.json({
+        error: { code: 'VALIDATION_FAILED', message: 'Each entry needs a valid id and a numeric display_order.', details: [] }
+      }, 400)
+    }
+
+    const statements = entries.map(entry =>
+      c.env.DB.prepare('UPDATE Portfolio_Images SET display_order = ? WHERE id = ?').bind(entry.displayOrder, Number(entry.id))
+    )
 
     if (statements.length > 0) {
       await c.env.DB.batch(statements)

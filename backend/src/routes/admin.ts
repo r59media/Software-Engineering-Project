@@ -40,6 +40,8 @@ export async function ensureSchemaReady(db: D1Database): Promise<void> {
       'ALTER TABLE Bookings ADD COLUMN deposit_paid INTEGER DEFAULT 0',
       "ALTER TABLE Bookings ADD COLUMN coupon_code TEXT DEFAULT ''",
       'ALTER TABLE Bookings ADD COLUMN custom_price INTEGER',
+      // Databases created before the r2_object_key -> media_key rename (no-op once renamed)
+      'ALTER TABLE Portfolio_Images RENAME COLUMN r2_object_key TO media_key',
       "ALTER TABLE Portfolio_Images ADD COLUMN section TEXT NOT NULL DEFAULT 'gallery'",
       'ALTER TABLE Portfolio_Images ADD COLUMN title TEXT'
     ]
@@ -755,7 +757,31 @@ adminRouter.post('/bookings', async (c) => {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Client name and email are required.', details: [] } }, 400)
     }
 
+    // A booking must point at a real service (Bookings.service_id is a foreign key), so resolve
+    // it before touching any slot
+    let targetServiceId = service_id
+    let finalPrice =
+      body.price_at_booking !== undefined && body.price_at_booking !== null
+        ? Math.max(0, Math.round(Number(body.price_at_booking) || 0))
+        : custom_price
+
+    if (!targetServiceId || targetServiceId === 'none' || targetServiceId === 'custom') {
+      const defaultService = await c.env.DB.prepare('SELECT id, price FROM Services ORDER BY is_active DESC, id ASC LIMIT 1').first<any>()
+      if (!defaultService) {
+        return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Create a package before adding a booking.', details: [] } }, 400)
+      }
+      targetServiceId = defaultService.id
+      if (finalPrice == null) finalPrice = defaultService.price
+    } else {
+      const svc = await c.env.DB.prepare('SELECT price FROM Services WHERE id = ?').bind(targetServiceId).first<any>()
+      if (!svc) {
+        return c.json({ error: { code: 'VALIDATION_FAILED', message: 'The selected package no longer exists.', details: [] } }, 400)
+      }
+      if (finalPrice == null) finalPrice = svc.price
+    }
+
     let targetSlotId = slot_id
+    let slotWasCreated = false
 
     if (targetSlotId) {
       // Atomically lock existing slot only if not already booked
@@ -773,55 +799,65 @@ adminRouter.post('/bookings', async (c) => {
         }, 409)
       }
     } else if (date) {
-      const slotResult = await c.env.DB.prepare(
-        'INSERT INTO Schedule_Slots (date, start_time, end_time, is_booked) VALUES (?, ?, ?, 1)'
-      ).bind(date, start_time, end_time).run()
-      targetSlotId = slotResult.meta.last_row_id
+      // Reuse an open slot the weekly availability already created at this time; only add a new one when none exists
+      const existingSlot = await c.env.DB.prepare(
+        'SELECT id, is_booked FROM Schedule_Slots WHERE date = ? AND start_time = ? ORDER BY is_booked ASC LIMIT 1'
+      ).bind(date, start_time).first<{ id: number; is_booked: number }>()
+
+      if (existingSlot) {
+        const lockRes = await c.env.DB.prepare(
+          'UPDATE Schedule_Slots SET is_booked = 1, end_time = ? WHERE id = ? AND is_booked = 0'
+        ).bind(end_time, existingSlot.id).run()
+        if (!lockRes.success || lockRes.meta.changes === 0) {
+          return c.json({
+            error: { code: 'SLOT_ALREADY_BOOKED', message: 'That date and time is already booked.', details: [] }
+          }, 409)
+        }
+        targetSlotId = existingSlot.id
+      } else {
+        const slotResult = await c.env.DB.prepare(
+          'INSERT INTO Schedule_Slots (date, start_time, end_time, is_booked) VALUES (?, ?, ?, 1)'
+        ).bind(date, start_time, end_time).run()
+        targetSlotId = slotResult.meta.last_row_id
+        slotWasCreated = true
+      }
     }
 
     if (!targetSlotId) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Slot ID or date/time details required.', details: [] } }, 400)
     }
 
-    let targetServiceId = service_id
-    let finalPrice =
-      body.price_at_booking !== undefined && body.price_at_booking !== null
-        ? Math.max(0, Math.round(Number(body.price_at_booking) || 0))
-        : custom_price
-
-    if (!targetServiceId || targetServiceId === 'none' || targetServiceId === 'custom') {
-      const defaultService = await c.env.DB.prepare('SELECT id, price FROM Services LIMIT 1').first<any>()
-      if (defaultService) {
-        targetServiceId = defaultService.id
-        if (finalPrice == null) finalPrice = defaultService.price
+    let bookingResult: D1Result
+    try {
+      bookingResult = await c.env.DB.prepare(
+        `INSERT INTO Bookings (
+          service_id, slot_id, client_name, client_email, price_at_booking, status,
+          customer_phone, location, notes, attendees, deposit_paid, coupon_code, custom_price
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(
+        targetServiceId,
+        targetSlotId,
+        client_name,
+        client_email,
+        finalPrice ?? 0,
+        status,
+        customer_phone,
+        location,
+        notes,
+        attendees,
+        deposit_paid,
+        coupon_code,
+        custom_price
+      ).run()
+    } catch (insertErr) {
+      // Undo the slot work so the time doesn't stay blocked by a booking that was never saved
+      if (slotWasCreated) {
+        await c.env.DB.prepare('DELETE FROM Schedule_Slots WHERE id = ?').bind(targetSlotId).run().catch(() => {})
       } else {
-        targetServiceId = 1
+        await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(targetSlotId).run().catch(() => {})
       }
-    } else if (finalPrice == null) {
-      const svc = await c.env.DB.prepare('SELECT price FROM Services WHERE id = ?').bind(targetServiceId).first<any>()
-      if (svc) finalPrice = svc.price
+      throw insertErr
     }
-
-    const bookingResult = await c.env.DB.prepare(
-      `INSERT INTO Bookings (
-        service_id, slot_id, client_name, client_email, price_at_booking, status,
-        customer_phone, location, notes, attendees, deposit_paid, coupon_code, custom_price
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      targetServiceId || 1,
-      targetSlotId,
-      client_name,
-      client_email,
-      finalPrice ?? 0,
-      status,
-      customer_phone,
-      location,
-      notes,
-      attendees,
-      deposit_paid,
-      coupon_code,
-      custom_price
-    ).run()
 
     return c.json({
       success: true,

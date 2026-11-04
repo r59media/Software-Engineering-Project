@@ -24,12 +24,14 @@
   let replaceTarget = null;
   let uploading = false;
 
-  const CATS = ['Portrait', 'Lifestyle', 'Events', 'Video'];
+  const CATS = ['Portrait', 'Lifestyle', 'Events', 'Extras']; // matches the public portfolio filters
   const PLATFORMS = ['Instagram', 'TikTok', 'X', 'Threads', 'Facebook', 'YouTube', 'LinkedIn', 'Website'];
 
   // Each admin tab maps to the section of the public site that displays its photos
   const TAB_TO_SECTION = { main: 'recent', gallery: 'gallery', about: 'about', hero: 'hero' };
   const SECTION_TO_TAB = { recent: 'main', gallery: 'gallery', about: 'about', hero: 'hero' };
+  // How each tab's destination is named in confirmation dialogs
+  const SECTION_LABELS = { main: 'Most Recent Photoshoot', gallery: 'the Portfolio gallery', about: 'About Me', hero: 'the Hero banner' };
   const META_SAVE_DELAY_MS = 600;
   const metaSaveTimers = new Map();
 
@@ -332,23 +334,25 @@
       return;
     }
 
-    item.busy = true;
-    renderImages();
-    try {
-      const webpFile = await convertForUpload(file);
-      setAddTileStatus(`Uploading ${webpFile.name}...`);
-      const updated = await api().replaceImageFile(item.id, webpFile);
-      item.src = safeImgSrc(updated.src || updated.url) || item.src;
-      item.key = updated.key || item.key;
-      commitImages();
-      toast('Image replaced (auto-converted to WebP)');
-    } catch (err) {
-      console.error('Failed to replace image:', err);
-      toast(`Could not replace image: ${describeError(err)}`, 4000);
-    } finally {
-      delete item.busy;
+    window.R59.confirmation.confirmReplaceImage(item.label, file.name, async () => {
+      item.busy = true;
       renderImages();
-    }
+      try {
+        const webpFile = await convertForUpload(file);
+        setAddTileStatus(`Uploading ${webpFile.name}...`);
+        const updated = await api().replaceImageFile(item.id, webpFile);
+        item.src = safeImgSrc(updated.src || updated.url) || item.src;
+        item.key = updated.key || item.key;
+        commitImages();
+        toast('Image replaced (auto-converted to WebP)');
+      } catch (err) {
+        console.error('Failed to replace image:', err);
+        toast(`Could not replace image: ${describeError(err)}`, 4000);
+      } finally {
+        delete item.busy;
+        renderImages();
+      }
+    });
   }
 
   async function handleFiles(files) {
@@ -375,7 +379,22 @@
     const category = tab === 'hero' ? 'hero' : (tab === 'gallery' ? (currentFilter === 'All' ? 'Portrait' : currentFilter) : 'All');
     const list = imagesFor(tab);
 
+    // Hold further drops while the admin decides, then upload only once they confirm
     uploading = true;
+    const confirmed = await new Promise(resolve => {
+      window.R59.confirmation.confirmUploadImages(
+        supported.length,
+        SECTION_LABELS[tab] || 'this section',
+        () => resolve(true),
+        () => resolve(false)
+      );
+    });
+    if (!confirmed) {
+      uploading = false;
+      toast('Upload cancelled');
+      return;
+    }
+
     const failures = [];
     let added = 0;
 
@@ -451,11 +470,14 @@
     });
   }
 
-  async function moveImage(idx, direction) {
+  function moveImage(idx, direction) {
     const list = imagesFor(currentTab);
     const j = idx + direction;
     if (j < 0 || j >= list.length) return;
+    window.R59.confirmation.confirmReorderImages(list[idx]?.label, () => applyMove(list, idx, j));
+  }
 
+  async function applyMove(list, idx, j) {
     [list[idx], list[j]] = [list[j], list[idx]];
     list.forEach((img, order) => { img.display_order = order; });
     renderImages();
@@ -598,8 +620,35 @@
         const item = imagesFor(currentTab)[card.dataset.idx];
         if (!item) return;
         item[f] = e.target.value;
-        scheduleMetaSave(item);
-        if (f === 'cat' && currentFilter !== 'All') renderImages();
+      });
+
+      // Remember each field's saved value so a declined edit can be put back
+      grid.addEventListener('focusin', e => {
+        if (e.target.dataset?.field) e.target.dataset.savedValue = e.target.value;
+      });
+
+      grid.addEventListener('change', e => {
+        const field = e.target.dataset?.field;
+        if (!field) return;
+        const card = e.target.closest('.img-card');
+        const item = card && imagesFor(currentTab)[card.dataset.idx];
+        if (!item) return;
+        const input = e.target;
+        const previous = input.dataset.savedValue ?? '';
+        if (input.value === previous) return;
+
+        window.R59.confirmation.confirmSavePhotoDetails(
+          item.label || previous,
+          () => {
+            input.dataset.savedValue = input.value;
+            scheduleMetaSave(item);
+            if (field === 'cat' && currentFilter !== 'All') renderImages();
+          },
+          () => {
+            item[field] = previous;
+            input.value = previous;
+          }
+        );
       });
 
       // Drag and drop
