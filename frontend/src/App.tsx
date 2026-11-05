@@ -96,9 +96,9 @@ function App() {
 
   return <div id="top" className="site-shell">
     <a className="skip-link" href="#hero">Skip to content</a>
+    <SiteHeader destinations={heroDestinations} />
     <main>
       <div className="site-intro">
-        <SiteHeader destinations={heroDestinations} />
         <Hero slides={slides} destinations={heroDestinations} />
       </div>
       <AboutToRecent />
