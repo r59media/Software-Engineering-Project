@@ -34,3 +34,11 @@
   font-display: swap;
   src: url(../assets/fonts/jost-500-italic.ttf) format('truetype');
 }
+
+@font-face {
+  font-family: 'Jost';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(../assets/fonts/jost-400.ttf) format('truetype');
+}
