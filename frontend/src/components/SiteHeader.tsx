@@ -12,7 +12,7 @@ import './SiteHeader.css'
 
 const socialIcons = { Instagram: instagram, Threads: threads, X: x }
 
-export function SiteHeader({ destinations }: { destinations: HeroDestinations }) {
+export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: HeroDestinations; homeHref?: string }) {
   const header = useRef<HTMLElement>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -82,14 +82,14 @@ export function SiteHeader({ destinations }: { destinations: HeroDestinations })
 
   const desktopLinks = [['About Me', destinations.about], ['Portfolio', destinations.portfolio],
     ['FAQ', destinations.faq], ['Get in touch', destinations.contact]] as const
-  const mobileLinks = [['Home', '#top', 'home'], ['About Me', destinations.about, 'about'],
+  const mobileLinks = [['Home', homeHref, 'home'], ['About Me', destinations.about, 'about'],
     ['Portfolio', destinations.portfolio, 'portfolio'], ['Booking', destinations.booking, 'booking'],
     ['Get In Touch', destinations.contact, 'contact'], ['FAQ', destinations.faq, 'faq']] as const
 
   return <>
     <header ref={header} className="site-header" data-hidden={hidden && !open} onFocusCapture={() => setHidden(false)}>
       <div className="site-header__bar">
-        <a href="#top" className="site-header__brand" aria-label="R59 Media Home"><img src={`${import.meta.env.BASE_URL}r59Media_logo.svg`} alt="" width="81" height="50" /></a>
+        <a href={homeHref} className="site-header__brand" aria-label="R59 Media Home"><img src={`${import.meta.env.BASE_URL}r59Media_logo.svg`} alt="" width="81" height="50" /></a>
         <span className="site-header__divider" aria-hidden="true" />
         <nav className="site-header__desktop" aria-label="Main navigation">
           {desktopLinks.map(([label, href]) => <ActionLink key={label} href={href} className="site-header__link">{label}</ActionLink>)}
@@ -117,7 +117,7 @@ export function SiteHeader({ destinations }: { destinations: HeroDestinations })
         <button type="button" className="mobile-navigation__dismiss" aria-label="Dismiss navigation menu" tabIndex={-1} onClick={closeMenu} />
         <div className="mobile-navigation__red" aria-hidden="true" />
         <div className="mobile-navigation__yellow" aria-hidden="true" />
-        <a href="#top" className="mobile-navigation__brand" aria-label="R59 Media Home" onClick={closeMenu} />
+        <a href={homeHref} className="mobile-navigation__brand" aria-label="R59 Media Home" onClick={closeMenu} />
         <button ref={closeButton} type="button" className="mobile-navigation__close" aria-label="Close navigation menu" onClick={closeMenu}><img src={closeIcon} alt="" width="20" height="20" /></button>
         <nav aria-label="Mobile navigation" className="mobile-navigation__links">
           {mobileLinks.map(([label, href, key]) => <ActionLink key={key} href={href} className={`mobile-navigation__link mobile-navigation__link--${key}`} ariaCurrent={href && (key === 'home' ? currentSection === 'hero' : href === `#${currentSection}`) ? 'location' : undefined} pressKey={key} pressed={pressed === key} onNavigate={closeMenu}><span>{label}</span></ActionLink>)}
@@ -131,7 +131,7 @@ export function SiteHeader({ destinations }: { destinations: HeroDestinations })
               : <span role="link" aria-disabled="true" aria-label={`${platform} — link coming soon`} title="Link coming soon"><img src={socialIcons[platform]} alt="" /></span>}
           </li>)}</ul>
         </div>
-        <div className="mobile-navigation__legal"><ActionLink>Terms and conditions</ActionLink><span aria-hidden="true">·</span><ActionLink>Privacy Policy</ActionLink></div>
+        <div className="mobile-navigation__legal"><ActionLink href={`${import.meta.env.BASE_URL}terms-and-conditions`} onNavigate={closeMenu}>Terms and conditions</ActionLink><span aria-hidden="true">·</span><ActionLink href={`${import.meta.env.BASE_URL}privacy-policy`} onNavigate={closeMenu}>Privacy Policy</ActionLink></div>
       </div>
     </dialog>, document.body)}
   </>
