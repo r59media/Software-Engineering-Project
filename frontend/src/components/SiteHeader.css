@@ -55,7 +55,7 @@
 .mobile-navigation__connect a, .mobile-navigation__connect li > span { display: grid; place-items: center; min-width: 44px; min-height: 44px; }
 .mobile-navigation__connect img { display: block; }
 .mobile-navigation__legal { position: absolute; top: 95.2%; left: 30%; right: 3%; display: flex; gap: 0.6rem; justify-content: center; align-items: center; font-size: clamp(0.625rem, 2.7cqw, 0.75rem); }
-.mobile-navigation__legal [role="link"] { text-decoration: underline; }
+.mobile-navigation__legal a, .mobile-navigation__legal [role="link"] { text-decoration: underline; }
 .mobile-navigation [aria-disabled="true"] { cursor: not-allowed; }
 @media (max-height: 760px) {
   .mobile-navigation__connect { top: 82%; }

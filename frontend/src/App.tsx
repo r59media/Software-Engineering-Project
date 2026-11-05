@@ -8,11 +8,20 @@ import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
+import { LegalPage } from './pages/legal/LegalPage'
 
 function App() {
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
+  const baseUrl = import.meta.env.BASE_URL
+  const path = window.location.pathname.replace(/\/$/, '')
+  const legalPage = path === `${baseUrl}privacy-policy`.replace(/\/$/, '') ? 'privacy' : path === `${baseUrl}terms-and-conditions`.replace(/\/$/, '') ? 'terms' : null
 
   useEffect(() => {
+    if (legalPage) document.title = legalPage === 'privacy' ? 'Privacy Policy | R59 Media' : 'Terms and Conditions | R59 Media'
+  }, [legalPage])
+
+  useEffect(() => {
+    if (legalPage) return
     let controller: AbortController | null = null
 
     const load = () => {
@@ -45,7 +54,7 @@ function App() {
       window.removeEventListener('focus', onRevalidate)
       document.removeEventListener('visibilitychange', onRevalidate)
     }
-  }, [])
+  }, [legalPage])
 
   useEffect(() => {
     const isProtectedTarget = (target: HTMLElement | null): boolean => {
@@ -93,6 +102,18 @@ function App() {
       document.removeEventListener('keydown', handleKeyDown)
     }
   }, [])
+
+  if (legalPage) {
+    const homeDestinations = Object.fromEntries(
+      Object.entries(heroDestinations).map(([key, href]) => [key, href?.startsWith('#') ? `${baseUrl}${href}` : href])
+    )
+    return <div id="top" className="site-shell">
+      <a className="skip-link" href="#legal-content">Skip to content</a>
+      <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
+      <LegalPage page={legalPage} />
+      <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+    </div>
+  }
 
   return <div id="top" className="site-shell">
     <a className="skip-link" href="#hero">Skip to content</a>

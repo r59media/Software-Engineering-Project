@@ -75,12 +75,14 @@ interface SiteFooterProps {
   background?: FooterSlide
   destinations?: HeroDestinations
   socialLinks?: readonly FooterSocialLink[]
+  homeHref?: string
 }
 
 export function SiteFooter({
   background = footerBackground,
   destinations = heroDestinations,
   socialLinks = footerSocialLinks,
+  homeHref = '#top',
 }: SiteFooterProps) {
   const { profile } = usePublicProfile()
 
@@ -129,7 +131,7 @@ export function SiteFooter({
       </div>
       <div className="site-footer__content">
         <a
-          href="#top"
+          href={homeHref}
           className="site-footer__brand"
           aria-label="R59 Media home"
           data-footer-part="logo"
@@ -215,6 +217,11 @@ export function SiteFooter({
           </ul>
         </div>
         <img className="site-footer__rule" src={divider} alt="" width="712.003" height="1" />
+        <nav className="site-footer__legal" aria-label="Legal">
+          <a href={`${import.meta.env.BASE_URL}terms-and-conditions`}>Terms and conditions</a>
+          <span aria-hidden="true">·</span>
+          <a href={`${import.meta.env.BASE_URL}privacy-policy`}>Privacy Policy</a>
+        </nav>
         <p className="site-footer__copyright">
           © {new Date().getFullYear()} {footerContent.brand}
         </p>
