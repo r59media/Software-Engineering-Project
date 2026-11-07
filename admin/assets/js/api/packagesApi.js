@@ -1,90 +1,97 @@
 /**
  * R59 Media Admin — Packages (Services) API Service
- * 
- * Integration layer for photography package management.
- * Connected to Cloudflare Workers /services backend routes.
+ *
+ * Integration layer for photography package management (Cloudflare Workers /services routes).
+ *
+ * Units: the backend stores prices in cents. Callers pass `price` in DOLLARS; pass
+ * `priceInCents` instead when a value is already in cents. `getPackages()` returns the
+ * raw services (price in cents); app.js converts them to dollars for state.
+ *
+ * Every call rejects on an HTTP or network failure; nothing is swallowed here.
  */
 
 (function () {
   'use strict';
 
+  function toCents(data) {
+    if (data.priceInCents !== undefined) return Math.round(Number(data.priceInCents) || 0);
+    if (data.price !== undefined) return Math.round((Number(data.price) || 0) * 100);
+    return undefined;
+  }
+
+  const activeFlag = v => (v ? 1 : 0);
+
+  /** Number of outfits: '' or null means not set (sent as null). */
+  const outfitsValue = v => (v === null || v === undefined || String(v).trim() === '' ? null : Number(v));
+
   const packagesApi = {
     /**
-     * Fetch all photography packages/services (including inactive ones for admin).
-     * Established backend endpoint: GET /services?all=true
+     * GET /services?all=true (includes inactive packages for the admin) → raw services, price in cents,
+     * with duration_minutes, outfits (null when not set) and full_day (true for an "Entire day" package).
      */
     async getPackages() {
       const data = await window.R59.apiClient.get('/services?all=true');
-      // Backend returns { services: [{ id, name, description, price (cents), duration_minutes, ... }] }
-      return (data && data.services) || [];
+      const list = data?.services ?? data?.data;
+      if (!Array.isArray(list)) throw new Error('The server sent an unexpected package list.');
+      return list;
     },
 
     /**
-     * Create a new photography package.
-     * Established backend endpoint: POST /services
-     * Note: Backend stores price in cents.
+     * POST /services. `data`: { name, description, price ($) | priceInCents, duration_minutes, outfits, full_day, is_active }.
+     * duration_minutes is the session length the admin entered (the server checks 15–1440 unless
+     * full_day is true; the form sends 1440 then).
+     * Resolves with the server response ({ id, data: { id, name, description, price (cents), … } }).
      */
     async createPackage(data = {}) {
-      const resolvedName = data.name ?? data.title ?? 'New Package';
-      const resolvedDuration = data.duration_minutes ?? data.durationMinutes ?? 60;
-      const resolvedActive = data.is_active !== undefined ? (data.is_active ? 1 : 0) : (data.isActive !== undefined ? (data.isActive ? 1 : 0) : 1);
-      const isCentsPayload = data.priceInCents !== undefined || data.duration_minutes !== undefined || data.is_active !== undefined || data.title !== undefined;
-      const resolvedPrice = data.priceInCents !== undefined
-        ? Math.round(Number(data.priceInCents) || 0)
-        : (isCentsPayload ? Math.round(Number(data.price) || 0) : Math.round((Number(data.price) || 0) * 100));
-
+      const name = String(data.name ?? data.title ?? '').trim();
       const payload = {
-        name: resolvedName,
-        title: resolvedName,
+        name,
+        title: name,
         description: data.description || '',
-        price: resolvedPrice,
-        duration_minutes: Number(resolvedDuration) || 60,
-        category: data.category || 'General',
-        is_active: resolvedActive
+        price: toCents(data) ?? 0,
+        duration_minutes: Number(data.duration_minutes ?? data.durationMinutes),
+        outfits: outfitsValue(data.outfits),
+        full_day: data.full_day === true || data.full_day === 1,
+        is_active: data.is_active !== undefined
+          ? activeFlag(data.is_active)
+          : (data.isActive !== undefined ? activeFlag(data.isActive) : 1)
       };
+      if (data.category !== undefined) payload.category = data.category;
       return await window.R59.apiClient.post('/services', payload);
     },
 
     /**
-     * Update an existing package.
-     * Established backend endpoint: PUT /services/:id
+     * PUT /services/:id — partial: only the fields given are sent.
+     * Settings save (app.js): { name, price ($), description } plus outfits, duration_minutes and
+     * full_day when they changed. Availability toggle: { is_active }.
      */
     async updatePackage(id, data = {}) {
       const payload = {};
-      const resolvedName = data.name ?? data.title;
-      if (resolvedName !== undefined) {
-        payload.name = resolvedName;
-        payload.title = resolvedName;
+      const name = data.name ?? data.title;
+      if (name !== undefined) {
+        payload.name = name;
+        payload.title = name;
       }
       if (data.description !== undefined) payload.description = data.description;
-      if (data.price !== undefined || data.priceInCents !== undefined) {
-        const isCentsPayload = data.priceInCents !== undefined || data.duration_minutes !== undefined || data.is_active !== undefined || data.title !== undefined;
-        payload.price = data.priceInCents !== undefined
-          ? Math.round(Number(data.priceInCents) || 0)
-          : (isCentsPayload ? Math.round(Number(data.price) || 0) : Math.round((Number(data.price) || 0) * 100));
-      }
-      const resolvedDuration = data.duration_minutes ?? data.durationMinutes;
-      if (resolvedDuration !== undefined) payload.duration_minutes = Number(resolvedDuration) || 60;
+      const cents = toCents(data);
+      if (cents !== undefined) payload.price = cents;
+      const duration = data.duration_minutes ?? data.durationMinutes;
+      if (duration !== undefined) payload.duration_minutes = Number(duration);
+      if (data.outfits !== undefined) payload.outfits = outfitsValue(data.outfits);
+      if (data.full_day !== undefined) payload.full_day = data.full_day === true || data.full_day === 1;
       if (data.category !== undefined) payload.category = data.category;
-      if (data.is_active !== undefined) {
-        payload.is_active = data.is_active ? 1 : 0;
-      } else if (data.isActive !== undefined) {
-        payload.is_active = data.isActive ? 1 : 0;
-      }
+      if (data.is_active !== undefined) payload.is_active = activeFlag(data.is_active);
+      else if (data.isActive !== undefined) payload.is_active = activeFlag(data.isActive);
 
-      return await window.R59.apiClient.put(`/services/${id}`, payload);
+      return await window.R59.apiClient.put(`/services/${encodeURIComponent(id)}`, payload);
     },
 
     /**
-     * Remove / deactivate a package.
+     * DELETE /services/:id. The server deletes the package, or deactivates it when bookings
+     * or other records still point at it (it then answers 2xx with a "deactivated" message).
      */
     async deletePackage(id) {
-      try {
-        return await window.R59.apiClient.delete(`/services/${id}`);
-      } catch (err) {
-        // Fallback to setting is_active = 0
-        return await window.R59.apiClient.put(`/services/${id}`, { is_active: 0 });
-      }
+      return await window.R59.apiClient.delete(`/services/${encodeURIComponent(id)}`);
     }
   };
 

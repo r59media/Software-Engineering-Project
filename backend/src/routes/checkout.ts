@@ -2,14 +2,8 @@ import { Hono } from 'hono'
 import { Bindings } from '../index'
 import { ensureSchemaReady } from './admin'
 import { getTrustedClientIp, hasForbiddenPaymentFields } from '../middleware/auth'
-
-let squareSdkPromise: Promise<typeof import('square')> | null = null
-function getSquareSdk() {
-  if (!squareSdkPromise) {
-    squareSdkPromise = import('square')
-  }
-  return squareSdkPromise
-}
+import { getSquare } from '../lib/squareBilling'
+import { depositFor, normalizeDepositPercent } from '../lib/billingMath'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const IDEMPOTENCY_KEY_REGEX = /^[a-zA-Z0-9_-]{8,36}$/
@@ -213,21 +207,22 @@ checkoutRouter.post('/', async (c) => {
       }
     }
 
-    if (!c.env.SQUARE_ACCESS_TOKEN) {
-      throw new Error('Square Access Token not configured')
+    // Deposit percent from Admin_Settings.pricing; a missing, unreadable or invalid value uses the default
+    let pricingSettings: any = null
+    try {
+      const pricingRow: any = await c.env.DB.prepare(
+        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
+      ).first()
+      pricingSettings = pricingRow?.setting_value ? JSON.parse(pricingRow.setting_value) : null
+    } catch (pricingErr) {
+      console.warn('Could not read pricing settings; using the default deposit percent.')
     }
+    const deposit = depositFor(finalPriceCents, normalizeDepositPercent(pricingSettings?.depositPercent))
+    const lineItemName = deposit.percent === 100 ? service.name : `${service.name} – ${deposit.percent}% deposit`
 
-    // Fail loudly if no location ID — only accept from verified server environment
-    const squareLocationId = c.env.SQUARE_LOCATION_ID
-    if (!squareLocationId) {
-      throw new Error('SQUARE_LOCATION_ID is not configured on the server. Cannot process payment.')
-    }
-
-    const { SquareClient, SquareEnvironment } = await getSquareSdk()
-    const client = new SquareClient({
-      token: c.env.SQUARE_ACCESS_TOKEN,
-      environment: c.env.SQUARE_ENVIRONMENT === 'production' ? SquareEnvironment.Production : SquareEnvironment.Sandbox,
-    })
+    // Throws SquareNotConfiguredError when the token or location is missing; the catch below
+    // answers 500 PAYMENT_FAILED and releases the slot.
+    const { client, locationId: squareLocationId } = await getSquare(c.env)
 
     // 2. Create Ad-Hoc Order
     const orderResponse = await client.orders.create({
@@ -235,10 +230,10 @@ checkoutRouter.post('/', async (c) => {
         locationId: squareLocationId,
         lineItems: [
           {
-            name: service.name,
+            name: lineItemName,
             quantity: '1',
             basePriceMoney: {
-              amount: BigInt(finalPriceCents),
+              amount: BigInt(deposit.cents),
               currency: 'USD'
             }
           }
@@ -262,7 +257,7 @@ checkoutRouter.post('/', async (c) => {
       autocomplete: true,
       acceptPartialAuthorization: false,
       amountMoney: {
-        amount: BigInt(finalPriceCents),
+        amount: BigInt(deposit.cents),
         currency: 'USD'
       }
     })
@@ -270,7 +265,7 @@ checkoutRouter.post('/', async (c) => {
     const payment = paymentResponse.payment
     const paymentId = payment?.id
 
-    if (payment?.status !== 'COMPLETED' || payment.amountMoney?.amount !== BigInt(finalPriceCents)) {
+    if (payment?.status !== 'COMPLETED' || payment.amountMoney?.amount !== BigInt(deposit.cents)) {
       // Explicitly release slot lock before returning 402 payment error
       try {
         await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
@@ -293,9 +288,10 @@ checkoutRouter.post('/', async (c) => {
     let bookingId: number | undefined
     try {
       const bookingInsert = await c.env.DB.prepare(
-        // Online checkout collects the full price up front, so the amount paid is recorded as deposit_paid
-        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, price_at_booking, square_payment_id, status, coupon_code, deposit_paid) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?)"
-      ).bind(service.id, slotId, clientName, clientEmail, finalPriceCents, paymentId, couponCode, finalPriceCents).run()
+        // Online checkout charges only the deposit: price_at_booking is the total after coupon,
+        // deposit_paid is the amount charged now, and deposit_percent is the percent that produced it
+        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, price_at_booking, square_payment_id, status, coupon_code, deposit_paid, deposit_percent) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)"
+      ).bind(service.id, slotId, clientName, clientEmail, finalPriceCents, paymentId, couponCode, deposit.cents, deposit.percent).run()
       bookingId = bookingInsert.meta?.last_row_id
     } catch (bookingErr) {
       console.error('CRITICAL: Payment succeeded but booking insert failed:', {
@@ -313,7 +309,7 @@ checkoutRouter.post('/', async (c) => {
           idempotencyKey: idempotencyKey + '_refund',
           paymentId: paymentId,
           amountMoney: {
-            amount: BigInt(finalPriceCents),
+            amount: BigInt(deposit.cents),
             currency: 'USD'
           }
         }).catch((refundErr) => {
@@ -340,16 +336,25 @@ checkoutRouter.post('/', async (c) => {
       }, 500)
     }
 
+    const balanceCents = finalPriceCents - deposit.cents
     return c.json({
       success: true,
       status: 'success',
       paymentId,
       orderId,
       bookingId,
+      deposit_cents: deposit.cents,
+      deposit_percent: deposit.percent,
+      total_cents: finalPriceCents,
+      balance_cents: balanceCents,
       data: {
         booking_id: bookingId,
         payment_id: paymentId,
-        order_id: orderId
+        order_id: orderId,
+        deposit_cents: deposit.cents,
+        deposit_percent: deposit.percent,
+        total_cents: finalPriceCents,
+        balance_cents: balanceCents
       }
     })
   } catch (e: any) {

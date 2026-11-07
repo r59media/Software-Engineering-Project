@@ -77,6 +77,7 @@ A high-performance, full-stack photography portfolio and studio management platf
 * **Edge Asset & Worker Integration:** Uses Cloudflare Workers static asset bindings to serve pre-compiled frontend and admin bundles with single-digit millisecond latency.
 * **Automatic Seed & Asset Hash Synchronization:** `backend/scripts/sync-defaults.mjs` maps pre-bundled static assets into `defaultPortfolioSeed.json`, automatically seeding missing sections on first run.
 * **Square Payments Integration:** Tokenized Square checkout with PCI-DSS compliance (no raw credit card numbers touch the worker or database).
+* **Square Deposits & Balance Invoices:** Online checkout charges a deposit (the admin's Down payment percent, default 60%). From the admin booking dialog the photographer adds extra charges and sends a Square invoice for the balance; a signed Square webhook records the payment.
 * **Enterprise Security Headers:** Configured with Content-Security-Policy (CSP), HSTS, Cross-Origin-Opener-Policy (COOP), Referrer-Policy, and anti-framing protections.
 
 ---
@@ -135,7 +136,10 @@ The application uses Cloudflare D1 SQLite database (`r59_db`). The primary table
 | `Media_Storage` | Stores uploaded 512 KB binary image chunks (`file_key`, `chunk_index`, `data`, `content_type`). |
 | `Admin_Settings` | Stores dynamic JSON configuration for studio `profile`, `pricing`, and seeded section flags. |
 | `Services` | Photography packages, pricing in integer cents, duration, and active status. |
-| `Bookings` | Client bookings, assigned slots, payment IDs, deposit records, and statuses. |
+| `Bookings` | Client bookings, assigned slots, payment IDs, deposit records (`deposit_paid`, `deposit_percent`), and statuses. |
+| `Booking_Payments` | Payments recorded after booking, in cents. `square_invoice_id` links a payment to the Square invoice it came from (unique, so each invoice records at most one payment). |
+| `Booking_Charges` | Extra charges added to a booking (`description`, `amount_cents`). |
+| `Booking_Invoices` | One row per Square balance invoice attempt: Square ids, number, version, `amount_cents`, `status`, `public_url`, `due_date`. A partial unique index allows at most one open invoice per booking. |
 | `Coupons` | Promotional codes with percentage or fixed amount discounts. |
 | `Schedule_Slots` | Individual booking slots by date and start/end time. |
 | `Blocked_Dates` | Calendar dates blocked from bookings with custom reasons. |
@@ -146,7 +150,7 @@ The application uses Cloudflare D1 SQLite database (`r59_db`). The primary table
 ## 🛠️ Development & Local Setup
 
 ### Prerequisites
-* [Node.js](https://nodejs.org/) (v22+)
+* [Node.js](https://nodejs.org/) (v22.18 or later; the backend tests run TypeScript directly with `node --test`)
 * [pnpm](https://pnpm.io/) (`corepack enable pnpm` or `npm i -g pnpm`)
 * [Cloudflare Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (bundled via project dev dependencies)
 
@@ -176,7 +180,17 @@ ADMIN_SECRET="your_secure_admin_password_or_token"
 
 # CORS configuration
 ALLOWED_ORIGINS="http://localhost:5173,http://localhost:8787"
+
+# Square webhook (optional locally; without both the webhook answers 503)
+SQUARE_WEBHOOK_SIGNATURE_KEY="signature_key_from_the_square_webhook_subscription"
+SQUARE_WEBHOOK_URL="https://<your-public-url>/api/square/webhook"
 ```
+
+| Variable | Where it is set in production | Purpose |
+|---|---|---|
+| `SQUARE_ACCESS_TOKEN`, `SQUARE_LOCATION_ID`, `SQUARE_ENVIRONMENT` | Worker secrets | Checkout deposits and balance invoices (a personal access token already has the Customers, Orders and Invoices permissions) |
+| `SQUARE_WEBHOOK_SIGNATURE_KEY` | Worker secret (`wrangler secret put SQUARE_WEBHOOK_SIGNATURE_KEY`); `backend/.dev.vars` locally | Verifies that webhook calls come from Square |
+| `SQUARE_WEBHOOK_URL` | `backend/wrangler.toml` `[vars]`; `backend/.dev.vars` locally | The exact notification URL registered in Square. The signature is computed over this URL plus the body, so it must match character for character. |
 
 ### 3. Start Local Development Servers
 
@@ -222,6 +236,9 @@ pnpm --dir backend run typecheck
 
 # Lint & typecheck frontend
 pnpm --dir frontend run check
+
+# Backend unit tests (billing math and billing database rules; Node 22.18 or later)
+pnpm --dir backend test
 ```
 
 ### Deploy to Cloudflare Workers
@@ -229,6 +246,40 @@ pnpm --dir frontend run check
 cd backend
 pnpm exec wrangler deploy
 ```
+
+### Square webhook setup
+
+The webhook (`POST /api/square/webhook`) records invoice payments as soon as Square reports them. It is the only public billing endpoint. It needs both webhook variables, checks the `x-square-hmacsha256-signature` header, and accepts bodies up to 64 KB. It reads only the invoice id from the event and then fetches the invoice from Square, so amounts always come from Square.
+
+1. In the Square Developer dashboard, open the application and go to **Webhooks**.
+2. Add a subscription with the URL `https://<deployed-domain>/api/square/webhook`.
+3. Select the events `invoice.payment_made`, `invoice.updated` and `invoice.canceled`.
+4. Save, then copy the subscription's signature key.
+5. Store it as a Worker secret:
+   ```bash
+   cd backend
+   pnpm exec wrangler secret put SQUARE_WEBHOOK_SIGNATURE_KEY
+   ```
+6. Set `SQUARE_WEBHOOK_URL` in `backend/wrangler.toml` under `[vars]` to exactly the URL registered in step 2, then deploy.
+7. Send a test event from the dashboard.
+
+Webhook responses: 503 `WEBHOOK_NOT_CONFIGURED` when a webhook variable is missing, 413 when the body is too large, 401 for a bad signature, 200 `{ received: true, ignored: true }` for events that aren't one of the three types or aren't for an invoice this app created, 200 `{ received: true }` after the invoice is recorded, and 500 on a Square or database error so Square retries. Without the webhook, the admin's Check status button (and opening the booking) still reads the current status from Square.
+
+### Rollout checklist (Square deposits and invoices)
+
+1. Deploy. The schema changes only add columns, tables and indexes, and `ensureSchemaReady` applies them on the first admin or checkout request.
+2. Set the webhook variables (`SQUARE_WEBHOOK_SIGNATURE_KEY` secret and `SQUARE_WEBHOOK_URL`).
+3. Register the webhook in Square (see above) and send a test event.
+4. Confirm that Invoices is enabled on the production Square account.
+5. Set Down payment to 60% in the admin site (Payment, pricing).
+
+### Rollback checklist
+
+1. Cancel open invoices in Square first.
+2. Disable the webhook subscription in Square. Otherwise it would get 404s and Square would keep retrying.
+3. Then revert the code.
+
+After a rollback, extra charges are ignored, so balances drop by the charges; payments recorded from invoices become removable; and the new columns and tables stay in place unused. To go back to charging the full price at checkout without a deploy, set Down payment to 100%.
 
 ---
 

@@ -4,7 +4,7 @@
   "description": "Backend for Photographer Portfolio",
   "main": "src/index.ts",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.18.0"
   },
   "scripts": {
     "dev": "wrangler dev",
@@ -15,7 +15,8 @@
     "build": "pnpm run sync-frontend && pnpm run sync-defaults && pnpm run sync-admin",
     "db:init": "wrangler d1 create r59_db",
     "db:reset": "wrangler d1 execute r59_db --local --file=./schema.sql",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts"
   },
   "dependencies": {
     "hono": "4.13.13",

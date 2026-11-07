@@ -10,6 +10,7 @@ import { checkoutRouter } from './routes/checkout'
 import { portfolioRouter } from './routes/portfolio'
 import { servicesRouter } from './routes/services'
 import { adminRouter } from './routes/admin'
+import { squareWebhookRouter } from './routes/squareWebhook'
 import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth } from './middleware/auth'
 
 export type Bindings = {
@@ -23,6 +24,8 @@ export type Bindings = {
   ADMIN_EMAIL?: string
   ALLOWED_ORIGINS?: string
   SESSION_SECRET?: string
+  SQUARE_WEBHOOK_SIGNATURE_KEY?: string
+  SQUARE_WEBHOOK_URL?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -249,20 +252,14 @@ app.get('/api/health', async (c) => {
   }
 })
 
-export const DEFAULT_PROFILE = {
-  bio: "I'm the photographer behind R59—drawn to quiet frames, honest light, and the small gestures that make a portrait feel lived-in.\n\nMost of my work sits between editorial portraiture and documentary storytelling. Whether we're in a studio or chasing late-afternoon sun on location, the goal is always the same: images that still feel like you ten years from now.",
-  email: "hello@r59.Portraits",
-  phone: "123-456-7890",
-  location: "Studio & On-Location",
-  travel: true,
-  social: {
-    instagram: "https://www.instagram.com",
-    facebook: "https://www.facebook.com",
-    pinterest: "https://www.pinterest.com",
-    x: "",
-    tiktok: "",
-    youtube: ""
-  }
+// Public profile: no placeholder content. A field that was never saved is empty.
+export const EMPTY_PROFILE = {
+  bio: '',
+  email: '',
+  phone: '',
+  location: '',
+  travel: '',
+  social: [] as { platform: string; url: string }[]
 }
 
 // Public studio profile endpoint
@@ -280,25 +277,32 @@ app.get('/api/profile', async (c) => {
       } catch {}
     }
 
+    // A stored value (including '') is returned as stored; a missing or null field is empty
+    const text = (value: unknown): string =>
+      value === undefined || value === null ? '' : String(value).trim()
+
     const profile = {
-      bio: (parsed?.bio && String(parsed.bio).trim()) || DEFAULT_PROFILE.bio,
-      email: (parsed?.email && String(parsed.email).trim()) || DEFAULT_PROFILE.email,
-      phone: (parsed?.phone && String(parsed.phone).trim()) || DEFAULT_PROFILE.phone,
-      location: (parsed?.location && String(parsed.location).trim()) || DEFAULT_PROFILE.location,
+      bio: text(parsed?.bio),
+      email: text(parsed?.email),
+      phone: text(parsed?.phone),
+      location: text(parsed?.location),
       // The admin saves travel as a label (e.g. "Studio only"); keep that text instead of coercing it to true
-      travel: parsed?.travel !== undefined
+      travel: parsed?.travel !== undefined && parsed?.travel !== null
         ? (typeof parsed.travel === 'string' ? parsed.travel : Boolean(parsed.travel))
-        : DEFAULT_PROFILE.travel,
-      social: parsed?.social || DEFAULT_PROFILE.social
+        : EMPTY_PROFILE.travel,
+      // No placeholder social links: an unsaved profile has none
+      social: parsed?.social ?? []
     }
 
     c.header('Cache-Control', 'no-store')
     return c.json({
       status: 'success',
-      profile
+      profile,
+      data: profile
     })
   } catch {
-    return c.json({ status: 'success', profile: { ...DEFAULT_PROFILE } })
+    const profile = { ...EMPTY_PROFILE, social: [] }
+    return c.json({ status: 'success', profile, data: profile })
   }
 })
 
@@ -310,6 +314,7 @@ app.route('/api/checkout', checkoutRouter)
 app.route('/api/portfolio', portfolioRouter)
 app.route('/api/services', servicesRouter)
 app.route('/api/admin', adminRouter)
+app.route('/api/square/webhook', squareWebhookRouter)
 
 // D1 Media Storage Upload (admin only) — same limits the upload-url route advertises
 const MEDIA_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic']

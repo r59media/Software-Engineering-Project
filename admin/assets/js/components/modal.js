@@ -26,13 +26,8 @@
     okBtn.textContent = okLabel || 'Confirm';
     
     // Apply styling options (e.g. danger variant)
-    if (options.isDanger) {
-      okBtn.classList.add('btn-danger');
-      okBtn.classList.remove('btn-primary');
-    } else {
-      okBtn.classList.remove('btn-danger');
-      okBtn.classList.add('btn-primary');
-    }
+    okBtn.classList.toggle('btn--danger', Boolean(options.isDanger));
+    okBtn.classList.toggle('btn--primary', !options.isDanger);
 
     const cancelBtn = $('#modalCancel');
     cancelBtn.textContent = options.cancelLabel || 'Cancel';
@@ -52,8 +47,8 @@
     // Reset buttons to default
     const okBtn = $('#modalOk');
     if (okBtn) {
-      okBtn.classList.remove('btn-danger');
-      okBtn.classList.add('btn-primary');
+      okBtn.classList.remove('btn--danger');
+      okBtn.classList.add('btn--primary');
     }
     const cancelBtn = $('#modalCancel');
     if (cancelBtn) cancelBtn.textContent = 'Cancel';
@@ -70,14 +65,18 @@
   function getActiveModal() {
     if (!document.body.classList.contains('authenticated')) {
       const login = $('#login');
-      if (login && (login.classList.contains('open') || window.getComputedStyle(login).display !== 'none')) {
+      if (login && login.classList.contains('open')) {
         return login;
       }
     }
+    // The native review <dialog> manages its own focus (showModal makes the rest inert)
+    const review = $('#review');
+    if (review && review.open && !$('#modal.open')) return null;
     // Ordered lowest to highest: the confirmation dialog sits above the booking forms
     const openModals = [
       $('#newBookingModal.open'),
       $('#bookingModal.open'),
+      $('#settingsModal.open'),
       $('#modal.open')
     ].filter(Boolean);
     return openModals[openModals.length - 1] || null;
@@ -130,7 +129,7 @@
           }
         }
       } else if (e.key === 'Escape') {
-        if (modalEl.classList.contains('open')) {
+        if (modalEl.classList.contains('open') && !$('#review')?.open) {
           // Close only the confirmation, not the booking form underneath it
           e.stopImmediatePropagation();
           closeModal();

@@ -13,6 +13,7 @@
 
   // Backend caps a single page of /portfolio at 100 rows
   const PAGE_SIZE = 100;
+  const MAX_PAGES = 50; // safety stop: 5,000 photos
 
   // Responses mirror their payload at the top level and under `data`; accept either
   function unwrap(res) {
@@ -51,13 +52,18 @@
 
     /**
      * Fetch every portfolio image, optionally limited to one site section.
+     * Uses the admin-only list, which also returns photos hidden from the site (is_active 0/1).
      * Pages through results so large libraries are not silently truncated.
+     * Rejects on HTTP or network failure (no empty-list fallback).
      */
     async getGalleryImages({ section } = {}) {
       const all = [];
-      for (let offset = 0; ; offset += PAGE_SIZE) {
-        const data = await client().get('/portfolio', { limit: PAGE_SIZE, offset, section });
-        const page = (data && (data.images || data.data)) || [];
+      for (let offset = 0; offset < PAGE_SIZE * MAX_PAGES; offset += PAGE_SIZE) {
+        const data = await client().get('/admin/portfolio', { limit: PAGE_SIZE, offset, section });
+        const page = data && (data.images || data.data);
+        if (!Array.isArray(page)) {
+          throw new Error('The server sent an unexpected photo list.');
+        }
         all.push(...page);
         if (page.length < PAGE_SIZE) break;
       }
@@ -97,12 +103,20 @@
         headers['Authorization'] = `Bearer ${authToken}`;
       }
 
-      const putRes = await fetch(resolveApiUrl(target.uploadUrl), {
-        method: 'PUT',
-        headers,
-        credentials: 'include',
-        body: file
-      });
+      let putRes;
+      try {
+        putRes = await fetch(resolveApiUrl(target.uploadUrl), {
+          method: 'PUT',
+          headers,
+          credentials: 'include',
+          body: file
+        });
+      } catch (cause) {
+        const netErr = new Error("Can't reach the server. Check your connection and try again.");
+        netErr.isNetworkError = true;
+        netErr.originalError = cause;
+        throw netErr;
+      }
 
       if (!putRes.ok) {
         const message = await readErrorMessage(putRes);
@@ -111,7 +125,10 @@
             detail: { message: message || 'Session expired. Please sign in again.' }
           }));
         }
-        throw new Error(message || `Upload failed (${putRes.status} ${putRes.statusText})`);
+        const httpErr = new Error(message || `Upload failed (${putRes.status} ${putRes.statusText})`);
+        httpErr.status = putRes.status; // lets callers stop a multi-file upload on 401
+        httpErr.isHttpError = true;
+        throw httpErr;
       }
 
       return { key, url: target.publicUrl || mediaUrlForKey(key) };
@@ -178,6 +195,14 @@
     },
 
     /**
+     * Hide a photo from the public site (active = false) or show it again (active = true).
+     * The record and its file stay in the library either way.
+     */
+    async setImageActive(imageId, active) {
+      return await client().put(`/portfolio/${imageId}`, { is_active: Boolean(active) });
+    },
+
+    /**
      * Delete an image record and its stored file.
      * Established backend endpoint: DELETE /portfolio/:id
      */
@@ -196,13 +221,15 @@
     /**
      * Fetch studio profile information (bio, contact, location).
      * Established backend endpoint: GET /admin/profile
+     * Rejects on HTTP or network failure so the caller can mark the profile as not loaded
+     * (and never save over it).
      */
     async getProfile() {
-      try {
-        return await client().get('/admin/profile');
-      } catch {
-        return null;
+      const res = await client().get('/admin/profile');
+      if (!res || typeof res !== 'object') {
+        throw new Error('The server sent no profile.');
       }
+      return res;
     },
 
     /**

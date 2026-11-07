@@ -12,6 +12,30 @@ import {
   getTrustedClientIp,
   hasForbiddenPaymentFields
 } from '../middleware/auth'
+import { listPortfolio, portfolioListQuery } from './portfolio'
+import { isEmailConfigured, sendEmail } from '../email'
+import {
+  addDaysISO,
+  bookingTotalCents,
+  computeTotals,
+  DEFAULT_DEPOSIT_PERCENT,
+  DESCRIPTION_MAX,
+  normalizeDepositPercent,
+  parseMoneyToCents
+} from '../lib/billingMath'
+import {
+  BillingError,
+  cancelOpenInvoice,
+  loadBookingTotals,
+  OPEN_INVOICE_EXISTS_SQL,
+  PAYMENTS_SELECT_SQL,
+  refreshBilling,
+  sendBalanceInvoice,
+  studioTodayISO,
+  toChargeJSON,
+  toPayment
+} from '../lib/squareBilling'
+import { BOOKING_PAYMENTS_TABLE_SQL, BOOKING_PAYMENTS_INDEX_SQL, BILLING_SCHEMA_STEPS } from '../lib/billingSchema'
 
 function isValidId(id: string | undefined): boolean {
   return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
@@ -40,70 +64,174 @@ export async function ensureSchemaReady(db: D1Database): Promise<void> {
       'ALTER TABLE Bookings ADD COLUMN deposit_paid INTEGER DEFAULT 0',
       "ALTER TABLE Bookings ADD COLUMN coupon_code TEXT DEFAULT ''",
       'ALTER TABLE Bookings ADD COLUMN custom_price INTEGER',
+      'ALTER TABLE Bookings ADD COLUMN deposit_percent INTEGER',
       // Databases created before the r2_object_key -> media_key rename (no-op once renamed)
       'ALTER TABLE Portfolio_Images RENAME COLUMN r2_object_key TO media_key',
       "ALTER TABLE Portfolio_Images ADD COLUMN section TEXT NOT NULL DEFAULT 'gallery'",
-      'ALTER TABLE Portfolio_Images ADD COLUMN title TEXT'
+      'ALTER TABLE Portfolio_Images ADD COLUMN title TEXT',
+      'ALTER TABLE Services ADD COLUMN outfits INTEGER',
+      'ALTER TABLE Services ADD COLUMN full_day INTEGER DEFAULT 0'
     ]
 
     for (const sql of alterStatements) {
       await db.prepare(sql).run().catch(() => {})
     }
 
-    // BUG-01: Check if Bookings still has inline `slot_id INTEGER NOT NULL UNIQUE`
-    const bookingTable = await db.prepare(
-      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'Bookings'"
-    ).first<{ sql: string }>()
-
-    if (bookingTable?.sql && /slot_id\s+INTEGER\s+NOT\s+NULL\s+UNIQUE/i.test(bookingTable.sql)) {
-      await db.batch([
-        db.prepare(`CREATE TABLE IF NOT EXISTS Bookings_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          service_id INTEGER NOT NULL,
-          slot_id INTEGER NOT NULL,
-          client_name TEXT NOT NULL,
-          client_email TEXT NOT NULL,
-          price_at_booking INTEGER NOT NULL,
-          square_payment_id TEXT UNIQUE,
-          status TEXT DEFAULT 'pending',
-          customer_phone TEXT DEFAULT '',
-          location TEXT DEFAULT '',
-          notes TEXT DEFAULT '',
-          attendees INTEGER DEFAULT 1,
-          deposit_paid INTEGER DEFAULT 0,
-          coupon_code TEXT DEFAULT '',
-          custom_price INTEGER,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          FOREIGN KEY (service_id) REFERENCES Services(id),
-          FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)
-        )`),
-        db.prepare(`INSERT INTO Bookings_new (
-          id, service_id, slot_id, client_name, client_email, price_at_booking,
-          square_payment_id, status, customer_phone, location, notes, attendees,
-          deposit_paid, coupon_code, custom_price, created_at
-        ) SELECT
-          id, service_id, slot_id, client_name, client_email, price_at_booking,
-          square_payment_id, status, COALESCE(customer_phone, ''), COALESCE(location, ''),
-          COALESCE(notes, ''), COALESCE(attendees, 1), COALESCE(deposit_paid, 0),
-          COALESCE(coupon_code, ''), custom_price, created_at
-        FROM Bookings`),
-        db.prepare('DROP TABLE Bookings'),
-        db.prepare('ALTER TABLE Bookings_new RENAME TO Bookings'),
-        db.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_slot ON Bookings(slot_id)'),
-        db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot ON Bookings(slot_id) WHERE status != 'cancelled'"),
-        db.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_service ON Bookings(service_id)'),
-        db.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_created ON Bookings(created_at DESC)')
-      ])
-    } else {
-      await db.prepare(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot ON Bookings(slot_id) WHERE status != 'cancelled'"
-      ).run().catch(() => {})
+    // Bookings rebuild (one path): older tables carry an inline `slot_id ... UNIQUE` (BUG-01) and/or
+    // `service_id INTEGER NOT NULL` (blocks "No package" bookings). A failed or skipped rebuild is
+    // logged and never stops the Booking_Payments step below.
+    try {
+      await rebuildBookingsTableIfNeeded(db)
+    } catch (err) {
+      console.warn('Bookings table rebuild failed; keeping the existing table:', err)
     }
 
-    schemaInitialized = true
+    // Outside the rebuild batch: duplicate active slots must not abort the migration
+    await db.prepare(BOOKINGS_ACTIVE_SLOT_INDEX_SQL).run().catch((err: unknown) => {
+      console.warn('Could not create idx_bookings_active_slot (duplicate active bookings on one slot?):', err)
+    })
+
+    // Booking_Payments: no REFERENCES clause on purpose (the link to Bookings is enforced in code and
+    // DELETE /bookings/:id removes payments first), so payment rows can never block a Bookings rebuild
+    let paymentsTableReady = false
+    try {
+      await db.prepare(BOOKING_PAYMENTS_TABLE_SQL).run()
+      await db.prepare(BOOKING_PAYMENTS_INDEX_SQL).run()
+      paymentsTableReady = true
+    } catch (err) {
+      console.error('Could not create Booking_Payments:', err)
+    }
+
+    // Billing tables (charges, invoices) and the Booking_Payments.square_invoice_id column + indexes
+    let billingReady = paymentsTableReady
+    if (paymentsTableReady) {
+      for (const step of BILLING_SCHEMA_STEPS) {
+        try {
+          await db.prepare(step.sql).run()
+        } catch (err) {
+          if (!step.ignoreError) {
+            console.error('Could not create billing schema object:', err)
+            billingReady = false
+          }
+        }
+      }
+      if (billingReady) {
+        try {
+          const cols = await db.prepare('PRAGMA table_info(Booking_Payments)').all<{ name: string }>()
+          if (!(cols.results || []).some(col => String(col.name) === 'square_invoice_id')) {
+            console.error('Booking_Payments.square_invoice_id is missing after migration')
+            billingReady = false
+          }
+        } catch (err) {
+          console.error('Could not read Booking_Payments columns:', err)
+          billingReady = false
+        }
+      }
+    }
+
+    // A skipped Bookings rebuild is logged above and not retried on every request; only a missing
+    // Booking_Payments table or billing schema object makes the next request try again
+    if (paymentsTableReady && billingReady) schemaInitialized = true
   } catch (err) {
     console.error('Schema initialization warning:', err)
   }
+}
+
+const BOOKINGS_ACTIVE_SLOT_INDEX_SQL =
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot ON Bookings(slot_id) WHERE status != 'cancelled'"
+
+// The exact Bookings columns the rebuild copies. IMPORTANT: any future Bookings column must be added
+// here AND to the CREATE/INSERT...SELECT below, otherwise the rebuild is skipped (unknown column).
+const BOOKINGS_REBUILD_COLUMNS = [
+  'id', 'service_id', 'slot_id', 'client_name', 'client_email', 'price_at_booking',
+  'square_payment_id', 'status', 'customer_phone', 'location', 'notes', 'attendees',
+  'deposit_paid', 'coupon_code', 'custom_price', 'deposit_percent', 'created_at'
+]
+
+const BOOKINGS_SLOT_UNIQUE_RE = /slot_id\s+INTEGER\s+NOT\s+NULL\s+UNIQUE/i
+const BOOKINGS_SERVICE_NOT_NULL_RE = /service_id\s+INTEGER\s+NOT\s+NULL/i
+
+async function readBookingsTableSql(db: D1Database): Promise<string> {
+  const row = await db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'Bookings'"
+  ).first<{ sql: string }>()
+  return row?.sql || ''
+}
+
+/** True once Bookings.service_id accepts NULL ("No package" bookings). */
+export async function bookingsServiceIdNullable(db: D1Database): Promise<boolean> {
+  const sql = await readBookingsTableSql(db)
+  return Boolean(sql) && !BOOKINGS_SERVICE_NOT_NULL_RE.test(sql)
+}
+
+async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
+  const tableSql = await readBookingsTableSql(db)
+  if (!tableSql) return
+  if (!BOOKINGS_SLOT_UNIQUE_RE.test(tableSql) && !BOOKINGS_SERVICE_NOT_NULL_RE.test(tableSql)) return
+
+  // Pre-check 1: the table must have exactly the columns the rebuild knows how to copy
+  const info = await db.prepare('PRAGMA table_info(Bookings)').all<{ name: string }>()
+  const actual = (info.results || []).map(col => String(col.name))
+  const unknown = actual.filter(name => !BOOKINGS_REBUILD_COLUMNS.includes(name))
+  const missing = BOOKINGS_REBUILD_COLUMNS.filter(name => !actual.includes(name))
+  if (unknown.length > 0 || missing.length > 0) {
+    console.warn('Skipping Bookings rebuild: column list differs from the rebuild list.', { unknown, missing })
+    return
+  }
+
+  // Pre-check 2: an orphaned slot_id can't be nulled (slot_id is NOT NULL), so skip and log.
+  // Orphaned service_id values are copied as NULL by the INSERT...SELECT below.
+  const fkRows = await db.prepare('PRAGMA foreign_key_check(Bookings)').all<{ parent: string; rowid: number }>()
+  const orphanedSlots = (fkRows.results || []).filter(row => String(row.parent) === 'Schedule_Slots')
+  if (orphanedSlots.length > 0) {
+    console.warn('Skipping Bookings rebuild: bookings point at missing schedule slots.', {
+      bookingRowIds: orphanedSlots.map(row => row.rowid)
+    })
+    return
+  }
+
+  await db.batch([
+    db.prepare('PRAGMA defer_foreign_keys = true'),
+    db.prepare('DROP TABLE IF EXISTS Bookings_new'),
+    db.prepare(`CREATE TABLE Bookings_new (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      service_id INTEGER,
+      slot_id INTEGER NOT NULL,
+      client_name TEXT NOT NULL,
+      client_email TEXT NOT NULL,
+      price_at_booking INTEGER NOT NULL,
+      square_payment_id TEXT UNIQUE,
+      status TEXT DEFAULT 'pending',
+      customer_phone TEXT DEFAULT '',
+      location TEXT DEFAULT '',
+      notes TEXT DEFAULT '',
+      attendees INTEGER DEFAULT 1,
+      deposit_paid INTEGER DEFAULT 0,
+      coupon_code TEXT DEFAULT '',
+      custom_price INTEGER,
+      deposit_percent INTEGER,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (service_id) REFERENCES Services(id),
+      FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)
+    )`),
+    db.prepare(`INSERT INTO Bookings_new (
+      id, service_id, slot_id, client_name, client_email, price_at_booking,
+      square_payment_id, status, customer_phone, location, notes, attendees,
+      deposit_paid, coupon_code, custom_price, deposit_percent, created_at
+    ) SELECT
+      id,
+      CASE WHEN EXISTS (SELECT 1 FROM Services WHERE id = Bookings.service_id) THEN service_id END,
+      slot_id, client_name, client_email, price_at_booking,
+      square_payment_id, status, COALESCE(customer_phone, ''), COALESCE(location, ''),
+      COALESCE(notes, ''), COALESCE(attendees, 1), COALESCE(deposit_paid, 0),
+      COALESCE(coupon_code, ''), custom_price, deposit_percent, created_at
+    FROM Bookings`),
+    db.prepare('DROP TABLE Bookings'),
+    db.prepare('ALTER TABLE Bookings_new RENAME TO Bookings'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_slot ON Bookings(slot_id)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_service ON Bookings(service_id)'),
+    db.prepare('CREATE INDEX IF NOT EXISTS idx_bookings_created ON Bookings(created_at DESC)')
+  ])
 }
 
 // ── Bounded Rate Limiter for Admin Login ─────────────────────────
@@ -144,6 +272,232 @@ function recordFailedLoginAttempt(ip: string): void {
     entry.attempts++
   }
 }
+
+// ── Admin_Settings helpers (account keys) ────────────────────────
+async function readSetting(db: D1Database | undefined, key: string): Promise<string | null> {
+  if (!db) return null
+  const row = await db.prepare(
+    'SELECT setting_value FROM Admin_Settings WHERE setting_key = ?'
+  ).bind(key).first<{ setting_value: string }>()
+  return row ? row.setting_value : null
+}
+
+async function writeSetting(db: D1Database, key: string, value: string): Promise<void> {
+  await db.prepare(
+    'INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value'
+  ).bind(key, value).run()
+}
+
+async function deleteSetting(db: D1Database, key: string): Promise<void> {
+  await db.prepare('DELETE FROM Admin_Settings WHERE setting_key = ?').bind(key).run()
+}
+
+/** The PBKDF2 hash stored in D1, else the ADMIN_SECRET (legacy plain secret). */
+async function readStoredPasswordSource(env: Bindings): Promise<string> {
+  let source = env.ADMIN_SECRET || ''
+  try {
+    const stored = await readSetting(env.DB, 'admin_password_hash')
+    if (stored && stored.startsWith('pbkdf2_sha256$')) source = stored
+  } catch {}
+  return source
+}
+
+const RECOVERY_EMAIL_KEY = 'recovery_email'
+const PASSWORD_RESET_KEY = 'password_reset'
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000
+const PASSWORD_MIN = 8
+const PASSWORD_MAX = 128
+// Same rule as the admin UI (Settings, Recovery email)
+const RECOVERY_EMAIL_REGEX = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
+const RECOVERY_EMAIL_MAX = 254
+const FORGOT_PASSWORD_MESSAGE = 'If that address is the recovery email, a reset link has been sent.'
+const INVALID_RESET_TOKEN_MESSAGE = 'This reset link is invalid or has expired. Request a new one.'
+
+async function readRecoveryEmail(db: D1Database | undefined): Promise<string> {
+  try {
+    return (await readSetting(db, RECOVERY_EMAIL_KEY)) || ''
+  } catch {
+    return ''
+  }
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+function randomTokenHex(bytes = 32): string {
+  const buf = new Uint8Array(bytes)
+  crypto.getRandomValues(buf)
+  return [...buf].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+function noStore(c: Context): void {
+  c.header('Cache-Control', 'no-store')
+  c.header('Pragma', 'no-cache')
+}
+
+function tooManyRequests(c: Context, message: string) {
+  c.header('Retry-After', '60')
+  return c.json({ error: { code: 'TOO_MANY_REQUESTS', message, details: [] } }, 429)
+}
+
+function forbiddenPayloadResponse(c: Context) {
+  return c.json({
+    error: {
+      code: 'FORBIDDEN_PAYLOAD',
+      message: 'Request contains fields that are not accepted.',
+      details: []
+    }
+  }, 400)
+}
+
+function passwordLengthError(c: Context, field: string, value: string) {
+  if (value.length >= PASSWORD_MIN && value.length <= PASSWORD_MAX) return null
+  const tooShort = value.length < PASSWORD_MIN
+  const message = tooShort
+    ? `New password must be at least ${PASSWORD_MIN} characters long.`
+    : `New password must be at most ${PASSWORD_MAX} characters.`
+  return c.json({
+    error: {
+      code: 'VALIDATION_FAILED',
+      message,
+      details: [{ field, message, code: tooShort ? 'TOO_SHORT' : 'TOO_LONG' }]
+    }
+  }, 400)
+}
+
+// ── Public password reset (registered before adminAuth, like /login) ──
+
+// GET: whether "Forgot password?" can work (email sending configured and a recovery email saved)
+adminRouter.get('/password-reset/available', async (c) => {
+  noStore(c)
+  try {
+    if (!isEmailConfigured(c.env)) return c.json({ available: false })
+    if (c.env.DB) await ensureSchemaReady(c.env.DB)
+    const recovery = await readRecoveryEmail(c.env.DB)
+    return c.json({ available: recovery !== '' })
+  } catch {
+    return c.json({ available: false })
+  }
+})
+
+// POST: request a reset link. Always the same answer, so it never reveals the recovery address.
+adminRouter.post('/forgot-password', async (c) => {
+  noStore(c)
+  const clientIp = getTrustedClientIp(c)
+  if (isLoginRateLimited(clientIp)) {
+    return tooManyRequests(c, 'Too many requests. Please wait 1 minute before trying again.')
+  }
+  recordFailedLoginAttempt(clientIp) // every request counts
+
+  const generic = { success: true, status: 'success', message: FORGOT_PASSWORD_MESSAGE }
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) return forbiddenPayloadResponse(c)
+    const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : ''
+    if (!email || email.length > RECOVERY_EMAIL_MAX || !c.env.DB || !isEmailConfigured(c.env)) {
+      return c.json(generic)
+    }
+
+    await ensureSchemaReady(c.env.DB)
+    const recovery = await readRecoveryEmail(c.env.DB)
+    if (!recovery || !timingSafeEqual(email, recovery)) return c.json(generic)
+
+    const token = randomTokenHex(32)
+    const record = {
+      token_hash: await sha256Hex(token),
+      expires_at: Date.now() + RESET_TOKEN_TTL_MS,
+      used: false
+    }
+    await writeSetting(c.env.DB, PASSWORD_RESET_KEY, JSON.stringify(record)) // replaces any earlier link
+
+    // Fragment, not query: the token is never sent to a server or written to request logs
+    const link = `${new URL(c.req.url).origin}/admin/#reset=${token}`
+    const result = await sendEmail(c.env, {
+      to: recovery,
+      subject: 'Reset your R59 Media admin password',
+      text: [
+        'Someone asked to reset the password for the R59 Media admin.',
+        '',
+        'Open this link to choose a new password:',
+        link,
+        '',
+        'The link expires in 30 minutes and works once.',
+        "If you didn't ask for this, ignore this email. Your password stays the same."
+      ].join('\n')
+    })
+    if (!result.sent) console.warn('Password reset email not sent:', result.reason || 'unknown')
+    return c.json(generic)
+  } catch {
+    return c.json(generic)
+  }
+})
+
+// POST: set a new password with a reset token (single use, 30 minutes)
+adminRouter.post('/reset-password', async (c) => {
+  noStore(c)
+  const clientIp = getTrustedClientIp(c)
+  if (isLoginRateLimited(clientIp)) {
+    return tooManyRequests(c, 'Too many attempts. Please wait 1 minute before trying again.')
+  }
+
+  const invalidToken = () => c.json({
+    error: {
+      code: 'INVALID_RESET_TOKEN',
+      message: INVALID_RESET_TOKEN_MESSAGE,
+      details: [{ field: 'token', message: INVALID_RESET_TOKEN_MESSAGE, code: 'INVALID_RESET_TOKEN' }]
+    }
+  }, 400)
+
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) return forbiddenPayloadResponse(c)
+    const token = typeof body?.token === 'string' ? body.token : ''
+    const newPassword = typeof body?.newPassword === 'string' ? body.newPassword : ''
+
+    // Checked before any hashing so an oversized value never reaches PBKDF2 (never trimmed)
+    const lengthError = passwordLengthError(c, 'newPassword', newPassword)
+    if (lengthError) return lengthError
+
+    if (!c.env.DB || !/^[0-9a-f]{64}$/.test(token)) {
+      recordFailedLoginAttempt(clientIp)
+      return invalidToken()
+    }
+
+    await ensureSchemaReady(c.env.DB)
+    const raw = await readSetting(c.env.DB, PASSWORD_RESET_KEY)
+    let record: { token_hash?: unknown; expires_at?: unknown; used?: unknown } | null = null
+    try { record = raw ? JSON.parse(raw) : null } catch { record = null }
+
+    const tokenHash = await sha256Hex(token)
+    const storedHash = record && typeof record.token_hash === 'string' ? record.token_hash : ''
+    const hashMatches = timingSafeEqual(tokenHash, storedHash)
+    const expiresAt = record && typeof record.expires_at === 'number' ? record.expires_at : 0
+    const usable = Boolean(record) && record!.used !== true && Date.now() <= expiresAt
+    if (!hashMatches || !usable) {
+      recordFailedLoginAttempt(clientIp)
+      if (record && Date.now() > expiresAt) await deleteSetting(c.env.DB, PASSWORD_RESET_KEY).catch(() => {})
+      return invalidToken()
+    }
+
+    // Single use: the reset record goes away in the same batch as the password write
+    const saltedHash = await hashPassword(newPassword)
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        'INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value'
+      ).bind('admin_password_hash', saltedHash),
+      c.env.DB.prepare('DELETE FROM Admin_Settings WHERE setting_key = ?').bind(PASSWORD_RESET_KEY)
+    ])
+    loginAttempts.delete(clientIp)
+
+    return c.json({ success: true, status: 'success', message: 'Password updated.' })
+  } catch {
+    return c.json({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not reset the password.', details: [] }
+    }, 500)
+  }
+})
 
 // Public login endpoint for admin credentials
 adminRouter.post('/login', async (c) => {
@@ -353,18 +707,18 @@ adminRouter.put('/password', async (c) => {
       }, 400)
     }
 
-    const expectedSecret = c.env.ADMIN_SECRET || ''
-    let storedPasswordSource = expectedSecret
-    if (c.env.DB) {
-      try {
-        const row = await c.env.DB.prepare(
-          "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'admin_password_hash'"
-        ).first<{ setting_value: string }>()
-        if (row?.setting_value && row.setting_value.startsWith('pbkdf2_sha256$')) {
-          storedPasswordSource = row.setting_value
+    // Checked before any hashing so an oversized value never reaches PBKDF2
+    if (newPassword.length > 128) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'New password must be at most 128 characters.',
+          details: [{ field: 'newPassword', message: 'New password must be at most 128 characters.', code: 'TOO_LONG' }]
         }
-      } catch {}
+      }, 400)
     }
+
+    const storedPasswordSource = await readStoredPasswordSource(c.env)
 
     const { matches: currentMatches } = await verifyPassword(currentPassword, storedPasswordSource)
     if (!currentMatches) {
@@ -401,6 +755,102 @@ adminRouter.put('/password', async (c) => {
         details: []
       }
     }, 500)
+  }
+})
+
+// GET: account settings shown in the Settings dialog
+adminRouter.get('/account', async (c) => {
+  noStore(c)
+  try {
+    const recovery = await readRecoveryEmail(c.env.DB)
+    return c.json({ recovery_email: recovery, email_configured: isEmailConfigured(c.env) })
+  } catch {
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not load account settings.', details: [] } }, 500)
+  }
+})
+
+// PUT: set or remove ('' ) the recovery email; needs the current password, like PUT /password
+adminRouter.put('/recovery-email', async (c) => {
+  noStore(c)
+  try {
+    const clientIp = getTrustedClientIp(c)
+    if (isLoginRateLimited(clientIp)) {
+      return tooManyRequests(c, 'Too many attempts. Please wait 1 minute before trying again.')
+    }
+
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) return forbiddenPayloadResponse(c)
+    const currentPassword = typeof body?.currentPassword === 'string' ? body.currentPassword : ''
+    const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : null
+
+    if (email === null) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Enter an email address.',
+          details: [{ field: 'email', message: 'Enter an email address.', code: 'REQUIRED_FIELD' }]
+        }
+      }, 400)
+    }
+    if (email !== '' && (email.length > RECOVERY_EMAIL_MAX || !RECOVERY_EMAIL_REGEX.test(email))) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Enter an email like name@example.com.',
+          details: [{ field: 'email', message: 'Enter an email like name@example.com.', code: 'INVALID_FORMAT' }]
+        }
+      }, 400)
+    }
+    if (!currentPassword) {
+      recordFailedLoginAttempt(clientIp)
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Current password is required.',
+          details: [{ field: 'currentPassword', message: 'Current password is required.', code: 'REQUIRED_FIELD' }]
+        }
+      }, 400)
+    }
+    // Checked before hashing so an oversized value never reaches PBKDF2
+    if (currentPassword.length > PASSWORD_MAX) {
+      recordFailedLoginAttempt(clientIp)
+      return c.json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Incorrect current password.',
+          details: [{ field: 'currentPassword', message: 'Current password does not match.', code: 'INVALID_CREDENTIALS' }]
+        }
+      }, 401)
+    }
+
+    const { matches } = await verifyPassword(currentPassword, await readStoredPasswordSource(c.env))
+    if (!matches) {
+      recordFailedLoginAttempt(clientIp)
+      return c.json({
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Incorrect current password.',
+          details: [{ field: 'currentPassword', message: 'Current password does not match.', code: 'INVALID_CREDENTIALS' }]
+        }
+      }, 401)
+    }
+    loginAttempts.delete(clientIp)
+
+    if (email === '') {
+      // Removing the address also invalidates any reset link sent to it
+      await c.env.DB.batch([
+        c.env.DB.prepare('DELETE FROM Admin_Settings WHERE setting_key = ?').bind(RECOVERY_EMAIL_KEY),
+        c.env.DB.prepare('DELETE FROM Admin_Settings WHERE setting_key = ?').bind(PASSWORD_RESET_KEY)
+      ])
+    } else {
+      const previous = await readRecoveryEmail(c.env.DB)
+      await writeSetting(c.env.DB, RECOVERY_EMAIL_KEY, email)
+      if (previous && previous !== email) await deleteSetting(c.env.DB, PASSWORD_RESET_KEY)
+    }
+
+    return c.json({ success: true, status: 'success', recovery_email: email })
+  } catch {
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not save the recovery email.', details: [] } }, 500)
   }
 })
 
@@ -653,6 +1103,94 @@ adminRouter.delete('/blocked-dates/:id', async (c) => {
 
 // ── Bookings ─────────────────────────────────────────────────────
 
+const NO_PACKAGE_LABEL = 'No package'
+const BOOKING_STATUSES = ['pending', 'confirmed', 'cancelled']
+const INVALID_STATUS_RESPONSE = {
+  error: {
+    code: 'VALIDATION_FAILED',
+    message: 'Status must be pending, confirmed or cancelled.',
+    details: [{ field: 'status', message: 'Status must be pending, confirmed or cancelled.', code: 'INVALID_VALUE' }]
+  }
+}
+
+/** Lower-cased booking status, or null when it is not pending, confirmed or cancelled. */
+function parseBookingStatus(raw: unknown): string | null {
+  const value = String(raw ?? '').trim().toLowerCase()
+  return BOOKING_STATUSES.includes(value) ? value : null
+}
+const PAYMENT_METHODS = ['Cash', 'Card', 'Square', 'Zelle', 'Venmo', 'Cash App', 'Other']
+const MAX_PAYMENT_CENTS = 100_000_000
+const PAYMENT_NOTE_MAX = 500
+const INVOICE_OPEN_MESSAGE = 'An invoice is out for this booking. Cancel it to change amounts.'
+const INVOICE_OPEN_RESPONSE = { error: { code: 'INVOICE_OPEN', message: INVOICE_OPEN_MESSAGE, details: [] } }
+const BOOKING_NOT_FOUND_RESPONSE = { error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }
+const INVALID_ID_RESPONSE = { error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }
+
+function isPresentNumber(value: unknown): boolean {
+  return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+}
+
+/** BillingError -> its own code and status; anything else -> the usual 500 with `fallbackMessage`. */
+function billingErrorResponse(c: Context, err: unknown, fallbackMessage = 'Something went wrong.') {
+  if (err instanceof BillingError) {
+    return c.json(
+      { error: { code: err.code, message: err.message, details: err.details } },
+      err.httpStatus as 400 | 404 | 409 | 500 | 502 | 503
+    )
+  }
+  return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: fallbackMessage, details: [] } }, 500)
+}
+
+/** After a guarded write changed nothing: 404 when the booking is gone, else null (the caller picks the 409). */
+async function bookingStatusFor(db: D1Database, bookingId: string | number): Promise<string | null> {
+  const row = await db.prepare('SELECT status FROM Bookings WHERE id = ?').bind(bookingId).first<{ status: string | null }>()
+  return row ? String(row.status || '').toLowerCase() : null
+}
+
+/** Real calendar date check for YYYY-MM-DD (rejects 2026-02-30 etc.). */
+function isRealCalendarDate(value: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!m) return false
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
+  const dt = new Date(Date.UTC(y, mo - 1, d))
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d
+}
+
+type NormalizedPackage = { kind: 'none' } | { kind: 'id'; id: number } | { kind: 'invalid' }
+
+/** packageId/service_id: empty, null, 'none' or 'custom' = no package; otherwise a positive integer id. */
+function normalizePackageInput(raw: unknown): NormalizedPackage {
+  if (raw === undefined || raw === null) return { kind: 'none' }
+  const text = String(raw).trim()
+  if (text === '' || text.toLowerCase() === 'none' || text.toLowerCase() === 'custom') return { kind: 'none' }
+  if (!/^[1-9]\d{0,9}$/.test(text)) return { kind: 'invalid' }
+  return { kind: 'id', id: Number(text) }
+}
+
+const SCHEMA_PENDING_RESPONSE = {
+  error: {
+    code: 'SCHEMA_PENDING',
+    message: "The database update for bookings without a package hasn't run yet. Try again in a minute.",
+    details: []
+  }
+}
+
+const PACKAGE_MISSING_RESPONSE = {
+  error: {
+    code: 'VALIDATION_FAILED',
+    message: 'The selected package no longer exists.',
+    details: [{ field: 'packageId', message: 'The selected package no longer exists.', code: 'INVALID_VALUE' }]
+  }
+}
+
+const FORBIDDEN_PAYMENT_RESPONSE = {
+  error: {
+    code: 'VALIDATION_FAILED',
+    message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
+    details: []
+  }
+}
+
 // GET: View all bookings
 adminRouter.get('/bookings', async (c) => {
   try {
@@ -663,22 +1201,32 @@ adminRouter.get('/bookings', async (c) => {
       `SELECT b.id, b.client_name, b.client_email, b.price_at_booking, b.square_payment_id, b.status, b.created_at,
               b.service_id, b.slot_id,
               b.customer_phone, b.location, b.notes, b.attendees, b.deposit_paid, b.coupon_code, b.custom_price,
-              s.name as service_name, s.price as service_price, sl.date, sl.start_time, sl.end_time
+              b.deposit_percent,
+              s.name as service_name, s.price as service_price, sl.date, sl.start_time, sl.end_time,
+              COALESCE(p.payments_total, 0) AS payments_total, COALESCE(p.payments_count, 0) AS payments_count,
+              COALESCE(ch.charges_total, 0) AS charges_total
        FROM Bookings b
        LEFT JOIN Services s ON b.service_id = s.id
        LEFT JOIN Schedule_Slots sl ON b.slot_id = sl.id
+       LEFT JOIN (
+         SELECT booking_id, SUM(amount) AS payments_total, COUNT(*) AS payments_count
+         FROM Booking_Payments
+         GROUP BY booking_id
+       ) p ON p.booking_id = b.id
+       LEFT JOIN (
+         SELECT booking_id, SUM(amount_cents) AS charges_total
+         FROM Booking_Charges
+         GROUP BY booking_id
+       ) ch ON ch.booking_id = b.id
        ORDER BY b.created_at DESC
        LIMIT ? OFFSET ?`
     ).bind(limit, offset).all()
 
     const bookings = (results || []).map((b: any) => {
-      const priceCents =
-        b.custom_price !== null && b.custom_price !== undefined
-          ? Number(b.custom_price)
-          : b.price_at_booking !== null && b.price_at_booking !== undefined
-            ? Number(b.price_at_booking)
-            : Number(b.service_price) || 0
+      const priceCents = bookingTotalCents(b)
+      const chargesCents = Number(b.charges_total) || 0
       const depositCents = Number(b.deposit_paid) || 0
+      const hasPackage = b.service_id !== null && b.service_id !== undefined && b.service_name !== null && b.service_name !== undefined
       const totalPriceDollars = priceCents ? priceCents / 100 : 0
       const depositDollars = depositCents ? depositCents / 100 : 0
 
@@ -697,8 +1245,14 @@ adminRouter.get('/bookings', async (c) => {
         coupon: b.coupon_code || '',
         totalPrice: totalPriceDollars,
         price: totalPriceDollars,
-        package: b.service_name || 'Photoshoot',
-        packageId: b.service_id
+        package: hasPackage ? b.service_name : NO_PACKAGE_LABEL,
+        packageId: b.service_id ?? null,
+        payments_total: Number(b.payments_total) || 0,
+        payments_count: Number(b.payments_count) || 0,
+        base_cents: priceCents,
+        charges_cents: chargesCents,
+        deposit_percent: b.deposit_percent ?? null,
+        total_cents: priceCents + chargesCents
       }
     })
 
@@ -737,7 +1291,7 @@ adminRouter.post('/bookings', async (c) => {
       typeof body.coupon === 'object' && body.coupon !== null
         ? String(body.coupon.code || '').trim()
         : String(body.coupon_code || body.coupon || '').trim()
-    const custom_price =
+    let custom_price: number | null =
       body.custom_price !== undefined && body.custom_price !== null
         ? Math.max(0, Math.round(Number(body.custom_price) || 0))
         : body.totalPrice !== undefined
@@ -746,9 +1300,14 @@ adminRouter.post('/bookings', async (c) => {
             ? Math.max(0, Math.round((Number(body.price) || 0) * 100))
             : null
 
-    const service_id = body.service_id ?? body.packageId
+    const packageInput = normalizePackageInput(body.service_id ?? body.packageId)
     const slot_id = body.slot_id ?? body.slotId
-    const status = String(body.status || 'confirmed').toLowerCase()
+    const status = body.status === undefined || body.status === null || body.status === ''
+      ? 'confirmed'
+      : parseBookingStatus(body.status)
+    if (status === null) {
+      return c.json(INVALID_STATUS_RESPONSE, 400)
+    }
     const date = body.date
     const start_time = body.start_time || body.startTime || body.time || '09:00'
     const end_time = body.end_time || body.endTime || '10:00'
@@ -757,26 +1316,44 @@ adminRouter.post('/bookings', async (c) => {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Client name and email are required.', details: [] } }, 400)
     }
 
-    // A booking must point at a real service (Bookings.service_id is a foreign key), so resolve
-    // it before touching any slot
-    let targetServiceId = service_id
+    // Resolve the package before touching any slot. No package -> service_id NULL and a custom
+    // price is required; a numeric id must point at a real service (foreign key).
+    let targetServiceId: number | null = null
     let finalPrice =
       body.price_at_booking !== undefined && body.price_at_booking !== null
         ? Math.max(0, Math.round(Number(body.price_at_booking) || 0))
         : custom_price
 
-    if (!targetServiceId || targetServiceId === 'none' || targetServiceId === 'custom') {
-      const defaultService = await c.env.DB.prepare('SELECT id, price FROM Services ORDER BY is_active DESC, id ASC LIMIT 1').first<any>()
-      if (!defaultService) {
-        return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Create a package before adding a booking.', details: [] } }, 400)
+    if (packageInput.kind === 'none') {
+      // The custom price must be given explicitly (cents in custom_price, or dollars in totalPrice/price) and be >= 0
+      const rawDollars = body.totalPrice !== undefined ? body.totalPrice : body.price
+      const noPackageCents = isPresentNumber(body.custom_price)
+        ? Math.round(Number(body.custom_price))
+        : isPresentNumber(rawDollars)
+          ? Math.round(Number(rawDollars) * 100)
+          : null
+      if (noPackageCents === null || noPackageCents < 0) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Enter a custom price for a booking without a package.',
+            details: [{ field: 'custom_price', message: 'Enter a custom price for a booking without a package.', code: 'REQUIRED_FIELD' }]
+          }
+        }, 400)
       }
-      targetServiceId = defaultService.id
-      if (finalPrice == null) finalPrice = defaultService.price
+      if (!(await bookingsServiceIdNullable(c.env.DB))) {
+        return c.json(SCHEMA_PENDING_RESPONSE, 503)
+      }
+      custom_price = noPackageCents
+      if (body.price_at_booking === undefined || body.price_at_booking === null) finalPrice = noPackageCents
     } else {
-      const svc = await c.env.DB.prepare('SELECT price FROM Services WHERE id = ?').bind(targetServiceId).first<any>()
+      const svc = packageInput.kind === 'id'
+        ? await c.env.DB.prepare('SELECT id, price FROM Services WHERE id = ?').bind(packageInput.id).first<any>()
+        : null
       if (!svc) {
-        return c.json({ error: { code: 'VALIDATION_FAILED', message: 'The selected package no longer exists.', details: [] } }, 400)
+        return c.json(PACKAGE_MISSING_RESPONSE, 400)
       }
+      targetServiceId = Number(svc.id)
       if (finalPrice == null) finalPrice = svc.price
     }
 
@@ -888,7 +1465,10 @@ adminRouter.put('/bookings/:id', async (c) => {
       }, 400)
     }
 
-    const existing = await c.env.DB.prepare('SELECT * FROM Bookings WHERE id = ?').bind(id).first<any>()
+    // service_price feeds bookingTotalCents for the invoice lock below
+    const existing = await c.env.DB.prepare(
+      'SELECT b.*, s.price AS service_price FROM Bookings b LEFT JOIN Services s ON s.id = b.service_id WHERE b.id = ?'
+    ).bind(id).first<any>()
     if (!existing) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
     }
@@ -962,15 +1542,63 @@ adminRouter.put('/bookings/:id', async (c) => {
           ? custom_price
           : existing.price_at_booking
 
-    const rawServiceId = body.service_id ?? body.packageId
-    const service_id =
-      rawServiceId !== undefined && rawServiceId !== 'none' && rawServiceId !== 'custom'
-        ? Number(rawServiceId) || existing.service_id
-        : existing.service_id
+    // Package: only changed when service_id/packageId is sent. 'none' / null / '' -> no package (NULL);
+    // a numeric id must point at an existing service.
+    let service_id: number | null = existing.service_id ?? null
+    let service_price: unknown = existing.service_price
+    const packageSent = body.service_id !== undefined || body.packageId !== undefined
+    if (packageSent) {
+      const packageInput = normalizePackageInput(body.service_id !== undefined ? body.service_id : body.packageId)
+      if (packageInput.kind === 'none') {
+        if (existing.service_id !== null && existing.service_id !== undefined && !(await bookingsServiceIdNullable(c.env.DB))) {
+          return c.json(SCHEMA_PENDING_RESPONSE, 503)
+        }
+        service_id = null
+        service_price = null
+      } else {
+        const svc = packageInput.kind === 'id'
+          ? await c.env.DB.prepare('SELECT id, price FROM Services WHERE id = ?').bind(packageInput.id).first<{ id: number; price: unknown }>()
+          : null
+        if (!svc) {
+          return c.json(PACKAGE_MISSING_RESPONSE, 400)
+        }
+        service_id = Number(svc.id)
+        service_price = svc.price
+      }
+    }
 
-    const status = body.status !== undefined ? String(body.status).toLowerCase() : existing.status
+    const existingStatus = String(existing.status || '').toLowerCase()
+    let status: string = existing.status
+    if (body.status !== undefined) {
+      const requested = parseBookingStatus(body.status)
+      if (requested === null) {
+        return c.json(INVALID_STATUS_RESPONSE, 400)
+      }
+      status = requested
+    }
+    const statusLower = String(status || '').toLowerCase()
 
-    await c.env.DB.prepare(
+    // Cancelling withdraws the open invoice first; if Square refuses, nothing is changed
+    if (statusLower === 'cancelled' && existingStatus !== 'cancelled') {
+      await cancelOpenInvoice(c.env.DB, c.env, id)
+    }
+
+    // Invoice lock: only when the effective base, deposit_paid or service_id actually changes
+    // (resending the same price is not a change). The guard is inside the UPDATE, and the UPDATE
+    // runs before the slot writes, so a refused lock leaves nothing changed.
+    const beforeBase = bookingTotalCents(existing)
+    const afterBase = bookingTotalCents({ custom_price, price_at_booking, service_price })
+    const moneyChanged =
+      afterBase !== beforeBase ||
+      Number(deposit_paid) !== Number(existing.deposit_paid ?? 0) ||
+      String(service_id ?? '') !== String(existing.service_id ?? '')
+    // A cancel is guarded too, so a Send that claimed the booking after the withdraw above blocks it
+    const cancelling = statusLower === 'cancelled' && existingStatus !== 'cancelled'
+    const guarded = moneyChanged || cancelling
+    const lockSql = guarded ? ` AND NOT ${OPEN_INVOICE_EXISTS_SQL}` : ''
+    const lockBinds: unknown[] = guarded ? [id] : []
+
+    const update = await c.env.DB.prepare(
       `UPDATE Bookings
        SET client_name = ?,
            client_email = ?,
@@ -984,7 +1612,7 @@ adminRouter.put('/bookings/:id', async (c) => {
            price_at_booking = ?,
            service_id = ?,
            status = ?
-       WHERE id = ?`
+       WHERE id = ?${lockSql}`
     ).bind(
       client_name,
       client_email,
@@ -998,8 +1626,15 @@ adminRouter.put('/bookings/:id', async (c) => {
       price_at_booking,
       service_id,
       status,
-      id
+      id,
+      ...lockBinds
     ).run()
+    if (!update.meta.changes) {
+      if ((await bookingStatusFor(c.env.DB, id)) === null) {
+        return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
+      }
+      return c.json(INVOICE_OPEN_RESPONSE, 409)
+    }
 
     // Update associated Schedule_Slots row if date/startTime/endTime changed
     const newStartTime = body.start_time ?? body.startTime
@@ -1014,15 +1649,15 @@ adminRouter.put('/bookings/:id', async (c) => {
       ).bind(newDate || null, newStartTime || null, newEndTime || null, existing.slot_id).run()
     }
 
-    if (status === 'cancelled' && existing.slot_id) {
+    if (statusLower === 'cancelled' && existing.slot_id) {
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(existing.slot_id).run()
-    } else if (status !== 'cancelled' && existing.status === 'cancelled' && existing.slot_id) {
+    } else if (statusLower !== 'cancelled' && existingStatus === 'cancelled' && existing.slot_id) {
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ?').bind(existing.slot_id).run()
     }
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
-    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not update booking.', details: [] } }, 500)
+    return billingErrorResponse(c, e, 'Could not update booking.')
   }
 })
 
@@ -1039,7 +1674,16 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
     }
 
-    await c.env.DB.prepare("UPDATE Bookings SET status = 'cancelled' WHERE id = ?").bind(id).run()
+    // Withdraw any open invoice first; a BillingError leaves the booking unchanged
+    await cancelOpenInvoice(c.env.DB, c.env, id)
+
+    // Guarded like every lock: a Send that claimed the booking after the withdraw above blocks the cancel
+    const cancelled = await c.env.DB.prepare(
+      `UPDATE Bookings SET status = 'cancelled' WHERE id = ? AND NOT ${OPEN_INVOICE_EXISTS_SQL}`
+    ).bind(id, id).run()
+    if (!cancelled.meta?.changes) {
+      return c.json(INVOICE_OPEN_RESPONSE, 409)
+    }
 
     if (booking.slot_id) {
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(booking.slot_id).run()
@@ -1047,7 +1691,7 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
-    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not cancel booking.', details: [] } }, 500)
+    return billingErrorResponse(c, e, 'Could not cancel booking.')
   }
 })
 
@@ -1064,15 +1708,384 @@ adminRouter.delete('/bookings/:id', async (c) => {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
     }
 
-    await c.env.DB.prepare('DELETE FROM Bookings WHERE id = ?').bind(id).run()
+    // Withdraw any open invoice first; a BillingError leaves the booking unchanged
+    await cancelOpenInvoice(c.env.DB, c.env, id)
 
+    // One batch (one transaction). Every statement carries the open-invoice guard, so a Send that claimed
+    // the booking after the withdraw above makes the whole batch a no-op (no live Square invoice is ever
+    // orphaned). The invoice rows go last, so the guard still sees them while the other rows are removed.
+    const noOpenInvoice = `NOT ${OPEN_INVOICE_EXISTS_SQL}`
+    const statements: D1PreparedStatement[] = [
+      c.env.DB.prepare(`DELETE FROM Booking_Payments WHERE booking_id = ? AND ${noOpenInvoice}`).bind(id, id),
+      c.env.DB.prepare(`DELETE FROM Booking_Charges WHERE booking_id = ? AND ${noOpenInvoice}`).bind(id, id),
+      c.env.DB.prepare(`DELETE FROM Bookings WHERE id = ? AND ${noOpenInvoice}`).bind(id, id)
+    ]
     if (booking.slot_id) {
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(booking.slot_id).run()
+      statements.push(c.env.DB.prepare(
+        `UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ? AND ${noOpenInvoice}`
+      ).bind(booking.slot_id, id))
+    }
+    statements.push(c.env.DB.prepare(`DELETE FROM Booking_Invoices WHERE booking_id = ? AND ${noOpenInvoice}`).bind(id, id))
+    const results = await c.env.DB.batch(statements)
+    if (!results[2]?.meta?.changes) {
+      return c.json(INVOICE_OPEN_RESPONSE, 409)
     }
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
-    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete booking.', details: [] } }, 500)
+    return billingErrorResponse(c, e, 'Could not delete booking.')
+  }
+})
+
+// ── Booking Payments (money owed after the down payment) ─────────
+// Paths have three/four segments (/bookings/:id/payments[/:paymentId]), so they never collide with
+// the two-segment /bookings/:id routes or /bookings/:id/cancel.
+
+function paymentValidationError(field: string, message: string, code: string) {
+  return {
+    error: {
+      code: 'VALIDATION_FAILED',
+      message,
+      details: [{ field, message, code }]
+    }
+  }
+}
+
+// GET: A booking's recorded payments plus its totals
+adminRouter.get('/bookings/:id/payments', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
+
+    const loaded = await loadBookingTotals(c.env.DB, id)
+    if (!loaded) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
+    }
+
+    const { results } = await c.env.DB.prepare(PAYMENTS_SELECT_SQL).bind(id).all<any>()
+    const payments = (results || []).map(toPayment)
+
+    return c.json({ status: 'success', payments, totals: loaded.totals, data: { payments, totals: loaded.totals } })
+  } catch (e: any) {
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch payments.', details: [] } }, 500)
+  }
+})
+
+// POST: Record a payment on a (non-cancelled) booking
+adminRouter.post('/bookings/:id/payments', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
+    }
+    const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+
+    // amount: dollars as text or number, up to 7 whole digits and 2 decimals
+    const amountText = input.amount === undefined || input.amount === null ? '' : String(input.amount).trim()
+    if (!/^\d{1,7}(\.\d{1,2})?$/.test(amountText)) {
+      return c.json(paymentValidationError('amount', 'Enter an amount in dollars, like 150 or 19.99.', 'INVALID_FORMAT'), 400)
+    }
+    const amountCents = Math.round(Number(amountText) * 100)
+    if (!Number.isInteger(amountCents) || amountCents < 1 || amountCents > MAX_PAYMENT_CENTS) {
+      return c.json(paymentValidationError('amount', 'The amount must be between $0.01 and $1,000,000.00.', 'OUT_OF_RANGE'), 400)
+    }
+
+    const method = typeof input.method === 'string' ? input.method.trim() : ''
+    if (!PAYMENT_METHODS.includes(method)) {
+      return c.json(paymentValidationError('method', `Choose a payment method: ${PAYMENT_METHODS.join(', ')}.`, 'INVALID_VALUE'), 400)
+    }
+
+    const paidOn = typeof input.paid_on === 'string' ? input.paid_on.trim() : ''
+    if (!isRealCalendarDate(paidOn)) {
+      return c.json(paymentValidationError('paid_on', 'Enter a real date (YYYY-MM-DD).', 'INVALID_FORMAT'), 400)
+    }
+    const latestAllowed = addDaysISO(await studioTodayISO(c.env.DB), 1)
+    if (paidOn < '2000-01-01' || paidOn > latestAllowed) {
+      return c.json(paymentValidationError('paid_on', 'The payment date must be between 2000-01-01 and tomorrow.', 'OUT_OF_RANGE'), 400)
+    }
+
+    let note = ''
+    if (input.note !== undefined && input.note !== null) {
+      if (typeof input.note !== 'string') {
+        return c.json(paymentValidationError('note', 'The note must be text.', 'INVALID_VALUE'), 400)
+      }
+      note = input.note.trim()
+      if (note.length > PAYMENT_NOTE_MAX) {
+        return c.json(paymentValidationError('note', `The note must be at most ${PAYMENT_NOTE_MAX} characters.`, 'TOO_LONG'), 400)
+      }
+    }
+
+    // Atomic: the row is only written while the booking exists, isn't cancelled and has no open invoice
+    const insert = await c.env.DB.prepare(
+      `INSERT INTO Booking_Payments (booking_id, amount, method, paid_on, note)
+       SELECT ?, ?, ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM Bookings WHERE id = ? AND LOWER(COALESCE(status, '')) != 'cancelled')
+         AND NOT ${OPEN_INVOICE_EXISTS_SQL}`
+    ).bind(Number(id), amountCents, method, paidOn, note, id, id).run()
+
+    if (!insert.meta.changes) {
+      const bookingStatus = await bookingStatusFor(c.env.DB, id)
+      if (bookingStatus === null) {
+        return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
+      }
+      if (bookingStatus === 'cancelled') {
+        return c.json({
+          error: { code: 'BOOKING_CANCELLED', message: "Cancelled bookings can't take payments.", details: [] }
+        }, 409)
+      }
+      return c.json(INVOICE_OPEN_RESPONSE, 409)
+    }
+
+    // A manual payment has no Square invoice, so invoice_status is NULL (removable)
+    const row = await c.env.DB.prepare(
+      'SELECT *, NULL AS invoice_status FROM Booking_Payments WHERE id = ?'
+    ).bind(insert.meta.last_row_id).first<any>()
+    const payment = toPayment(row ?? {
+      id: insert.meta.last_row_id, booking_id: Number(id), amount: amountCents, method, paid_on: paidOn, note, created_at: null
+    })
+    const loaded = await loadBookingTotals(c.env.DB, id)
+    const totals = loaded ? loaded.totals : computeTotals({}, amountCents)
+
+    return c.json({ status: 'success', payment, totals, data: { payment, totals } }, 201)
+  } catch (e: any) {
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not record payment.', details: [] } }, 500)
+  }
+})
+
+// DELETE: Remove one recorded payment (allowed on cancelled bookings)
+adminRouter.delete('/bookings/:id/payments/:paymentId', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  try {
+    const id = c.req.param('id')
+    const paymentId = c.req.param('paymentId')
+    if (!isValidId(id) || !isValidId(paymentId)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
+    // A DELETE normally has no body; if one is sent it gets the same card-number guard as POST
+    const body = await c.req.json().catch(() => null)
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
+    }
+
+    // Atomic: refused while an invoice is open, or while the payment's Square invoice is still PAID
+    // (the next re-check would add it back)
+    const result = await c.env.DB.prepare(
+      `DELETE FROM Booking_Payments
+       WHERE id = ? AND booking_id = ?
+         AND NOT ${OPEN_INVOICE_EXISTS_SQL}
+         AND NOT EXISTS (SELECT 1 FROM Booking_Invoices i
+                         WHERE i.square_invoice_id = Booking_Payments.square_invoice_id AND i.status = 'PAID')`
+    ).bind(paymentId, id, id).run()
+    if (!result.meta.changes) {
+      const payment = await c.env.DB.prepare(
+        `SELECT i.status AS invoice_status
+         FROM Booking_Payments p LEFT JOIN Booking_Invoices i ON i.square_invoice_id = p.square_invoice_id
+         WHERE p.id = ? AND p.booking_id = ?`
+      ).bind(paymentId, id).first<{ invoice_status: string | null }>()
+      if (!payment) {
+        return c.json({ error: { code: 'NOT_FOUND', message: 'Payment not found for this booking.', details: [] } }, 404)
+      }
+      if (payment.invoice_status === 'PAID') {
+        return c.json({
+          error: {
+            code: 'SQUARE_INVOICE_PAYMENT',
+            message: 'This payment came from a paid Square invoice. Refund it in Square first.',
+            details: []
+          }
+        }, 409)
+      }
+      return c.json(INVOICE_OPEN_RESPONSE, 409)
+    }
+
+    const loaded = await loadBookingTotals(c.env.DB, id)
+    if (!loaded) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
+    }
+
+    return c.json({ status: 'success', totals: loaded.totals, data: { totals: loaded.totals } })
+  } catch (e: any) {
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not remove payment.', details: [] } }, 500)
+  }
+})
+
+// ── Booking billing: extra charges and the Square balance invoice ─
+// Every lock is a condition inside the write (OPEN_INVOICE_EXISTS_SQL), never a separate pre-check.
+
+// GET: Re-check open invoices with Square, then return charges, invoices, payments and totals
+adminRouter.get('/bookings/:id/billing', async (c) => {
+  noStore(c)
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json(INVALID_ID_RESPONSE, 400)
+    }
+    const billing = await refreshBilling(c.env.DB, c.env, id)
+    if (!billing) {
+      return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
+    }
+    const { charges, invoices, payments, totals, stale } = billing
+    return c.json({
+      status: 'success', charges, invoices, payments, totals, stale,
+      data: { charges, invoices, payments, totals, stale }
+    })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not fetch billing.')
+  }
+})
+
+// POST: Add an extra charge (refused on cancelled bookings and while an invoice is open)
+adminRouter.post('/bookings/:id/charges', async (c) => {
+  noStore(c)
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json(INVALID_ID_RESPONSE, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
+    }
+    const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+
+    const description = typeof input.description === 'string' ? input.description.trim() : ''
+    if (description.length < 1 || description.length > DESCRIPTION_MAX) {
+      return c.json(paymentValidationError(
+        'description', `Enter a description of 1 to ${DESCRIPTION_MAX} characters.`, description ? 'TOO_LONG' : 'REQUIRED'
+      ), 400)
+    }
+    const amountText = input.amount === undefined || input.amount === null ? '' : String(input.amount).trim()
+    const amountCents = parseMoneyToCents(amountText)
+    if (amountCents === null) {
+      return c.json(paymentValidationError('amount', 'Enter an amount like 75 or 19.99.', 'INVALID_FORMAT'), 400)
+    }
+
+    const bookingStatus = await bookingStatusFor(c.env.DB, id)
+    if (bookingStatus === null) {
+      return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
+    }
+    if (bookingStatus === 'cancelled') {
+      return c.json({ error: { code: 'BOOKING_CANCELLED', message: "Cancelled bookings can't take charges.", details: [] } }, 409)
+    }
+
+    const insert = await c.env.DB.prepare(
+      `INSERT INTO Booking_Charges (booking_id, description, amount_cents)
+       SELECT ?, ?, ?
+       WHERE EXISTS (SELECT 1 FROM Bookings WHERE id = ? AND LOWER(COALESCE(status, '')) != 'cancelled')
+         AND NOT ${OPEN_INVOICE_EXISTS_SQL}`
+    ).bind(Number(id), description, amountCents, id, id).run()
+
+    if (!insert.meta.changes) {
+      const statusNow = await bookingStatusFor(c.env.DB, id)
+      if (statusNow === null) {
+        return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
+      }
+      if (statusNow === 'cancelled') {
+        return c.json({ error: { code: 'BOOKING_CANCELLED', message: "Cancelled bookings can't take charges.", details: [] } }, 409)
+      }
+      return c.json(INVOICE_OPEN_RESPONSE, 409)
+    }
+
+    const row = await c.env.DB.prepare('SELECT * FROM Booking_Charges WHERE id = ?')
+      .bind(insert.meta.last_row_id).first<any>()
+    const charge = toChargeJSON(row ?? {
+      id: insert.meta.last_row_id, booking_id: Number(id), description, amount_cents: amountCents, created_at: null
+    })
+    const loaded = await loadBookingTotals(c.env.DB, id)
+    if (!loaded) {
+      return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
+    }
+
+    return c.json({ status: 'success', charge, totals: loaded.totals, data: { charge, totals: loaded.totals } }, 201)
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not add charge.')
+  }
+})
+
+// DELETE: Remove an extra charge (refused while an invoice is open)
+adminRouter.delete('/bookings/:id/charges/:chargeId', async (c) => {
+  noStore(c)
+  try {
+    const id = c.req.param('id')
+    const chargeId = c.req.param('chargeId')
+    if (!isValidId(id) || !isValidId(chargeId)) {
+      return c.json(INVALID_ID_RESPONSE, 400)
+    }
+
+    const result = await c.env.DB.prepare(
+      `DELETE FROM Booking_Charges WHERE id = ? AND booking_id = ? AND NOT ${OPEN_INVOICE_EXISTS_SQL}`
+    ).bind(chargeId, id, id).run()
+    if (!result.meta.changes) {
+      const charge = await c.env.DB.prepare('SELECT id FROM Booking_Charges WHERE id = ? AND booking_id = ?')
+        .bind(chargeId, id).first()
+      if (!charge) {
+        return c.json({ error: { code: 'NOT_FOUND', message: 'Charge not found for this booking.', details: [] } }, 404)
+      }
+      return c.json(INVOICE_OPEN_RESPONSE, 409)
+    }
+
+    const loaded = await loadBookingTotals(c.env.DB, id)
+    if (!loaded) {
+      return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
+    }
+    return c.json({ status: 'success', totals: loaded.totals, data: { totals: loaded.totals } })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not remove charge.')
+  }
+})
+
+// POST: Send the balance invoice through Square (body { expected_amount_cents })
+adminRouter.post('/bookings/:id/invoice', async (c) => {
+  noStore(c)
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json(INVALID_ID_RESPONSE, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
+    }
+    const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+
+    const { invoice, totals } = await sendBalanceInvoice(c.env.DB, c.env, id, input.expected_amount_cents)
+    return c.json({ status: 'success', invoice, totals, data: { invoice, totals } })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not send invoice.')
+  }
+})
+
+// POST: Cancel the booking's open invoice
+adminRouter.post('/bookings/:id/invoice/cancel', async (c) => {
+  noStore(c)
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json(INVALID_ID_RESPONSE, 400)
+    }
+    if ((await bookingStatusFor(c.env.DB, id)) === null) {
+      return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
+    }
+
+    const cancelled = await cancelOpenInvoice(c.env.DB, c.env, id)
+    if (!cancelled) {
+      return c.json({ error: { code: 'NO_OPEN_INVOICE', message: 'There is no open invoice to cancel.', details: [] } }, 404)
+    }
+    const loaded = await loadBookingTotals(c.env.DB, id)
+    if (!loaded) {
+      return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
+    }
+    const { invoice } = cancelled
+    return c.json({ status: 'success', invoice, totals: loaded.totals, data: { invoice, totals: loaded.totals } })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not cancel invoice.')
   }
 })
 
@@ -1084,7 +2097,7 @@ async function handleGetPricing(c: Context<{ Bindings: Bindings }>) {
       "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
     ).first<{ setting_value: string }>()
 
-    const pricing = row?.setting_value ? JSON.parse(row.setting_value) : { baseFee: 0, perPerson: 0, depositPercent: 50 }
+    const pricing = row?.setting_value ? JSON.parse(row.setting_value) : { baseFee: 0, perPerson: 0, depositPercent: DEFAULT_DEPOSIT_PERCENT }
     return c.json({ ...pricing, status: 'success', data: pricing })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch pricing settings.', details: [] } }, 500)
@@ -1103,11 +2116,7 @@ async function handleUpdatePricing(c: Context<{ Bindings: Bindings }>) {
         }
       }, 400)
     }
-    const parsedDeposit = Number(body.depositPercent)
-    const depositPercent =
-      Number.isFinite(parsedDeposit) && parsedDeposit >= 0 && parsedDeposit <= 100
-        ? Math.round(parsedDeposit)
-        : 50
+    const depositPercent = normalizeDepositPercent(body.depositPercent)
 
     const parsedBaseFee = Number(body.baseFee)
     const baseFee = Number.isFinite(parsedBaseFee) && parsedBaseFee >= 0 ? Math.round(parsedBaseFee * 100) / 100 : 0
@@ -1467,6 +2476,26 @@ adminRouter.delete('/packages/:id', async (c) => {
 })
 
 // ── Portfolio Aliases for Admin ──────────────────────────────────
+
+// GET: Admin photo list. Same params, filters, ordering, paging and row shape as the public
+// GET /api/portfolio, except hidden (is_active = 0) photos are included so they can be shown again.
+adminRouter.get('/portfolio', async (c) => {
+  c.header('Cache-Control', 'no-store')
+  try {
+    const result = await listPortfolio(c.env.DB, portfolioListQuery(c.req), { includeInactive: true })
+    if (!result.ok) return c.json(result.body, result.status)
+    return c.json(result.body)
+  } catch (e: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Could not fetch portfolio images.',
+        details: []
+      }
+    }, 500)
+  }
+})
+
 adminRouter.put('/portfolio/:id', async (c) => {
   try {
     const id = c.req.param('id')
@@ -1570,19 +2599,6 @@ adminRouter.delete('/portfolio/:id', async (c) => {
 })
 
 // ── Profile ──────────────────────────────────────────────────────
-const DEFAULT_PROFILE = {
-  bio: "I'm the photographer behind R59—drawn to quiet frames, honest light, and the small gestures that make a portrait feel lived-in.\n\nMost of my work sits between editorial portraiture and documentary storytelling. Whether we're in a studio or chasing late-afternoon sun on location, the goal is always the same: images that still feel like you ten years from now.",
-  email: "hello@r59.Portraits",
-  phone: "123-456-7890",
-  location: "Studio & On-Location",
-  travel: 'Studio & On-Location (Worldwide)',
-  social: [
-    { platform: 'Instagram', url: 'https://www.instagram.com' },
-    { platform: 'Facebook', url: 'https://www.facebook.com' },
-    { platform: 'Pinterest', url: 'https://www.pinterest.com' }
-  ]
-}
-
 // GET: Studio profile information
 adminRouter.get('/profile', async (c) => {
   try {
@@ -1595,27 +2611,31 @@ adminRouter.get('/profile', async (c) => {
       try { parsed = JSON.parse(row.setting_value) } catch {}
     }
 
-    let socialList = DEFAULT_PROFILE.social
-    if (Array.isArray(parsed?.social) && parsed.social.length > 0) {
+    // Stored social array is returned as-is (an empty array stays empty); legacy object form is converted
+    let socialList: { platform: string; url: string }[] = []
+    if (Array.isArray(parsed?.social)) {
       socialList = parsed.social
     } else if (parsed?.social && typeof parsed.social === 'object') {
-      const entries = Object.entries(parsed.social)
+      socialList = Object.entries(parsed.social)
         .filter(([_, url]) => Boolean(url))
         .map(([platform, url]) => ({
           platform: platform.charAt(0).toUpperCase() + platform.slice(1),
           url: String(url)
         }))
-      if (entries.length > 0) socialList = entries
     }
 
+    // The admin edits real data only: a missing or null field is empty, never a placeholder default
+    const text = (value: unknown): string =>
+      value === undefined || value === null ? '' : String(value).trim()
+
     const profile = {
-      bio: (parsed?.bio && String(parsed.bio).trim()) || DEFAULT_PROFILE.bio,
-      email: (parsed?.email && String(parsed.email).trim()) || DEFAULT_PROFILE.email,
-      phone: (parsed?.phone && String(parsed.phone).trim()) || DEFAULT_PROFILE.phone,
-      location: (parsed?.location && String(parsed.location).trim()) || DEFAULT_PROFILE.location,
-      travel: parsed?.travel !== undefined
+      bio: text(parsed?.bio),
+      email: text(parsed?.email),
+      phone: text(parsed?.phone),
+      location: text(parsed?.location),
+      travel: parsed?.travel !== undefined && parsed?.travel !== null
         ? (typeof parsed.travel === 'string' ? parsed.travel : (parsed.travel ? 'Studio & On-Location (Worldwide)' : 'Studio only'))
-        : DEFAULT_PROFILE.travel,
+        : '',
       social: socialList
     }
     return c.json({ ...profile, status: 'success', data: profile })
@@ -1655,18 +2675,70 @@ adminRouter.put('/profile', async (c) => {
 
 // ── Leads ────────────────────────────────────────────────────────
 
-// GET: View all contact submissions
+// GET: View contact submissions, newest first. Keyset paging with ?before_id= (ORDER BY created_at DESC,
+// id DESC); ?offset= is still accepted when before_id is absent (back-compat).
 adminRouter.get('/leads', async (c) => {
+  c.header('Cache-Control', 'no-store')
   try {
     const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100))
-    const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
+    const beforeIdRaw = c.req.query('before_id')
+    const LEAD_COLUMNS = 'id, name, email, phone, session_type, message, created_at'
 
-    const { results } = await c.env.DB.prepare(
-      'SELECT id, name, email, phone, session_type, message, created_at FROM Leads ORDER BY created_at DESC LIMIT ? OFFSET ?'
-    ).bind(limit, offset).all()
+    // One extra row tells us whether another page exists
+    let rows: any[] = []
+    let offset = 0
+    if (beforeIdRaw !== undefined && beforeIdRaw !== '') {
+      // A malformed before_id yields an empty page
+      if (isValidId(beforeIdRaw)) {
+        const cursor = await c.env.DB.prepare('SELECT id, created_at FROM Leads WHERE id = ?')
+          .bind(beforeIdRaw).first<{ id: number; created_at: string }>()
+        if (cursor) {
+          const { results } = await c.env.DB.prepare(
+            `SELECT ${LEAD_COLUMNS} FROM Leads
+             WHERE (created_at < ?) OR (created_at = ? AND id < ?)
+             ORDER BY created_at DESC, id DESC LIMIT ?`
+          ).bind(cursor.created_at, cursor.created_at, cursor.id, limit + 1).all()
+          rows = results || []
+        } else {
+          // The cursor row was deleted: continue from the rows inserted before it. Ids grow with
+          // insertion (as created_at does), so id order matches the created_at order above.
+          const { results } = await c.env.DB.prepare(
+            `SELECT ${LEAD_COLUMNS} FROM Leads WHERE id < ? ORDER BY id DESC LIMIT ?`
+          ).bind(beforeIdRaw, limit + 1).all()
+          rows = results || []
+        }
+      }
+    } else {
+      offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
+      const { results } = await c.env.DB.prepare(
+        `SELECT ${LEAD_COLUMNS} FROM Leads ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`
+      ).bind(limit + 1, offset).all()
+      rows = results || []
+    }
 
-    return c.json({ leads: results, limit, offset, status: 'success', data: results })
+    const has_more = rows.length > limit
+    const leads = has_more ? rows.slice(0, limit) : rows
+    const next_before_id = leads.length > 0 ? leads[leads.length - 1].id : null
+
+    return c.json({ status: 'success', leads, has_more, next_before_id, limit, offset, data: leads })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch leads.', details: [] } }, 500)
+  }
+})
+
+// DELETE: Remove one contact submission
+adminRouter.delete('/leads/:id', async (c) => {
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+    }
+    const result = await c.env.DB.prepare('DELETE FROM Leads WHERE id = ?').bind(id).run()
+    if (!result.meta.changes) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Enquiry not found.', details: [] } }, 404)
+    }
+    return c.json({ status: 'success', data: { id: Number(id), deleted: true } })
+  } catch (e: any) {
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete enquiry.', details: [] } }, 500)
   }
 })

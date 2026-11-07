@@ -1,16 +1,42 @@
 /**
- * R59 Media Admin — Payments, Packages & Coupons Page Module
- * 
- * Manages base fees, per-person fees, down payment percentage,
- * photography package CRUD operations, and promotional coupon codes.
+ * R59 Media Admin — Payment page (pricing, photography packages, coupon codes)
+ *
+ * Settings (go through the save bar; this page only edits state and calls markDirty):
+ *   pricing.baseFee / perPerson / depositPercent, and name / price / description / outfits /
+ *   session length (duration_minutes, entered as hours + minutes) / Entire day (full_day) of every
+ *   package that has a server id. Field ids: baseFee, perPerson, depositPercent, pkg-<id>-name,
+ *   pkg-<id>-price, pkg-<id>-description, pkg-<id>-outfits, pkg-<id>-duration-h,
+ *   pkg-<id>-duration-m, pkg-<id>-fullday.
+ * Records (sent as soon as the admin confirms; pessimistic, never markDirty):
+ *   package create / delete / availability toggle, coupon create / update / delete / toggle.
+ *
+ * Render hooks app.js calls: renderPricing, renderPackages, renderCoupons, resetCouponForm.
  */
 
 (function () {
   'use strict';
 
   const $ = s => document.querySelector(s);
-  const $$ = s => [...document.querySelectorAll(s)];
-  const esc = s => window.R59.formValidation?.escapeHtml(s) || String(s);
+  const R = () => window.R59 || {};
+  const esc = s => {
+    const fn = R().formValidation?.escapeHtml;
+    if (fn) return fn(s);
+    return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  };
+  const st = () => R().state;
+  const cur = () => st().getState();
+  const loadStatus = area => st().getLoadStatus?.(area) || 'loaded';
+  const isLoaded = area => loadStatus(area) === 'loaded';
+  const sameId = (a, b) => String(a) === String(b);
+  const toast = (msg, opts) => window.toast?.(msg, opts);
+  const AREA_LABELS = { pricing: 'pricing', packages: 'packages', coupons: 'coupons' };
+
+  /** Error toast with the server message; a 401 is handled by the login screen instead. */
+  function failToast(prefix, err) {
+    if (err && err.status === 401) return;
+    const reason = String((err && err.message) || '').trim();
+    toast(reason ? `${prefix} ${reason}` : prefix, { type: 'error' });
+  }
 
   function formatCurrency(val) {
     const num = parseFloat(val);
@@ -25,41 +51,112 @@
     });
   }
 
+  const pad2 = n => String(n).padStart(2, '0');
+
+  /* ---------- Shared blocks ---------- */
+
+  function loadErrorHtml(area) {
+    const label = AREA_LABELS[area] || area;
+    const msg = st().getLoadError?.(area) || '';
+    return `<div class="load-error" role="alert">
+      <svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg>
+      <p><strong>Couldn't load ${esc(label)}.</strong> <span>${esc(msg)}</span></p>
+      <button class="btn btn--sm" type="button" data-retry="${esc(area)}">Retry</button>
+    </div>`;
+  }
+
+  const skelHtml = (label) =>
+    `<div class="skel" role="status" aria-label="${esc(label)}"><i></i><i></i><i></i><i></i></div>`;
+
+  /** Frame numbers run 01, 02, … through the whole Payment view, in DOM order. */
+  function numberFrames() {
+    const view = $('#view-payment');
+    if (!view) return;
+    let n = 0;
+    view.querySelectorAll('.roll').forEach(roll => {
+      const first = n + 1;
+      roll.querySelectorAll('.slot > .edge').forEach(edge => {
+        n += 1;
+        const no = edge.querySelector('[data-frame-no]');
+        const code = edge.querySelector('[data-frame-code]');
+        if (no) no.textContent = `Frame ${pad2(n)}`;
+        if (code) code.textContent = `${pad2(n)}A`;
+      });
+      const label = roll.querySelector('[data-frames-label]');
+      if (label && n >= first) {
+        label.textContent = n === first ? `Frame ${pad2(first)}` : `Frames ${pad2(first)}–${pad2(n)}`;
+      }
+    });
+  }
+
+  /* ---------- Pricing (settings) ---------- */
+
   const PRICE_FIELDS = {
-    baseFee: { input: '#baseFee', display: '#baseFeeDisplay' },
-    perPerson: { input: '#perPerson', display: '#perPersonDisplay' },
+    baseFee: { input: '#baseFee', display: '#baseFeeDisplay', rule: 'money', label: 'Edit price' },
+    perPerson: { input: '#perPerson', display: '#perPersonDisplay', rule: 'money', label: 'Edit price' },
     depositPercent: {
       input: '#depositPercent',
       display: '#depositDisplay',
+      rule: 'percent',
       fmt: v => `${isNaN(parseFloat(v)) ? 0 : parseFloat(v)}%`,
       label: 'Edit percentage'
     }
   };
 
+  const priceBtn = key => document.querySelector(`.price-edit-btn[data-price-key="${key}"]`);
+
   function setPriceLocked(key, locked) {
     const f = PRICE_FIELDS[key];
-    if (!f) return;
-    const input = $(f.input);
-    const btn = document.querySelector(`.price-edit-btn[data-price-key="${key}"]`);
+    const input = f && $(f.input);
     if (!input) return;
     input.readOnly = locked;
-    input.classList.toggle('price-locked', locked);
+    const btn = priceBtn(key);
     if (btn) {
-      btn.textContent = locked ? (f.label || 'Edit price') : 'Cancel';
+      const text = btn.querySelector('.price-edit-text') || btn;
+      text.textContent = locked ? f.label : 'Cancel';
       btn.setAttribute('aria-pressed', String(!locked));
     }
   }
 
+  function showPriceFigure(key, value) {
+    const f = PRICE_FIELDS[key];
+    const el = f && $(f.display);
+    if (el) el.textContent = (f.fmt || formatCurrency)(value);
+  }
+
   function renderPricing() {
-    const currentState = window.R59.state.getState();
+    const status = loadStatus('pricing');
+    const notice = $('#pricingNotice');
+    if (notice) notice.innerHTML = status === 'failed' ? loadErrorHtml('pricing') : '';
+
+    const pricing = cur().pricing || {};
+    const saved = st().getSaved?.().pricing || {};
     Object.entries(PRICE_FIELDS).forEach(([key, f]) => {
       const input = $(f.input);
-      const val = currentState.pricing[key] ?? 0;
-      if (input) input.value = val;
-      if (f.display && $(f.display)) {
-        $(f.display).textContent = (f.fmt || formatCurrency)(val);
+      const btn = priceBtn(key);
+      const usable = status === 'loaded';
+      if (input) {
+        input.disabled = !usable;
+        input.value = usable ? (pricing[key] ?? '') : '';
       }
-      setPriceLocked(key, true);
+      if (btn) btn.disabled = !usable;
+      const figure = $(f.display);
+      if (figure) {
+        if (usable) showPriceFigure(key, pricing[key] ?? 0);
+        else figure.textContent = '—';
+        figure.classList.toggle('is-pending', !usable);
+      }
+      // A field with an unsaved edit stays open; everything else is locked.
+      const edited = usable && String(pricing[key] ?? '') !== String(saved[key] ?? '');
+      setPriceLocked(key, !edited);
+      // re-check an edited field, and clear a stale error after Discard / save
+      if (input && usable && (edited || input.getAttribute('aria-invalid') === 'true')) {
+        R().formValidation?.validate?.(input);
+      } else if (input && !usable) {
+        input.removeAttribute('aria-invalid');
+        const errEl = document.getElementById(`${input.id}-error`);
+        if (errEl) errEl.hidden = true;
+      }
     });
     updateDepositExample();
   }
@@ -67,10 +164,14 @@
   function updateDepositExample() {
     const el = $('#depositExample');
     if (!el) return;
-    const currentState = window.R59.state.getState();
-    const pct = parseFloat(currentState.pricing.depositPercent);
-    if (isNaN(pct) || pct === 0) {
-      el.textContent = 'Enter a percentage between 0 and 100 (e.g. 50%).';
+    if (!isLoaded('pricing')) {
+      el.textContent = "The share of a booking's total that is collected upfront.";
+      return;
+    }
+    const parsed = parseFloat(cur().pricing?.depositPercent);
+    const pct = isNaN(parsed) ? 60 : parsed;
+    if (pct < 1 || pct > 100) {
+      el.textContent = 'Enter a whole number from 1 to 100 (e.g. 60%).';
     } else {
       const exampleDown = Math.round(500 * pct / 100);
       el.textContent = `The share of a booking's total collected upfront. Example: on a $500 booking, the down payment is ${money(exampleDown)}.`;
@@ -78,120 +179,559 @@
   }
 
   function pricingIsInvalid() {
-    const currentState = window.R59.state.getState();
+    const pricing = cur().pricing || {};
     return Object.keys(PRICE_FIELDS).some(k => {
-      const v = currentState.pricing[k];
-      return v === '' || isNaN(parseFloat(v)) || parseFloat(v) < 0 || (k === 'depositPercent' && parseFloat(v) > 100);
+      const v = pricing[k];
+      return v === '' || isNaN(parseFloat(v)) || parseFloat(v) < 0 || (k === 'depositPercent' && (parseFloat(v) < 1 || parseFloat(v) > 100));
     });
   }
 
-  /* ---------- Photography Packages Management ---------- */
+  function initPricingListeners() {
+    const fv = R().formValidation;
+    Object.entries(PRICE_FIELDS).forEach(([key, f]) => {
+      const input = $(f.input);
+      const btn = priceBtn(key);
+      if (!input) return;
+      fv?.bind?.(input, fv.rules?.[f.rule]);
+
+      btn?.addEventListener('click', () => {
+        if (!isLoaded('pricing')) return;
+        if (input.readOnly) {
+          setPriceLocked(key, false);
+          input.focus();
+          input.select?.();
+          return;
+        }
+        // Cancel: back to the saved amount
+        const savedVal = st().getSaved().pricing?.[key] ?? '';
+        cur().pricing[key] = savedVal;
+        input.value = savedVal;
+        showPriceFigure(key, savedVal);
+        setPriceLocked(key, true);
+        fv?.validate?.(input);
+        updateDepositExample();
+        st().markDirty();
+      });
+
+      input.addEventListener('input', () => {
+        if (input.readOnly || !isLoaded('pricing')) return;
+        cur().pricing[key] = input.value === '' ? '' : parseFloat(input.value);
+        showPriceFigure(key, input.value);
+        updateDepositExample();
+        st().markDirty();
+      });
+    });
+  }
+
+  /* ---------- Photography packages ---------- */
+
+  const pkgField = (id, name) => `pkg-${id}-${name}`;
+  const numValue = v => (v === '' || v === null || v === undefined || !Number.isFinite(Number(v)) ? '' : Number(v));
+  const numFromInput = input => (input.value === '' ? '' : Number(input.value));
+
+  /* ----- Session length: [ h ] h : [ m ] min, plus "Entire day" ----- */
+
+  /** Length stored for a new "Entire day" package (not used for booking times). */
+  const FULL_DAY_MINUTES = 1440;
+  const sessionIds = id => ({ h: pkgField(id, 'duration-h'), m: pkgField(id, 'duration-m'), day: pkgField(id, 'fullday') });
+  const NEW_SESSION_IDS = { h: 'pkgNewDurationH', m: 'pkgNewDurationM', day: 'pkgNewFullDay' };
+  const sessionEls = ids => ({ h: document.getElementById(ids.h), m: document.getElementById(ids.m), day: document.getElementById(ids.day) });
+
+  /** Stored minutes as the two field values ({ h: '', m: '' } when there is no length). */
+  function splitMinutes(v) {
+    const n = Number(v);
+    if (v === '' || v === null || v === undefined || !Number.isFinite(n) || n < 0) return { h: '', m: '' };
+    return { h: Math.floor(n / 60), m: Math.round(n % 60) };
+  }
+
+  /** Total minutes from the two fields ('' when both are empty or a value is not a number). */
+  function sessionTotal(els) {
+    const hv = els.h?.value ?? '';
+    const mv = els.m?.value ?? '';
+    const fv = R().formValidation;
+    const total = fv?.sessionMinutes
+      ? fv.sessionMinutes(hv, mv)
+      : (hv === '' && mv === '' ? '' : Number(hv || 0) * 60 + Number(mv || 0));
+    return total === '' || !Number.isFinite(total) ? '' : total;
+  }
+
+  const errorHtml = fieldId => `<p class="field__error" id="${fieldId}-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>`;
+
+  /** The Session length group of a package frame (the Add package form has the same markup in index.html). */
+  function sessionFieldHtml(ids, pkg) {
+    const fullDay = pkg.full_day === true;
+    const { h, m } = splitMinutes(pkg.duration_minutes);
+    const off = fullDay ? ' disabled aria-disabled="true"' : '';
+    return `
+            <div class="field pay-session" role="group" aria-labelledby="${ids.h}-group">
+              <span class="field__label" id="${ids.h}-group">Session length</span>
+              <div class="pay-session__line">
+                <div class="pay-session__units">
+                  <div class="field__control pay-session__unit">
+                    <input class="field__input num" id="${ids.h}" type="number" inputmode="numeric" min="0" max="24" step="1" value="${esc(h)}" data-pkg-input="duration-h"${off}>
+                  </div>
+                  <label class="pay-session__suffix" for="${ids.h}"><span class="sr-only">Session length </span>h<span class="sr-only">ours</span></label>
+                  <span class="pay-session__sep" aria-hidden="true">:</span>
+                  <div class="field__control pay-session__unit">
+                    <input class="field__input num" id="${ids.m}" type="number" inputmode="numeric" min="0" max="59" step="1" value="${esc(m)}" data-pkg-input="duration-m"${off}>
+                  </div>
+                  <label class="pay-session__suffix" for="${ids.m}"><span class="sr-only">Session length </span>min<span class="sr-only">utes</span></label>
+                </div>
+                <label class="pay-check" for="${ids.day}">
+                  <input type="checkbox" id="${ids.day}" data-pkg-input="fullday"${fullDay ? ' checked' : ''}>
+                  <span>Entire day</span>
+                </label>
+              </div>
+              ${errorHtml(ids.h)}
+              ${errorHtml(ids.m)}
+            </div>`;
+  }
+
+  function bindSession(els) {
+    const fv = R().formValidation;
+    if (!fv?.sessionLengthRules || !els.h || !els.m) return;
+    const rules = fv.sessionLengthRules(els.h, els.m, els.day);
+    fv.bind(els.h, rules.hours);
+    fv.bind(els.m, rules.minutes);
+  }
+
+  /** Each field's rule reads the other one, so both are re-checked together. */
+  function revalidateSession(els, show = false) {
+    const fv = R().formValidation;
+    if (!fv) return;
+    [els.h, els.m].forEach(el => {
+      if (!el) return;
+      if (show) fv.validate?.(el);
+      else fv.revalidate?.(el);
+    });
+  }
+
+  /** "Entire day" ticked: both fields are disabled (their typed values stay) and are not checked. */
+  function applyFullDay(els) {
+    const off = Boolean(els.day?.checked);
+    [els.h, els.m].forEach(el => {
+      if (!el) return;
+      el.disabled = off;
+      if (off) el.setAttribute('aria-disabled', 'true');
+      else el.removeAttribute('aria-disabled');
+    });
+    // ticking clears any message; unticking re-checks quietly (a message shows again on blur or review)
+    revalidateSession(els, off);
+  }
+  const findPkg = id => (cur().packages || []).find(p => sameId(p.id, id));
+  const savedPkg = id => (st().getSaved?.().packages || {})[id] || null;
+
+  function packageSlotHtml(pkg) {
+    const id = esc(pkg.id);
+    const active = pkg.active !== false;
+    const name = String(pkg.name ?? '');
+    const sp = savedPkg(pkg.id);
+    const priceEdited = sp && String(sp.price ?? '') !== String(pkg.price ?? '');
+    const priceVal = pkg.price === '' || pkg.price === null || pkg.price === undefined ? '' : Number(pkg.price);
+    return `
+      <div class="slot">
+        <div class="edge caps" aria-hidden="true"><span><svg class="tri"><use href="#i-tri"/></svg><span data-frame-no>Frame</span></span><span data-frame-code></span></div>
+        <article class="frame pay-pkg${active ? '' : ' is-inactive'}" id="card-pkg-${id}" data-pkg-id="${id}" aria-labelledby="pkg-${id}-title">
+          <div class="frame-head">
+            <div>
+              <h3 id="pkg-${id}-title" data-pkg-title>${esc(name.trim() || 'Package')}</h3>
+              ${active ? '' : '<p class="pay-tags"><span class="tag tag--muted">Inactive</span></p>'}
+            </div>
+            <label class="switch">
+              <input type="checkbox" role="switch" data-pkg-toggle="${id}" ${active ? 'checked' : ''} aria-describedby="pkg-${id}-title">
+              <span class="switch__track" aria-hidden="true"></span>
+              <span class="switch__label">Available</span>
+            </label>
+          </div>
+          <div class="fields">
+            <div class="field">
+              <label class="field__label" for="${pkgField(id, 'name')}">Package name</label>
+              <div class="field__control">
+                <input class="field__input" id="${pkgField(id, 'name')}" type="text" autocomplete="off" maxlength="120" value="${esc(name)}" data-pkg-input="name">
+              </div>
+            </div>
+            <div class="field">
+              <div class="pay-label-row">
+                <label class="field__label" for="${pkgField(id, 'price')}">Price ($)</label>
+                <button type="button" class="btn btn--ghost btn--sm" data-pkg-price-edit="${id}" aria-controls="${pkgField(id, 'price')}" aria-pressed="${priceEdited ? 'true' : 'false'}"><svg class="ico" aria-hidden="true"><use href="#i-edit"/></svg><span class="price-edit-text">${priceEdited ? 'Finish editing' : 'Edit price'}</span></button>
+              </div>
+              <div class="field__control">
+                <input class="field__input num" id="${pkgField(id, 'price')}" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(priceVal)}" ${priceEdited ? '' : 'readonly'} data-pkg-input="price">
+              </div>
+            </div>
+            <div class="field pay-outfits">
+              <label class="field__label" for="${pkgField(id, 'outfits')}">Number of outfits</label>
+              <div class="field__control">
+                <input class="field__input num" id="${pkgField(id, 'outfits')}" type="number" inputmode="numeric" min="0" max="50" step="1" value="${esc(numValue(pkg.outfits))}" data-pkg-input="outfits">
+              </div>
+            </div>
+            ${sessionFieldHtml(sessionIds(id), pkg)}
+            <div class="field">
+              <label class="field__label" for="${pkgField(id, 'description')}">Short description</label>
+              <div class="field__control">
+                <textarea class="field__input pay-desc" id="${pkgField(id, 'description')}" rows="3" data-pkg-input="description">${esc(pkg.description || '')}</textarea>
+              </div>
+            </div>
+          </div>
+          <div class="pay-actions pay-pkg-foot">
+            <button type="button" class="btn btn--danger btn--sm" data-pkg-delete="${id}">Remove package</button>
+          </div>
+        </article>
+      </div>`;
+  }
+
+  /** A slot without the frame numbering edge content, for loading / failed / empty states. */
+  function stateSlotHtml(inner) {
+    return `<div class="slot pay-state-slot">
+      <div class="edge caps" aria-hidden="true"><span><svg class="tri"><use href="#i-tri"/></svg><span data-frame-no>Frame</span></span><span data-frame-code></span></div>
+      <div class="frame">${inner}</div>
+    </div>`;
+  }
+
   function renderPackages() {
     const container = $('#packageList');
     if (!container) return;
+    const status = loadStatus('packages');
+    const addBtn = $('#addPackageBtn');
+    if (addBtn) addBtn.disabled = status !== 'loaded';
+    if (status !== 'loaded') closeAddForm();
 
-    const currentState = window.R59.state.getState();
-    const packages = currentState.packages || [];
-
-    if (packages.length === 0) {
-      container.innerHTML = `
-        <div class="empty-state" style="grid-column: 1 / -1;">
-          <div class="empty-state-title">No Photography Packages Configured</div>
-          <p class="empty-state-desc">Click “Add package” below to create session offerings with custom pricing and descriptions.</p>
-        </div>`;
+    if (status === 'loading') {
+      container.innerHTML = stateSlotHtml(skelHtml('Loading packages'));
+      numberFrames();
+      return;
+    }
+    if (status === 'failed') {
+      container.innerHTML = stateSlotHtml(loadErrorHtml('packages'));
+      numberFrames();
       return;
     }
 
-    container.innerHTML = packages.map(pkg => `
-      <div class="card package-card" id="card-pkg-${esc(pkg.id)}" data-pkg-id="${esc(pkg.id)}">
-        <div class="card-head">
-          <h2>${esc(pkg.name || 'New Package')}</h2>
-          <label class="toggle">
-            <input type="checkbox" class="pkg-active-toggle" data-pkg-toggle="${esc(pkg.id)}" ${pkg.active !== false ? 'checked' : ''}>
-            <span>Available</span>
-          </label>
-        </div>
-        <label class="f" for="pkg-${esc(pkg.id)}-name">Package name</label>
-        <input class="input package-name" id="pkg-${esc(pkg.id)}-name" type="text" value="${esc(pkg.name || '')}">
+    const packages = cur().packages || [];
+    if (!packages.length) {
+      container.innerHTML = stateSlotHtml(`<div class="empty">
+          <svg class="cam" width="110" height="96" viewBox="0 0 110 96" aria-hidden="true"><use href="#logo-camera"/></svg>
+          <p>No Photography Packages Configured</p>
+          <small>Use “Add package” to create session offerings with custom pricing and descriptions.</small>
+        </div>`);
+      numberFrames();
+      return;
+    }
 
-        <div class="price-field-row">
-          <label class="f" for="pkg-${esc(pkg.id)}-price">Price ($)</label>
-          <button type="button" class="btn btn-sm package-price-edit">Edit price</button>
-        </div>
-        <input class="input package-price price-locked" id="pkg-${esc(pkg.id)}-price" type="number" min="0" step="10" value="${Number(pkg.price) || 0}" readonly>
-
-        <label class="f" for="pkg-${esc(pkg.id)}-desc">Short description</label>
-        <textarea class="input desc-input" id="pkg-${esc(pkg.id)}-desc" rows="3" placeholder="Describe this photography package">${esc(pkg.description || '')}</textarea>
-
-        <div class="row" style="margin-top:16px;">
-          <button type="button" class="btn btn-danger btn-sm pkg-remove-btn" data-pkg-delete="${esc(pkg.id)}">Remove package</button>
-          <button type="button" class="btn btn-primary btn-sm pkg-save-btn" style="flex:1; justify-content:center;">Save package</button>
-        </div>
-      </div>
-    `).join('');
+    container.innerHTML = packages.map(packageSlotHtml).join('');
+    const fv = R().formValidation;
+    packages.forEach(pkg => {
+      const name = document.getElementById(pkgField(pkg.id, 'name'));
+      const price = document.getElementById(pkgField(pkg.id, 'price'));
+      const outfits = document.getElementById(pkgField(pkg.id, 'outfits'));
+      const session = sessionEls(sessionIds(pkg.id));
+      fv?.bind?.(name, fv.rules?.packageName);
+      fv?.bind?.(price, fv.rules?.packagePrice);
+      fv?.bind?.(outfits, fv.rules?.packageOutfits);
+      bindSession(session);
+      // keep an invalid unsaved value visibly flagged after a re-render
+      const sp = savedPkg(pkg.id);
+      if (name && name.value !== String(sp?.name ?? name.value)) fv?.validate?.(name);
+      if (price && !price.readOnly) fv?.validate?.(price);
+      if (outfits && String(numValue(sp?.outfits)) !== outfits.value) fv?.validate?.(outfits);
+      if (pkg.full_day !== true && (sp?.full_day === true || String(numValue(sp?.duration_minutes)) !== String(sessionTotal(session)))) {
+        revalidateSession(session, true);
+      }
+    });
+    numberFrames();
   }
 
-  function addPackage() {
-    const currentState = window.R59.state.getState();
-    const newId = `pkg_${Date.now()}`;
-    currentState.packages = currentState.packages || [];
-    const newPkg = {
-      id: newId,
-      name: 'New Package',
-      price: 0,
-      description: '',
-      duration_minutes: 60,
-      category: 'General',
-      active: true,
-      isNew: true
-    };
-    currentState.packages.push(newPkg);
-    renderPackages();
-    window.R59.state.markDirty();
-    const newCard = document.querySelector(`#card-pkg-${newId}`);
-    if (newCard) {
-      const nameInput = newCard.querySelector('.package-name');
-      if (nameInput) { nameInput.focus(); nameInput.select(); }
+  function onPackageInput(e) {
+    const input = e.target.closest?.('[data-pkg-input]');
+    if (!input) return;
+    const frame = input.closest('[data-pkg-id]');
+    const pkg = frame && findPkg(frame.dataset.pkgId);
+    if (!pkg) return;
+    const kind = input.dataset.pkgInput;
+    if (kind === 'name') {
+      pkg.name = input.value;
+      const title = frame.querySelector('[data-pkg-title]');
+      if (title) title.textContent = input.value.trim() || 'Package';
+    } else if (kind === 'price') {
+      if (input.readOnly) return;
+      pkg.price = input.value === '' ? '' : parseFloat(input.value);
+    } else if (kind === 'description') {
+      pkg.description = input.value;
+    } else if (kind === 'outfits') {
+      pkg.outfits = numFromInput(input);
+    } else if (kind === 'duration-h' || kind === 'duration-m' || kind === 'fullday') {
+      const session = sessionEls(sessionIds(pkg.id));
+      if (kind === 'fullday') {
+        pkg.full_day = input.checked;
+        applyFullDay(session);
+      } else {
+        pkg.duration_minutes = sessionTotal(session);
+        revalidateSession(session);
+      }
+    }
+    st().markDirty();
+  }
+
+  function onPackagePriceEdit(btn) {
+    const id = btn.dataset.pkgPriceEdit;
+    const pkg = findPkg(id);
+    const input = document.getElementById(pkgField(id, 'price'));
+    if (!pkg || !input) return;
+    const text = btn.querySelector('.price-edit-text') || btn;
+    if (input.readOnly) {
+      input.readOnly = false;
+      text.textContent = 'Finish editing';
+      btn.setAttribute('aria-pressed', 'true');
+      input.focus();
+      input.select?.();
+      return;
+    }
+    // Finish editing: keep the typed price (it goes through the save bar) and lock the field again.
+    // An invalid price stays unlocked so the admin (or the review dialog's Fix) can correct it.
+    if (R().formValidation?.validate && !R().formValidation.validate(input)) {
+      input.focus();
+      return;
+    }
+    input.readOnly = true;
+    text.textContent = 'Edit price';
+    btn.setAttribute('aria-pressed', 'false');
+    st().markDirty();
+  }
+
+  /** Delete (record write). The server deactivates instead when bookings still use the package. */
+  function onPackageDelete(btn) {
+    const id = btn.dataset.pkgDelete;
+    const pkg = findPkg(id);
+    if (!pkg) return;
+    const label = (savedPkg(id)?.name || pkg.name || 'this package').trim() || 'this package';
+    R().confirmation.confirmRemovePackage(label, async () => {
+      btn.disabled = true;
+      try {
+        const res = await R().packagesApi.deletePackage(pkg.id);
+        const message = String(res?.message || '');
+        if (/deactivat/i.test(message)) {
+          pkg.active = false;
+          renderPackages();
+          toast(`“${label}” is still used by existing bookings, so it was made unavailable instead of deleted.`, { type: 'success' });
+        } else {
+          st().removePackage(pkg.id);
+          renderPackages();
+          toast(`${label} deleted`, { type: 'success' });
+        }
+      } catch (err) {
+        failToast(`Couldn't remove “${label}”.`, err);
+      } finally {
+        if (btn.isConnected) btn.disabled = false;
+      }
+    });
+  }
+
+  /** Availability toggle (record write): sends only { is_active }. */
+  function onPackageToggle(toggle) {
+    const id = toggle.dataset.pkgToggle;
+    const pkg = findPkg(id);
+    if (!pkg) return;
+    const nextActive = toggle.checked;
+    const label = (savedPkg(id)?.name || pkg.name || 'This package').trim() || 'This package';
+    // Show the stored state until the server confirms
+    toggle.checked = !nextActive;
+    R().confirmation.confirmToggleActive('package', label, nextActive, async () => {
+      toggle.disabled = true;
+      try {
+        await R().packagesApi.updatePackage(pkg.id, { is_active: nextActive ? 1 : 0 });
+        pkg.active = nextActive;
+        renderPackages();
+        toast(nextActive ? `${label} is available again` : `${label} is now unavailable`, { type: 'success' });
+      } catch (err) {
+        failToast(`Couldn't change “${label}”.`, err);
+        if (toggle.isConnected) toggle.disabled = false;
+      }
+    });
+  }
+
+  /* ----- Add package form (record write: POSTs on confirm) ----- */
+
+  function openAddForm() {
+    if (!isLoaded('packages')) return;
+    const form = $('#pkgAddForm');
+    const btn = $('#addPackageBtn');
+    if (!form || !btn) return;
+    form.hidden = false;
+    btn.hidden = true;
+    btn.setAttribute('aria-expanded', 'true');
+    $('#pkgNewName')?.focus();
+  }
+
+  function closeAddForm({ focusButton = false } = {}) {
+    const form = $('#pkgAddForm');
+    const btn = $('#addPackageBtn');
+    if (!form || !btn || form.hidden) return;
+    form.reset();
+    applyFullDay(sessionEls(NEW_SESSION_IDS));
+    form.querySelectorAll('[aria-invalid="true"]').forEach(el => {
+      el.setCustomValidity?.('');
+      R().formValidation?.validate?.(el);
+    });
+    form.hidden = true;
+    btn.hidden = false;
+    btn.setAttribute('aria-expanded', 'false');
+    if (focusButton) btn.focus();
+  }
+
+  function submitAddForm(e) {
+    e.preventDefault();
+    const fv = R().formValidation;
+    const nameEl = $('#pkgNewName');
+    const priceEl = $('#pkgNewPrice');
+    const descEl = $('#pkgNewDescription');
+    const outfitsEl = $('#pkgNewOutfits');
+    const session = sessionEls(NEW_SESSION_IDS);
+    if (!nameEl || !priceEl || !session.h || !session.m) return;
+    const fullDay = Boolean(session.day?.checked);
+    const total = sessionTotal(session);
+    const check = (el, fallback) => (fv ? fv.validate(el) : fallback);
+    const checks = [
+      [nameEl, check(nameEl, nameEl.value.trim() !== '')],
+      [priceEl, check(priceEl, priceEl.value !== '')],
+      [outfitsEl, outfitsEl ? check(outfitsEl, true) : true],
+      // Entire day: the length fields are disabled and not checked
+      [session.h, fullDay || check(session.h, Number.isInteger(total) && total >= 15 && total <= 1440)],
+      [session.m, fullDay || check(session.m, true)]
+    ];
+    const firstBad = checks.find(([, ok]) => !ok);
+    if (firstBad) { firstBad[0]?.focus(); return; }
+
+    const name = nameEl.value.trim();
+    const price = parseFloat(priceEl.value);
+    const description = (descEl?.value || '').trim();
+    const outfits = outfitsEl && outfitsEl.value !== '' ? Number(outfitsEl.value) : null;
+    const durationMinutes = fullDay ? FULL_DAY_MINUTES : total;
+    R().confirmation.confirmSavePackage(name, true, () => createPackage({ name, price, description, outfits, durationMinutes, fullDay }));
+  }
+
+  async function createPackage({ name, price, description, outfits, durationMinutes, fullDay }) {
+    const submit = $('#pkgNewCreate');
+    const cancel = $('#pkgNewCancel');
+    if (submit) submit.disabled = true;
+    if (cancel) cancel.disabled = true;
+    try {
+      const res = await R().packagesApi.createPackage({
+        name, price, description, outfits, duration_minutes: durationMinutes, full_day: fullDay, is_active: 1
+      });
+      const data = res?.data && typeof res.data === 'object' ? res.data : {};
+      const id = res?.id ?? data.id;
+      if (id === undefined || id === null || id === '') throw new Error('The server did not return the new package.');
+      const pkg = {
+        id,
+        name: data.name ?? data.title ?? name,
+        description: data.description ?? description,
+        price: data.price !== undefined && data.price !== null ? Number(data.price) / 100 : price,
+        duration_minutes: numValue(data.duration_minutes ?? durationMinutes),
+        outfits: numValue(data.outfits !== undefined ? data.outfits : outfits),
+        full_day: data.full_day !== undefined ? (data.full_day === true || Number(data.full_day) === 1) : fullDay,
+        category: data.category ?? '',
+        active: data.is_active === undefined ? true : (data.is_active !== 0 && data.is_active !== false)
+      };
+      st().addPackage(pkg);
+      closeAddForm();
+      renderPackages();
+      toast(`${pkg.name} added`, { type: 'success' });
+      document.getElementById(pkgField(pkg.id, 'name'))?.focus();
+    } catch (err) {
+      failToast(`Couldn't add “${name}”.`, err);
+    } finally {
+      if (submit) submit.disabled = false;
+      if (cancel) cancel.disabled = false;
     }
   }
 
-  /* ---------- Coupons Management ---------- */
+  function initPackageListeners() {
+    const fv = R().formValidation;
+    fv?.bind?.($('#pkgNewName'), fv.rules?.packageName);
+    fv?.bind?.($('#pkgNewPrice'), fv.rules?.packagePrice);
+    fv?.bind?.($('#pkgNewOutfits'), fv.rules?.packageOutfits);
+    const newSession = sessionEls(NEW_SESSION_IDS);
+    bindSession(newSession);
+    newSession.h?.addEventListener('input', () => revalidateSession(newSession));
+    newSession.m?.addEventListener('input', () => revalidateSession(newSession));
+    newSession.day?.addEventListener('change', () => applyFullDay(newSession));
+
+    $('#addPackageBtn')?.addEventListener('click', openAddForm);
+    $('#pkgNewCancel')?.addEventListener('click', () => closeAddForm({ focusButton: true }));
+    $('#pkgAddForm')?.addEventListener('submit', submitAddForm);
+    $('#pkgAddForm')?.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { e.preventDefault(); closeAddForm({ focusButton: true }); }
+    });
+
+    const list = $('#packageList');
+    if (!list) return;
+    list.addEventListener('input', onPackageInput);
+    list.addEventListener('click', e => {
+      const t = e.target instanceof Element ? e.target : e.target?.parentElement;
+      if (!t) return;
+      const del = t.closest('[data-pkg-delete]');
+      if (del) { e.preventDefault(); onPackageDelete(del); return; }
+      const edit = t.closest('[data-pkg-price-edit]');
+      if (edit) { e.preventDefault(); onPackagePriceEdit(edit); }
+    });
+    list.addEventListener('change', e => {
+      const toggle = e.target.closest?.('[data-pkg-toggle]');
+      if (toggle) onPackageToggle(toggle);
+    });
+  }
+
+  /* ---------- Coupons (records) ---------- */
+
   let editingCouponId = null;
-  const couponLabel = c => {
-    const amt = Number(c.amount ?? c.discount ?? 0);
-    return c.type === 'percent' ? `${amt}% off` : `${money(amt)} off`;
-  };
+  const couponType = t => (t === 'percent' ? 'percent' : 'amount');
+  const couponValue = c => Number(c.amount ?? c.discount ?? 0);
+  const couponLabel = c => (couponType(c.type) === 'percent' ? `${couponValue(c)}% off` : `${money(couponValue(c))} off`);
+
+  function couponRowHtml(c) {
+    const id = esc(c.id);
+    const active = c.active !== false;
+    return `
+      <li class="row pay-coupon${active ? '' : ' is-inactive'}">
+        <div class="row__main">
+          <strong class="pay-coupon-code" id="coupon-${id}-code">${esc(c.code)}</strong>
+          <span class="sub">${esc(couponLabel(c))}${active ? '' : ' <span class="tag tag--muted">Inactive</span>'}</span>
+        </div>
+        <div class="row__acts">
+          <label class="switch">
+            <input type="checkbox" role="switch" data-coupon-toggle="${id}" ${active ? 'checked' : ''} aria-describedby="coupon-${id}-code">
+            <span class="switch__track" aria-hidden="true"></span>
+            <span class="switch__label">Active</span>
+          </label>
+          <button type="button" class="btn btn--sm" data-coupon-edit="${id}" aria-describedby="coupon-${id}-code"><svg class="ico" aria-hidden="true"><use href="#i-edit"/></svg>Edit</button>
+          <button type="button" class="btn btn--danger btn--sm" data-coupon-delete="${id}" aria-describedby="coupon-${id}-code">Remove</button>
+        </div>
+      </li>`;
+  }
+
+  function setCouponFormEnabled(on) {
+    ['#couponCode', '#couponType', '#couponAmount', '#couponSubmit', '#couponCancelEdit'].forEach(sel => {
+      const el = $(sel);
+      if (el) el.disabled = !on;
+    });
+  }
 
   function renderCoupons() {
     const list = $('#couponList');
     if (!list) return;
+    const status = loadStatus('coupons');
+    const notice = $('#couponNotice');
+    if (notice) notice.innerHTML = status === 'failed' ? loadErrorHtml('coupons') : '';
+    setCouponFormEnabled(status === 'loaded');
 
-    const currentState = window.R59.state.getState();
-    const coupons = currentState.coupons || [];
+    if (status === 'loading') { list.innerHTML = skelHtml('Loading coupons'); return; }
+    if (status === 'failed') { list.innerHTML = ''; return; }
 
+    const coupons = cur().coupons || [];
     if (!coupons.length) {
       list.innerHTML = '<p class="hint">No coupon codes yet.</p>';
       return;
     }
-
-    list.innerHTML = coupons.map(c => {
-      const label = couponLabel(c);
-      return `
-      <div class="coupon-item ${c.active ? '' : 'inactive'}">
-        <div>
-          <div class="coupon-code">${esc(c.code)}</div>
-          <div class="hint">${label}${c.active ? '' : ' · Inactive'}</div>
-        </div>
-        <div class="coupon-actions">
-          <label class="toggle">
-            <input type="checkbox" data-coupon-active="${esc(c.id)}" data-coupon-toggle="${esc(c.id)}" ${c.active ? 'checked' : ''}>
-            <span>Active</span>
-          </label>
-          <button type="button" class="btn btn-sm" data-coupon-edit="${esc(c.id)}">Edit</button>
-          <button type="button" class="btn btn-danger btn-sm" data-coupon-remove="${esc(c.id)}" data-coupon-delete="${esc(c.id)}">Remove</button>
-        </div>
-      </div>`;
-    }).join('');
+    list.innerHTML = `<ul class="rows">${coupons.map(couponRowHtml).join('')}</ul>`;
   }
 
   function syncCouponTypeUI() {
@@ -202,9 +742,28 @@
     const amountEl = $('#couponAmount');
     if (labelEl) labelEl.textContent = isPct ? 'Percent off' : 'Amount off ($)';
     if (amountEl) {
-      amountEl.placeholder = isPct ? '10' : '25';
       amountEl.step = isPct ? '1' : '0.01';
+      if (isPct) amountEl.max = '100';
+      else amountEl.removeAttribute('max');
     }
+  }
+
+  function couponError(msg, field) {
+    const errEl = $('#couponError');
+    if (errEl) errEl.textContent = msg || '';
+    ['#couponCode', '#couponAmount'].forEach(sel => {
+      const el = $(sel);
+      if (!el) return;
+      const bad = Boolean(msg) && el === field;
+      if (bad) {
+        el.setAttribute('aria-invalid', 'true');
+        el.setAttribute('aria-describedby', 'couponError');
+      } else {
+        el.removeAttribute('aria-invalid');
+        el.removeAttribute('aria-describedby');
+      }
+    });
+    if (field && msg) field.focus();
   }
 
   function resetCouponForm() {
@@ -212,381 +771,206 @@
     const codeEl = $('#couponCode');
     const amtEl = $('#couponAmount');
     const typeEl = $('#couponType');
-    const errEl = $('#couponError');
-    const subEl = $('#couponSubmit');
-    const cancelEl = $('#couponCancelEdit');
-
     if (codeEl) codeEl.value = '';
     if (amtEl) amtEl.value = '';
     if (typeEl) typeEl.value = 'percent';
-    if (errEl) errEl.textContent = '';
+    couponError('');
+    const subEl = $('#couponSubmit');
     if (subEl) subEl.textContent = 'Add coupon';
-    if (cancelEl) cancelEl.style.display = 'none';
+    const cancelEl = $('#couponCancelEdit');
+    if (cancelEl) cancelEl.hidden = true;
     syncCouponTypeUI();
   }
 
-  async function submitCoupon() {
-    const err = msg => {
-      const errEl = $('#couponError');
-      if (errEl) errEl.textContent = msg;
-    };
+  function submitCoupon() {
+    if (!isLoaded('coupons')) return;
+    const fv = R().formValidation;
+    const codeEl = $('#couponCode');
+    const amtEl = $('#couponAmount');
+    const code = (codeEl?.value || '').trim().toUpperCase();
+    const type = couponType($('#couponType')?.value);
+    const rawAmount = amtEl?.value ?? '';
+    const amount = parseFloat(rawAmount);
 
-    const code = ($('#couponCode')?.value || '').trim().toUpperCase();
-    const type = $('#couponType')?.value || 'percent';
-    const amount = parseFloat($('#couponAmount')?.value);
-
-    if (!code) return err('Please enter a coupon code.');
-    if (!window.R59.formValidation?.isValidCouponCode(code)) return err('Codes can only use letters, numbers, dashes and underscores.');
+    if (!code) return couponError('Please enter a coupon code.', codeEl);
+    if (!fv?.isValidCouponCode(code)) return couponError('Codes can only use letters, numbers, dashes and underscores.', codeEl);
     if (type === 'percent') {
-      if (!window.R59.formValidation?.isValidPercentage(amount) || amount <= 0) return err('A percent discount must be between 1 and 100%.');
-    } else {
-      if (!window.R59.formValidation?.isValidPrice(amount) || amount <= 0) return err('Please enter a valid discount amount greater than 0.');
+      if (!fv?.isValidPercentage(rawAmount) || !(amount >= 1)) return couponError('A percent discount must be between 1 and 100%.', amtEl);
+    } else if (!fv?.isValidPrice(rawAmount) || !(amount > 0)) {
+      return couponError('Please enter a valid discount amount greater than 0.', amtEl);
     }
-
-    const currentState = window.R59.state.getState();
-    if (currentState.coupons.some(c => c.code === code && String(c.id) !== String(editingCouponId))) {
-      return err('A coupon with that code already exists.');
+    if ((cur().coupons || []).some(c => String(c.code).toUpperCase() === code && !sameId(c.id, editingCouponId))) {
+      return couponError('A coupon with that code already exists.', codeEl);
     }
+    couponError('');
 
-    window.R59.confirmation.confirmSaveCoupon(code, Boolean(editingCouponId), () => commitCoupon({ code, type, amount }));
+    const editId = editingCouponId;
+    R().confirmation.confirmSaveCoupon(code, editId !== null, () =>
+      (editId !== null ? updateCoupon(editId, { code, type, amount }) : addCoupon({ code, type, amount })));
   }
 
-  function commitCoupon({ code, type, amount }) {
-    const currentState = window.R59.state.getState();
-    if (editingCouponId) {
-      const target = currentState.coupons.find(c => String(c.id) === String(editingCouponId));
-      if (target) {
-        const description = target.description || '';
-        const active = target.active !== false;
-        Object.assign(target, { code, type, amount, discount: amount, description, active });
-        if (window.R59.api?.payments?.updateCoupon) {
-          window.R59.api.payments.updateCoupon(target.id, {
-            code,
-            type,
-            amount,
-            discount: amount,
-            description,
-            active
-          }).catch(e => console.warn('[payments] Failed to update coupon:', e));
-        }
-      }
-      window.toast('Coupon updated');
-    } else {
-      const nextId = (currentState.coupons.reduce((max, c) => Math.max(max, Number(c.id) || 0), 0)) + 1;
-      const newCoupon = { id: nextId, code, type, amount, discount: amount, description: '', active: true };
-      currentState.coupons.push(newCoupon);
-      if (window.R59.api?.payments?.createCoupon) {
-        window.R59.api.payments.createCoupon({
-          code,
-          type,
-          amount,
-          discount: amount,
-          description: '',
-          active: true
-        }).then(created => {
-          if (created?.id) {
-            newCoupon.id = created.id;
-            renderCoupons();
-          }
-        }).catch(e => console.warn('[payments] Failed to create coupon:', e));
-      }
-      window.toast('Coupon added');
-    }
-
-    resetCouponForm();
-    renderCoupons();
-    window.R59.state.markDirty();
+  /** Builds the state record from the server's coupon (falls back to what was sent). */
+  function couponFromServer(server, sent, id) {
+    const s = server && typeof server === 'object' ? server : {};
+    const amount = Number(s.amount ?? s.discount ?? s.discount_value ?? sent.amount);
+    return {
+      id,
+      code: s.code ?? sent.code,
+      type: couponType(s.type ?? s.discount_type ?? sent.type),
+      amount,
+      discount: amount,
+      description: s.description ?? sent.description ?? '',
+      active: s.active !== undefined ? Boolean(s.active) : (s.is_active !== undefined ? s.is_active !== 0 : sent.active !== false)
+    };
   }
 
-  function initPaymentsListeners() {
-    // Pricing lock / edit buttons
-    Object.entries(PRICE_FIELDS).forEach(([key, f]) => {
-      const input = $(f.input);
-      const btn = document.querySelector(`.price-edit-btn[data-price-key="${key}"]`);
-      if (!input || !btn) return;
-
-      btn.addEventListener('click', () => {
-        const currentState = window.R59.state.getState();
-        const savedState = window.R59.state.getSaved();
-
-        if (input.readOnly) {
-          setPriceLocked(key, false);
-          input.focus();
-          input.select();
-        } else {
-          // Cancel edit: restore saved amount
-          currentState.pricing[key] = savedState.pricing[key];
-          input.value = savedState.pricing[key];
-          if (f.display && $(f.display)) {
-            $(f.display).textContent = (f.fmt || formatCurrency)(savedState.pricing[key]);
-          }
-          setPriceLocked(key, true);
-          updateDepositExample();
-          const isDirty = JSON.stringify(currentState) !== JSON.stringify(savedState);
-          window.R59.state.setDirty(isDirty);
-        }
-      });
-
-      input.addEventListener('input', () => {
-        if (input.readOnly) return;
-        const currentState = window.R59.state.getState();
-        currentState.pricing[key] = input.value === '' ? '' : parseFloat(input.value);
-        if (f.display && $(f.display)) {
-          $(f.display).textContent = (f.fmt || formatCurrency)(input.value);
-        }
-        updateDepositExample();
-        window.R59.state.markDirty();
-      });
+  function setCouponFormBusy(busy) {
+    ['#couponSubmit', '#couponCancelEdit'].forEach(sel => {
+      const el = $(sel);
+      if (el) el.disabled = busy;
     });
+  }
 
-    // Package add button
-    $('#addPackageBtn')?.addEventListener('click', addPackage);
+  async function addCoupon({ code, type, amount }) {
+    const payload = { code, type, amount, discount: amount, description: '', active: true };
+    setCouponFormBusy(true);
+    try {
+      const res = await R().paymentsApi.createCoupon(payload);
+      const id = res?.id ?? res?.data?.id ?? res?.coupon?.id;
+      if (id === undefined || id === null || id === '') throw new Error('The server did not return the new coupon.');
+      cur().coupons = cur().coupons || [];
+      cur().coupons.push(couponFromServer(res?.coupon || res?.data, payload, id));
+      resetCouponForm();
+      renderCoupons();
+      toast('Coupon added', { type: 'success' });
+    } catch (err) {
+      failToast(`Couldn't add the coupon ${code}.`, err);
+    } finally {
+      setCouponFormBusy(false);
+    }
+  }
 
-    // Delegated package card actions
-    document.addEventListener('click', async e => {
-      const target = e.target instanceof Element ? e.target : e.target?.parentElement;
-      if (!target) return;
+  async function updateCoupon(id, { code, type, amount }) {
+    const target = (cur().coupons || []).find(c => sameId(c.id, id));
+    if (!target) return;
+    const payload = {
+      code,
+      type,
+      amount,
+      discount: amount,
+      description: target.description || '',
+      active: target.active !== false
+    };
+    setCouponFormBusy(true);
+    try {
+      const res = await R().paymentsApi.updateCoupon(target.id, payload);
+      Object.assign(target, couponFromServer(res?.coupon || res?.data, payload, target.id));
+      resetCouponForm();
+      renderCoupons();
+      toast('Coupon updated', { type: 'success' });
+    } catch (err) {
+      failToast(`Couldn't update the coupon ${code}.`, err);
+    } finally {
+      setCouponFormBusy(false);
+    }
+  }
 
-      const removeBtn = target.closest('.pkg-remove-btn, [data-pkg-delete]');
-      if (removeBtn) {
-        e.preventDefault();
-        const card = removeBtn.closest('.package-card');
-        if (!card) return;
-        const pkgId = removeBtn.dataset.pkgDelete || card.dataset.pkgId;
-        const nameInput = card.querySelector('.package-name');
-        const packageName = (nameInput?.value || 'this package').trim();
+  function startCouponEdit(id) {
+    const c = (cur().coupons || []).find(x => sameId(x.id, id));
+    if (!c) return;
+    editingCouponId = c.id;
+    $('#couponCode').value = c.code;
+    $('#couponType').value = couponType(c.type); // keeps an amount coupon an amount coupon (F2)
+    $('#couponAmount').value = couponValue(c);
+    couponError('');
+    $('#couponSubmit').textContent = 'Update coupon';
+    $('#couponCancelEdit').hidden = false;
+    syncCouponTypeUI();
+    $('#couponCode').focus();
+  }
 
-        window.R59.confirmation.confirmRemovePackage(packageName, () => {
-          const currentState = window.R59.state.getState();
-          const pkg = (currentState.packages || []).find(p => String(p.id) === String(pkgId));
-          currentState.packages = (currentState.packages || []).filter(p => String(p.id) !== String(pkgId));
-          if (pkg && !pkg.isNew && !String(pkg.id).startsWith('pkg_') && window.R59.api?.packages?.deletePackage) {
-            window.R59.api.packages.deletePackage(pkg.id).catch(err => console.warn('[payments] Failed to delete package:', err));
-          }
-          renderPackages();
-          window.R59.state.markDirty();
-          window.toast(`${packageName} deleted`);
-        });
-        return;
-      }
-
-      const editPriceBtn = target.closest('.package-price-edit');
-      if (editPriceBtn) {
-        e.preventDefault();
-        const card = editPriceBtn.closest('.package-card');
-        const priceInput = card?.querySelector('.package-price');
-        if (priceInput) {
-          priceInput.readOnly = !priceInput.readOnly;
-          priceInput.classList.toggle('price-locked', priceInput.readOnly);
-          editPriceBtn.textContent = priceInput.readOnly ? 'Edit price' : 'Finish editing';
-          if (!priceInput.readOnly) {
-            priceInput.focus();
-            priceInput.select();
-          }
-        }
-        return;
-      }
-
-      const saveBtn = target.closest('.pkg-save-btn');
-      if (saveBtn) {
-        e.preventDefault();
-        const card = saveBtn.closest('.package-card');
-        if (!card) return;
-        const pkgId = card.dataset.pkgId;
-        const currentState = window.R59.state.getState();
-        const pkg = currentState.packages?.find(p => String(p.id) === String(pkgId));
-        if (pkg) {
-          const rawPrice = card.querySelector('.package-price')?.value;
-          if (rawPrice !== undefined && rawPrice !== '' && !window.R59.formValidation?.isValidPrice(rawPrice)) {
-            window.toast?.('Please enter a valid package price');
-            return;
-          }
-          const pendingName = card.querySelector('.package-name')?.value.trim() || 'Package';
-          const isNewPending = pkg.isNew || String(pkg.id).startsWith('pkg_');
-          window.R59.confirmation.confirmSavePackage(pendingName, isNewPending, () => savePackage(card, pkg, rawPrice));
-        }
-        return;
-      }
-    });
-
-    async function savePackage(card, pkg, rawPrice) {
-      pkg.name = card.querySelector('.package-name')?.value.trim() || 'Package';
-      pkg.price = parseFloat(rawPrice) || 0;
-      pkg.description = card.querySelector('.desc-input')?.value.trim() || '';
-      pkg.active = card.querySelector('.pkg-active-toggle')?.checked ?? true;
-
-      const priceInput = card.querySelector('.package-price');
-      const priceBtn = card.querySelector('.package-price-edit');
-      if (priceInput) {
-        priceInput.readOnly = true;
-        priceInput.classList.add('price-locked');
-      }
-      if (priceBtn) priceBtn.textContent = 'Edit price';
-
-      const isNewPkg = pkg.isNew || String(pkg.id).startsWith('pkg_');
+  function removeCoupon(btn) {
+    const id = btn.dataset.couponDelete;
+    const coupon = (cur().coupons || []).find(c => sameId(c.id, id));
+    if (!coupon) return;
+    R().confirmation.confirmRemoveCoupon(coupon.code, async () => {
+      btn.disabled = true;
       try {
-        if (isNewPkg && window.R59.api?.packages?.createPackage) {
-          const created = await window.R59.api.packages.createPackage({
-            title: pkg.name,
-            description: pkg.description,
-            price: Math.round((Number(pkg.price) || 0) * 100),
-            duration_minutes: Number(pkg.duration_minutes) || 60,
-            category: pkg.category || 'General',
-            is_active: pkg.active !== false ? 1 : 0
-          });
-          if (created?.id) {
-            pkg.id = created.id;
-            delete pkg.isNew;
-            renderPackages();
-          }
-        } else if (!isNewPkg && window.R59.api?.packages?.updatePackage) {
-          await window.R59.api.packages.updatePackage(pkg.id, {
-            title: pkg.name,
-            description: pkg.description,
-            price: Math.round((Number(pkg.price) || 0) * 100),
-            duration_minutes: Number(pkg.duration_minutes) || 60,
-            category: pkg.category || 'General',
-            is_active: pkg.active !== false ? 1 : 0
-          });
-        }
+        await R().paymentsApi.deleteCoupon(coupon.id);
+        cur().coupons = (cur().coupons || []).filter(c => !sameId(c.id, coupon.id));
+        if (sameId(editingCouponId, coupon.id)) resetCouponForm();
+        renderCoupons();
+        toast('Coupon removed', { type: 'success' });
       } catch (err) {
-        console.warn('[payments] Failed to persist package:', err);
-        window.toast(`Could not save ${pkg.name}. Please try again.`, 4000);
-        return;
-      }
-      window.R59.state.markDirty();
-      window.toast('Package saved');
-    }
-
-    // Package active toggle listener
-    document.addEventListener('change', e => {
-      const toggle = e.target.closest('.pkg-active-toggle, [data-pkg-toggle]');
-      if (!toggle) return;
-      const card = toggle.closest('.package-card');
-      const pkgId = toggle.dataset.pkgToggle || card?.dataset.pkgId;
-      if (!pkgId) return;
-      const currentState = window.R59.state.getState();
-      const pkg = currentState.packages?.find(p => String(p.id) === String(pkgId));
-      if (!pkg) return;
-      const nextActive = toggle.checked;
-      window.R59.confirmation.confirmToggleActive(
-        'package',
-        pkg.name || 'This package',
-        nextActive,
-        () => applyPackageActive(pkg, nextActive),
-        () => { toggle.checked = !nextActive; }
-      );
-    });
-
-    function applyPackageActive(pkg, nextActive) {
-      pkg.active = nextActive;
-      window.R59.state.markDirty();
-      if (!pkg.isNew && !String(pkg.id).startsWith('pkg_') && window.R59.api?.packages?.updatePackage) {
-        window.R59.api.packages.updatePackage(pkg.id, {
-          title: pkg.name,
-          description: pkg.description,
-          price: Math.round((Number(pkg.price) || 0) * 100),
-          is_active: pkg.active ? 1 : 0
-        }).catch(err => console.warn('[payments] Failed to toggle package active status:', err));
-      }
-    }
-
-    // Package card live inputs
-    document.addEventListener('input', e => {
-      const card = e.target.closest('.package-card');
-      if (!card) return;
-      const pkgId = card.dataset.pkgId;
-      const currentState = window.R59.state.getState();
-      const pkg = currentState.packages?.find(p => String(p.id) === String(pkgId));
-      if (!pkg) return;
-
-      if (e.target.classList.contains('package-name')) {
-        const h2 = card.querySelector('h2');
-        if (h2) h2.textContent = e.target.value.trim() || 'Package';
-        pkg.name = e.target.value.trim();
-        window.R59.state.markDirty();
-      } else if (e.target.classList.contains('package-price')) {
-        pkg.price = parseFloat(e.target.value) || 0;
-        window.R59.state.markDirty();
-      } else if (e.target.classList.contains('desc-input')) {
-        pkg.description = e.target.value.trim();
-        window.R59.state.markDirty();
+        failToast(`Couldn't remove the coupon ${coupon.code}.`, err);
+        if (btn.isConnected) btn.disabled = false;
       }
     });
+  }
 
-    // Coupons listeners
+  function toggleCoupon(toggle) {
+    const id = toggle.dataset.couponToggle;
+    const target = (cur().coupons || []).find(c => sameId(c.id, id));
+    if (!target) return;
+    const nextActive = toggle.checked;
+    toggle.checked = !nextActive; // show the stored state until the server confirms
+    R().confirmation.confirmToggleActive('coupon', target.code, nextActive, async () => {
+      toggle.disabled = true;
+      try {
+        await R().paymentsApi.updateCoupon(target.id, {
+          code: target.code,
+          type: couponType(target.type),
+          amount: couponValue(target),
+          discount: couponValue(target),
+          description: target.description || '',
+          active: nextActive
+        });
+        target.active = nextActive;
+        renderCoupons();
+        toast(nextActive ? `${target.code} is active` : `${target.code} is inactive`, { type: 'success' });
+      } catch (err) {
+        failToast(`Couldn't change the coupon ${target.code}.`, err);
+        if (toggle.isConnected) toggle.disabled = false;
+      }
+    });
+  }
+
+  function initCouponListeners() {
     $('#couponSubmit')?.addEventListener('click', submitCoupon);
     $('#couponType')?.addEventListener('change', syncCouponTypeUI);
-    $('#couponCancelEdit')?.addEventListener('click', resetCouponForm);
-    $('#couponAmount')?.addEventListener('keydown', e => { if (e.key === 'Enter') submitCoupon(); });
-    $('#couponCode')?.addEventListener('keydown', e => { if (e.key === 'Enter') submitCoupon(); });
-
-    $('#couponList')?.addEventListener('click', e => {
-      const edit = e.target.closest('[data-coupon-edit]');
-      const rm = e.target.closest('[data-coupon-remove], [data-coupon-delete]');
-      const currentState = window.R59.state.getState();
-
-      if (edit) {
-        const editId = edit.dataset.couponEdit;
-        const c = currentState.coupons.find(x => String(x.id) === String(editId));
-        if (!c) return;
-        editingCouponId = c.id;
-        $('#couponCode').value = c.code;
-        $('#couponType').value = c.type;
-        $('#couponAmount').value = Number(c.amount ?? c.discount ?? 0);
-        $('#couponError').textContent = '';
-        $('#couponSubmit').textContent = 'Update coupon';
-        $('#couponCancelEdit').style.display = '';
-        syncCouponTypeUI();
-        $('#couponCode').focus();
-      } else if (rm) {
-        const rawId = rm.dataset.couponDelete || rm.dataset.couponRemove;
-        const coupon = currentState.coupons.find(c => String(c.id) === String(rawId));
-        if (!coupon) return;
-        window.R59.confirmation.confirmRemoveCoupon(coupon.code, () => {
-          currentState.coupons = currentState.coupons.filter(c => String(c.id) !== String(rawId));
-          if (String(editingCouponId) === String(rawId)) resetCouponForm();
-          if (window.R59.api?.payments?.deleteCoupon) {
-            window.R59.api.payments.deleteCoupon(coupon.id).catch(err => console.warn('[payments] Failed to delete coupon:', err));
-          }
-          renderCoupons();
-          window.R59.state.markDirty();
-          window.toast('Coupon removed');
-        });
-      }
+    $('#couponCancelEdit')?.addEventListener('click', () => { resetCouponForm(); $('#couponCode')?.focus(); });
+    ['#couponAmount', '#couponCode'].forEach(sel => {
+      const el = $(sel);
+      el?.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submitCoupon(); } });
+      el?.addEventListener('input', () => { if (el.getAttribute('aria-invalid') === 'true') couponError(''); });
     });
 
-    $('#couponList')?.addEventListener('change', e => {
-      const t = e.target.closest('[data-coupon-active], [data-coupon-toggle]');
+    const list = $('#couponList');
+    if (!list) return;
+    list.addEventListener('click', e => {
+      const t = e.target instanceof Element ? e.target : e.target?.parentElement;
       if (!t) return;
-      const rawId = t.dataset.couponToggle || t.dataset.couponActive;
-      const currentState = window.R59.state.getState();
-      const target = currentState.coupons.find(c => String(c.id) === String(rawId));
-      if (!target) return;
-      const nextActive = t.checked;
-      window.R59.confirmation.confirmToggleActive(
-        'coupon',
-        target.code,
-        nextActive,
-        () => applyCouponActive(target, nextActive),
-        () => { t.checked = !nextActive; }
-      );
+      const edit = t.closest('[data-coupon-edit]');
+      if (edit) { startCouponEdit(edit.dataset.couponEdit); return; }
+      const rm = t.closest('[data-coupon-delete]');
+      if (rm) removeCoupon(rm);
     });
+    list.addEventListener('change', e => {
+      const toggle = e.target.closest?.('[data-coupon-toggle]');
+      if (toggle) toggleCoupon(toggle);
+    });
+  }
 
-    function applyCouponActive(target, nextActive) {
-      target.active = nextActive;
-      if (window.R59.api?.payments?.updateCoupon) {
-        const amt = Number(target.amount ?? target.discount ?? 0);
-        window.R59.api.payments.updateCoupon(target.id, {
-          ...target,
-          amount: amt,
-          discount: amt,
-          active: target.active
-        }).catch(err => console.warn('[payments] Failed to toggle coupon:', err));
-      }
-      renderCoupons();
-      window.R59.state.markDirty();
-    }
+  /* ---------- Init ---------- */
+
+  let initialised = false;
+  function initPaymentsListeners() {
+    if (initialised) return;
+    initialised = true;
+    initPricingListeners();
+    initPackageListeners();
+    initCouponListeners();
+    numberFrames();
   }
 
   window.R59 = window.R59 || {};
