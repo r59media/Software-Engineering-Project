@@ -17,7 +17,16 @@
 .hero__actions .action--text { padding-inline: 0.625rem; }
 .hero__footer { flex-shrink: 0; min-height: 7.6875rem; padding: 1.5rem var(--page-gutter) 1.25rem; display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; }
 .hero__footer p { align-self: flex-start; margin: 0 0 0 4.625rem; font-size: var(--text-medium); line-height: 1.5rem; }
-.hero__discover { min-height: 2.6875rem; padding: 0.625rem; }
+.hero__discover {
+  width: 49vw;
+  min-height: 2.75rem;
+  align-self: flex-end;
+  justify-content: flex-end;
+  margin-right: calc(-1 * var(--page-gutter));
+  padding: 0.625rem clamp(1.25rem, 9.72vw, 14rem) 0.625rem 1.25rem;
+  border-radius: 0;
+  white-space: nowrap;
+}
 @media (max-width: 850px) {
   .hero__stage { min-height: 34rem; }
   .hero__content { padding-block: 3rem; }
@@ -29,6 +38,11 @@
   .hero__footer { gap: 1.25rem; }
 }
 @media (max-width: 767px) {
+  .hero__discover {
+    width: calc(100% + 2 * var(--page-gutter));
+    justify-content: center;
+    padding-inline: var(--page-gutter);
+  }
   .hero { min-height: calc(100svh - var(--site-header-height)); height: auto; }
   .hero__stage { height: auto; }
   .hero::before { background: rgba(0, 0, 0, 0.25); }
@@ -43,5 +57,7 @@
   .hero__actions .action--primary { width: 100%; }
   .hero__footer { align-items: flex-start; }
   .hero__footer p { font-size: var(--text-base); }
-  .hero__discover { font-size: var(--text-base); padding-inline: 0; }
+  .hero__discover { font-size: var(--text-base); }
 }
+
+.hero__discover .animated-action__fill { transform-origin: right center; }

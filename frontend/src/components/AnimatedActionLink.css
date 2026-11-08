@@ -1,0 +1,12 @@
+.animated-action { position: relative; isolation: isolate; overflow: hidden; }
+.animated-action__fill { position: absolute; inset: 0; pointer-events: none; transform-origin: left center; background: var(--color-brand-white); z-index: -1; }
+.animated-action--red-sweep .animated-action__fill,
+.animated-action--portfolio-sweep .animated-action__fill { background: var(--color-brand-red); }
+.animated-action__label { position: relative; pointer-events: none; }
+.animated-action:is(.animated-action--light-sweep, .animated-action--portfolio-sweep)[data-pressed="true"] .animated-action__fill { box-shadow: inset 0 3px 5px rgb(17 17 17 / 25%); }
+.animated-action:is(.animated-action--light-sweep, .animated-action--portfolio-sweep)[data-pressed="true"] .animated-action__label { font-weight: var(--font-weight-bold); }
+.animated-action:focus-visible { outline: 2px solid var(--color-brand-white); outline-offset: 5px; }
+.animated-action[aria-disabled="true"] { background: var(--color-cta-disabled-background); color: var(--color-cta-disabled-text); cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .animated-action, .animated-action__fill, .animated-action__label { animation: none; transition: none; }
+}

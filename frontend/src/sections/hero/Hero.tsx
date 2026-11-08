@@ -72,14 +72,14 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
         <p className="hero__location">Based in New Jersey<span aria-hidden="true" /></p>
         <p className="hero__description">Photography that feels natural, intentional, and uniquely yours.</p>
         <div className="hero__actions">
-          <ActionLink href={destinations.booking} className="action action--primary">Book Your Session</ActionLink>
-          <ActionLink href={destinations.explore} className="action action--text">Explore My Work...</ActionLink>
+          <ActionLink href={destinations.booking} className="action action--primary" effect="light-sweep">Book Your Session</ActionLink>
+          <ActionLink href={destinations.explore} className="action action--text" effect="red-text">Explore My Work...</ActionLink>
         </div>
       </div>
     </div>
     <div className="hero__footer">
       <p>Portraits, events, and visual stories crafted with intention.</p>
-      <ActionLink href={destinations.discover} className="action action--text hero__discover">SCROLL TO DISCOVER ↓</ActionLink>
+      <ActionLink href={destinations.discover} className="action action--text hero__discover" effect="red-sweep">SCROLL TO DISCOVER ↓</ActionLink>
     </div>
   </section>
 }

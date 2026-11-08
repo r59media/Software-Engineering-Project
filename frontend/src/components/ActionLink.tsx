@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
+import { AnimatedActionLink } from './AnimatedActionLink'
 
-interface ActionLinkProps {
+export interface ActionLinkProps {
+  effect?: 'light-sweep' | 'red-text' | 'red-sweep' | 'portfolio-sweep'
   children: ReactNode
   href?: string
   className?: string
@@ -10,7 +12,10 @@ interface ActionLinkProps {
   pressed?: boolean
 }
 
-export function ActionLink({ children, href, className, onNavigate, ariaCurrent, pressKey, pressed }: ActionLinkProps) {
+export function ActionLink({ children, href, className, onNavigate, ariaCurrent, pressKey, pressed, effect }: ActionLinkProps) {
+  if (effect) {
+    return <AnimatedActionLink {...{ children, href, className, onNavigate, ariaCurrent, pressKey, pressed, effect }} />
+  }
   if (!href) {
     return <span role="link" aria-disabled="true" className={className} title="This section is not available yet">{children}</span>
   }
