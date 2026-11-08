@@ -2,7 +2,7 @@
 .site-header[data-hidden="true"] { transform: translateY(-110%); }
 .site-header:has(:focus-visible) { transform: none; }
 .site-header__bar { pointer-events: auto; display: flex; align-items: center; gap: 2.0625rem; min-height: 4.875rem; padding: 0.4375rem 1.875rem 0.4375rem 1rem; background: var(--color-brand-yellow); color: var(--color-brand-black); border-radius: var(--radius-control); box-shadow: 0 4px 6px var(--color-black-30); }
-.site-header__brand { display: flex; align-items: center; flex: 0 0 7.375rem; min-height: 3.25rem; }
+.site-header__brand { display: flex; align-items: center; justify-content: center; flex: 0 0 7.375rem; min-height: 3.25rem; border-radius: var(--radius-control); }
 .site-header__brand img { display: block; }
 .site-header__divider { flex: 1; height: 1px; background: currentColor; min-width: 1rem; }
 .site-header__desktop { display: flex; align-items: center; gap: 2rem; }
@@ -74,3 +74,17 @@
   .site-header__toggle { pointer-events: auto; display: grid; place-items: center; margin-left: auto; width: 3.5rem; min-height: 3rem; border: 0; border-radius: var(--radius-control) 0 0 var(--radius-control); background: var(--color-brand-yellow); cursor: pointer; box-shadow: 0 3px 8px var(--color-black-30); }
 }
 @media (prefers-reduced-motion: reduce) { .site-header { transition: none; } }
+
+.site-header__brand .animated-action__fill { background: var(--color-brand-red); }
+.site-header__brand img { max-width: 100%; height: auto; }
+@media (hover: hover) and (pointer: fine) {
+  .site-header__brand[data-active="true"] img { filter: brightness(0) invert(0.94118); }
+}
+
+.site-header__link.animated-action { overflow: visible; border-radius: var(--radius-control); }
+.site-header__link .animated-action__label { display: grid; }
+.site-header__link .animated-action__label > span { grid-area: 1 / 1; text-align: center; }
+.site-header__link .animated-action__width { visibility: hidden; font-weight: var(--font-weight-bold); }
+.site-header__link[data-pressed="true"] { font-weight: var(--font-weight-bold); }
+.site-header__link:focus-visible { outline: 2px solid var(--color-brand-red); outline-offset: 5px; }
+.site-header__link[aria-disabled="true"] { background: transparent; color: var(--color-brand-black); }
