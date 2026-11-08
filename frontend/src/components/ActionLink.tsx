@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { AnimatedActionLink } from './AnimatedActionLink'
 
 export interface ActionLinkProps {
-  effect?: 'light-sweep' | 'red-text' | 'red-sweep' | 'portfolio-sweep'
+  effect?: 'light-sweep' | 'red-text' | 'red-sweep' | 'portfolio-sweep' | 'brand-sweep' | 'navigation-text'
   children: ReactNode
   href?: string
   className?: string

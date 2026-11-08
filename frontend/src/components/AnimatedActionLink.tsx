@@ -15,19 +15,24 @@ export function AnimatedActionLink({ children, href, className, onNavigate, aria
   const reduceMotion = useSyncExternalStore(subscribeReducedMotion, () => window.matchMedia(reducedMotionQuery).matches, () => false)
   const [hovered, setHovered] = useState(false)
   const [held, setHeld] = useState(false)
-  const active = Boolean(href) && (hovered || held)
-  const filled = effect !== 'red-text'
-  const labelColor = effect === 'red-text'
+  const active = Boolean(href) && (hovered || (held && effect !== 'brand-sweep'))
+  const filled = effect !== 'red-text' && effect !== 'navigation-text'
+  const labelColor = effect === 'navigation-text'
+    ? active ? 'var(--color-brand-red)' : 'var(--color-brand-black)'
+    : effect === 'red-text'
     ? active ? 'var(--color-brand-red)' : 'var(--color-brand-white)'
     : effect === 'portfolio-sweep'
       ? active ? 'var(--color-brand-white)' : 'var(--color-brand-black)'
       : undefined
   const Component = href ? motion.a : motion.span
-  const transition = { duration: reduceMotion ? 0 : 0.28, ease: [0.25, 0.1, 0.25, 1] as const }
+  const transition = { duration: reduceMotion ? 0 : effect === 'brand-sweep' ? 0.18 : 0.28, ease: [0.25, 0.1, 0.25, 1] as const }
 
   return (
     <Component
       href={href}
+      initial={false}
+      animate={effect === 'brand-sweep' ? { x: active && !reduceMotion ? 3 : 0 } : undefined}
+      transition={transition}
       role={href ? undefined : 'link'}
       tabIndex={href ? undefined : -1}
       aria-disabled={href ? undefined : true}
@@ -59,7 +64,7 @@ export function AnimatedActionLink({ children, href, className, onNavigate, aria
         initial={false}
         animate={labelColor && href ? { color: labelColor } : undefined}
         transition={held ? { duration: 0 } : transition}
-      >{children}</motion.span>
+      >{effect === 'navigation-text' && <span className="animated-action__width" aria-hidden="true">{children}</span>}<span>{children}</span></motion.span>
     </Component>
   )
 }
