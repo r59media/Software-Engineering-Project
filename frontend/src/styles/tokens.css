@@ -6,6 +6,8 @@
   --color-brand-white: #f0f0f0;
   --color-white: #ffffff;
   --color-gray: #666666;
+  --color-cta-disabled-background: #777777;
+  --color-cta-disabled-text: #4b4b4b;
   --color-text-muted: #aaaaaa;
 
   --color-black-80: rgb(17 17 17 / 80%);

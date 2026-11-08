@@ -93,7 +93,7 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
         <span className="site-header__divider" aria-hidden="true" />
         <nav className="site-header__desktop" aria-label="Main navigation">
           {desktopLinks.map(([label, href]) => <ActionLink key={label} href={href} className="site-header__link">{label}</ActionLink>)}
-          <ActionLink href={destinations.portfolio} className="action action--light site-header__cta">Go To Portfolio</ActionLink>
+          <ActionLink href={destinations.portfolio} className="action action--light site-header__cta" effect="portfolio-sweep">Go To Portfolio</ActionLink>
         </nav>
       </div>
       <button ref={trigger} className="site-header__toggle" type="button" aria-label="Open navigation menu" aria-haspopup="dialog" aria-expanded={open} aria-controls="mobile-navigation" onClick={openMenu}>
