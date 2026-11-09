@@ -5,6 +5,7 @@ import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
 import { AboutToRecent } from './sections/transition/AboutToRecent'
 import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
+import { BookingServices } from './sections/booking/BookingServices'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
@@ -130,6 +131,7 @@ function App() {
       </div>
       <AboutToRecent />
       <PortfolioGallery />
+      <BookingServices />
     </main>
     <SiteFooter />
   </div>
