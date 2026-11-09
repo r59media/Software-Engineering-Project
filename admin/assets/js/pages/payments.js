@@ -10,7 +10,7 @@
 
   const $ = s => document.querySelector(s);
   const $$ = s => [...document.querySelectorAll(s)];
-  const esc = s => window.R59.formValidation?.escapeHtml(s) || String(s);
+  const esc = s => window.R59.formValidation?.escapeHtml(s) || (s === null || s === undefined ? '' : String(s));
 
   function formatCurrency(val) {
     const num = parseFloat(val);
@@ -102,7 +102,37 @@
       return;
     }
 
-    container.innerHTML = packages.map(pkg => `
+    container.innerHTML = packages.map(pkg => {
+      const isCustomPrice = pkg.price === null || (pkg.priceMinor === null && pkg.price === null) || ((pkg.bookingMode === 'inquiry' || pkg.booking_mode === 'inquiry') && (pkg.price === null || pkg.price === 0));
+      const displayPrice = isCustomPrice ? '' : (pkg.price !== null && pkg.price !== undefined ? Number(pkg.price) : 0);
+      const bookingMode = pkg.bookingMode || pkg.booking_mode || (isCustomPrice ? 'inquiry' : 'direct');
+
+      let addPeople = pkg.additionalPeople || pkg.additional_people || null;
+      if (typeof addPeople === 'string') {
+        try { addPeople = JSON.parse(addPeople); } catch { addPeople = null; }
+      }
+      const includedPeople = addPeople && addPeople.includedPeople !== undefined && addPeople.includedPeople !== null ? addPeople.includedPeople : '';
+      const maxPeople = addPeople && addPeople.maxPeople !== undefined && addPeople.maxPeople !== null ? addPeople.maxPeople : '';
+      let extraPrice = '';
+      if (addPeople) {
+        if (addPeople.extraPersonPriceMinor !== undefined && addPeople.extraPersonPriceMinor !== null) {
+          extraPrice = addPeople.extraPersonPriceMinor / 100;
+        } else if (addPeople.extraPersonPrice !== undefined && addPeople.extraPersonPrice !== null) {
+          extraPrice = addPeople.extraPersonPrice;
+        }
+      }
+
+      const durationVal = pkg.durationMinutes !== null && pkg.durationMinutes !== undefined
+        ? pkg.durationMinutes
+        : (pkg.duration_minutes !== null && pkg.duration_minutes !== undefined ? pkg.duration_minutes : (bookingMode === 'inquiry' ? '' : 60));
+
+      const photoCountVal = pkg.photoCount !== null && pkg.photoCount !== undefined
+        ? pkg.photoCount
+        : (pkg.photo_count !== null && pkg.photo_count !== undefined ? pkg.photo_count : '');
+
+      const outfitsVal = pkg.outfits !== null && pkg.outfits !== undefined ? pkg.outfits : '';
+
+      return `
       <div class="card package-card" id="card-pkg-${esc(pkg.id)}" data-pkg-id="${esc(pkg.id)}">
         <div class="card-head">
           <h2>${esc(pkg.name || 'New Package')}</h2>
@@ -111,16 +141,68 @@
             <span>Available</span>
           </label>
         </div>
+
         <label class="f" for="pkg-${esc(pkg.id)}-name">Package name</label>
-        <input class="input package-name" id="pkg-${esc(pkg.id)}-name" type="text" value="${esc(pkg.name || '')}">
+        <input class="input package-name" id="pkg-${esc(pkg.id)}-name" type="text" value="${esc(pkg.name || '')}" placeholder="e.g. Portrait, Event">
 
-        <div class="price-field-row">
+        <label class="f" for="pkg-${esc(pkg.id)}-best-for" style="margin-top:10px;">Best for</label>
+        <input class="input package-best-for" id="pkg-${esc(pkg.id)}-best-for" type="text" value="${esc(pkg.bestFor || pkg.best_for || '')}" placeholder="e.g. LinkedIn, resumes & personal branding">
+
+        <div class="price-field-row" style="margin-top:10px;">
           <label class="f" for="pkg-${esc(pkg.id)}-price">Price ($)</label>
-          <button type="button" class="btn btn-sm package-price-edit">Edit price</button>
+          <button type="button" class="btn btn-sm package-price-edit" style="${isCustomPrice ? 'display:none;' : ''}">Edit price</button>
         </div>
-        <input class="input package-price price-locked" id="pkg-${esc(pkg.id)}-price" type="number" min="0" step="10" value="${Number(pkg.price) || 0}" readonly>
+        <input class="input package-price price-locked" id="pkg-${esc(pkg.id)}-price" type="number" min="0" step="10" value="${esc(displayPrice)}" placeholder="${isCustomPrice ? 'Custom quote' : 'e.g. 150'}" readonly ${isCustomPrice ? 'disabled' : ''}>
 
-        <label class="f" for="pkg-${esc(pkg.id)}-desc">Short description</label>
+        <label class="toggle" style="margin-top:8px; display:inline-flex; align-items:center; gap:8px;">
+          <input type="checkbox" class="package-custom-price-toggle" id="pkg-${esc(pkg.id)}-custom-price" ${isCustomPrice ? 'checked' : ''}>
+          <span style="font-size:12px; font-weight:500;">Custom Quote / Inquiry (No fixed price)</span>
+        </label>
+
+        <div class="row" style="gap:10px; margin-top:10px;">
+          <div style="flex:1;">
+            <label class="f" for="pkg-${esc(pkg.id)}-duration">Duration (minutes)</label>
+            <input class="input package-duration" id="pkg-${esc(pkg.id)}-duration" type="number" min="0" step="5" value="${esc(durationVal)}" placeholder="e.g. 60">
+          </div>
+          <div style="flex:1;">
+            <label class="f" for="pkg-${esc(pkg.id)}-booking-mode">Booking Mode</label>
+            <select class="input package-booking-mode" id="pkg-${esc(pkg.id)}-booking-mode">
+              <option value="direct" ${bookingMode === 'direct' ? 'selected' : ''}>Direct booking</option>
+              <option value="inquiry" ${bookingMode === 'inquiry' ? 'selected' : ''}>Custom quote / Inquiry</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row" style="gap:10px; margin-top:10px;">
+          <div style="flex:1;">
+            <label class="f" for="pkg-${esc(pkg.id)}-photo-count">Photo count</label>
+            <input class="input package-photo-count" id="pkg-${esc(pkg.id)}-photo-count" type="number" min="0" step="1" value="${esc(photoCountVal)}" placeholder="e.g. 10">
+          </div>
+          <div style="flex:1;">
+            <label class="f" for="pkg-${esc(pkg.id)}-outfits">Outfits</label>
+            <input class="input package-outfits" id="pkg-${esc(pkg.id)}-outfits" type="number" min="0" step="1" value="${esc(outfitsVal)}" placeholder="e.g. 2">
+          </div>
+        </div>
+
+        <div class="additional-people-block" style="margin-top:12px; padding:10px; background:var(--panel-2, #18181b); border-radius:6px; border:1px solid var(--line, #27272a);">
+          <div class="hint" style="font-weight:600; margin-bottom:6px; color:var(--text, #f4f4f5);">Additional People Rules</div>
+          <div class="row" style="gap:8px;">
+            <div style="flex:1;">
+              <label class="f" for="pkg-${esc(pkg.id)}-inc-people" style="font-size:11px;">Included</label>
+              <input class="input package-included-people" id="pkg-${esc(pkg.id)}-inc-people" type="number" min="1" step="1" value="${esc(includedPeople)}" placeholder="1">
+            </div>
+            <div style="flex:1;">
+              <label class="f" for="pkg-${esc(pkg.id)}-max-people" style="font-size:11px;">Max</label>
+              <input class="input package-max-people" id="pkg-${esc(pkg.id)}-max-people" type="number" min="1" step="1" value="${esc(maxPeople)}" placeholder="Unlimited">
+            </div>
+            <div style="flex:1;">
+              <label class="f" for="pkg-${esc(pkg.id)}-extra-price" style="font-size:11px;">Extra ($)</label>
+              <input class="input package-extra-price" id="pkg-${esc(pkg.id)}-extra-price" type="number" min="0" step="5" value="${esc(extraPrice)}" placeholder="0">
+            </div>
+          </div>
+        </div>
+
+        <label class="f" for="pkg-${esc(pkg.id)}-desc" style="margin-top:10px;">Short description</label>
         <textarea class="input desc-input" id="pkg-${esc(pkg.id)}-desc" rows="3" placeholder="Describe this photography package">${esc(pkg.description || '')}</textarea>
 
         <div class="row" style="margin-top:16px;">
@@ -128,7 +210,8 @@
           <button type="button" class="btn btn-primary btn-sm pkg-save-btn" style="flex:1; justify-content:center;">Save package</button>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
   }
 
   function addPackage() {
@@ -138,9 +221,21 @@
     const newPkg = {
       id: newId,
       name: 'New Package',
+      title: 'New Package',
       price: 0,
+      priceMinor: 0,
       description: '',
+      bestFor: '',
+      best_for: '',
+      durationMinutes: 60,
       duration_minutes: 60,
+      photoCount: 5,
+      photo_count: 5,
+      outfits: 1,
+      bookingMode: 'direct',
+      booking_mode: 'direct',
+      additionalPeople: { includedPeople: 1 },
+      additional_people: { includedPeople: 1 },
       category: 'General',
       active: true,
       isNew: true
@@ -281,7 +376,7 @@
           type,
           amount,
           discount: amount,
-          description: '',
+          description,
           active: true
         }).then(created => {
           if (created?.id) {
@@ -360,8 +455,9 @@
           const currentState = window.R59.state.getState();
           const pkg = (currentState.packages || []).find(p => String(p.id) === String(pkgId));
           currentState.packages = (currentState.packages || []).filter(p => String(p.id) !== String(pkgId));
-          if (pkg && !pkg.isNew && !String(pkg.id).startsWith('pkg_') && window.R59.api?.packages?.deletePackage) {
-            window.R59.api.packages.deletePackage(pkg.id).catch(err => console.warn('[payments] Failed to delete package:', err));
+          const api = window.R59.api?.packages || window.R59.packagesApi;
+          if (pkg && !pkg.isNew && !String(pkg.id).startsWith('pkg_') && api?.deletePackage) {
+            api.deletePackage(pkg.id).catch(err => console.warn('[payments] Failed to delete package:', err));
           }
           renderPackages();
           window.R59.state.markDirty();
@@ -374,6 +470,8 @@
       if (editPriceBtn) {
         e.preventDefault();
         const card = editPriceBtn.closest('.package-card');
+        const customPriceToggle = card?.querySelector('.package-custom-price-toggle');
+        if (customPriceToggle && customPriceToggle.checked) return;
         const priceInput = card?.querySelector('.package-price');
         if (priceInput) {
           priceInput.readOnly = !priceInput.readOnly;
@@ -396,25 +494,57 @@
         const currentState = window.R59.state.getState();
         const pkg = currentState.packages?.find(p => String(p.id) === String(pkgId));
         if (pkg) {
+          const isCustomPrice = card.querySelector('.package-custom-price-toggle')?.checked ?? false;
           const rawPrice = card.querySelector('.package-price')?.value;
-          if (rawPrice !== undefined && rawPrice !== '' && !window.R59.formValidation?.isValidPrice(rawPrice)) {
-            window.toast?.('Please enter a valid package price');
-            return;
+          if (!isCustomPrice) {
+            if (rawPrice !== undefined && rawPrice !== '' && !window.R59.formValidation?.isValidPrice(rawPrice)) {
+              window.toast?.('Please enter a valid package price');
+              return;
+            }
           }
           const pendingName = card.querySelector('.package-name')?.value.trim() || 'Package';
           const isNewPending = pkg.isNew || String(pkg.id).startsWith('pkg_');
-          window.R59.confirmation.confirmSavePackage(pendingName, isNewPending, () => savePackage(card, pkg, rawPrice));
+          window.R59.confirmation.confirmSavePackage(pendingName, isNewPending, () => savePackage(card, pkg));
         }
         return;
       }
     });
 
-    async function savePackage(card, pkg, rawPrice) {
-      pkg.name = card.querySelector('.package-name')?.value.trim() || 'Package';
-      pkg.price = parseFloat(rawPrice) || 0;
-      pkg.description = card.querySelector('.desc-input')?.value.trim() || '';
-      pkg.active = card.querySelector('.pkg-active-toggle')?.checked ?? true;
+    async function savePackage(card, pkg) {
+      const name = card.querySelector('.package-name')?.value.trim() || 'Package';
+      const bestFor = card.querySelector('.package-best-for')?.value.trim() || '';
+      const isCustomPrice = card.querySelector('.package-custom-price-toggle')?.checked ?? false;
+      const rawPrice = card.querySelector('.package-price')?.value;
+      const rawDuration = card.querySelector('.package-duration')?.value;
+      const rawPhotoCount = card.querySelector('.package-photo-count')?.value;
+      const rawOutfits = card.querySelector('.package-outfits')?.value;
+      const bookingMode = card.querySelector('.package-booking-mode')?.value || 'direct';
+      const rawIncluded = card.querySelector('.package-included-people')?.value;
+      const rawMax = card.querySelector('.package-max-people')?.value;
+      const rawExtraPrice = card.querySelector('.package-extra-price')?.value;
+      const description = card.querySelector('.desc-input')?.value.trim() || '';
+      const active = card.querySelector('.pkg-active-toggle')?.checked ?? true;
 
+      const price = isCustomPrice ? null : (rawPrice !== '' && rawPrice !== undefined && rawPrice !== null ? parseFloat(rawPrice) : null);
+      const durationMinutes = rawDuration !== '' && rawDuration !== undefined && rawDuration !== null
+        ? parseInt(rawDuration, 10)
+        : (bookingMode === 'inquiry' ? null : 60);
+      const photoCount = rawPhotoCount !== '' && rawPhotoCount !== undefined && rawPhotoCount !== null ? parseInt(rawPhotoCount, 10) : null;
+      const outfits = rawOutfits !== '' && rawOutfits !== undefined && rawOutfits !== null ? parseInt(rawOutfits, 10) : null;
+
+      let additionalPeople = null;
+      const inc = rawIncluded !== '' && rawIncluded !== undefined && rawIncluded !== null ? parseInt(rawIncluded, 10) : null;
+      const max = rawMax !== '' && rawMax !== undefined && rawMax !== null ? parseInt(rawMax, 10) : null;
+      const extra = rawExtraPrice !== '' && rawExtraPrice !== undefined && rawExtraPrice !== null ? parseFloat(rawExtraPrice) : null;
+      if (inc !== null || max !== null || extra !== null) {
+        additionalPeople = {
+          includedPeople: inc !== null ? inc : 1
+        };
+        if (max !== null) additionalPeople.maxPeople = max;
+        if (extra !== null) additionalPeople.extraPersonPriceMinor = Math.round(extra * 100);
+      }
+
+      // Lock price field visually
       const priceInput = card.querySelector('.package-price');
       const priceBtn = card.querySelector('.package-price-edit');
       if (priceInput) {
@@ -423,70 +553,178 @@
       }
       if (priceBtn) priceBtn.textContent = 'Edit price';
 
+      const payload = {
+        name,
+        title: name,
+        description,
+        best_for: bestFor,
+        bestFor: bestFor,
+        photo_count: photoCount,
+        photoCount: photoCount,
+        outfits,
+        duration_minutes: durationMinutes,
+        durationMinutes: durationMinutes,
+        booking_mode: bookingMode,
+        bookingMode: bookingMode,
+        additional_people: additionalPeople,
+        additionalPeople: additionalPeople,
+        category: pkg.category || 'General',
+        is_active: active ? 1 : 0,
+        active: active,
+        customPrice: isCustomPrice,
+        price: price
+      };
+
       const isNewPkg = pkg.isNew || String(pkg.id).startsWith('pkg_');
+      const api = window.R59.api?.packages || window.R59.packagesApi;
+
       try {
-        if (isNewPkg && window.R59.api?.packages?.createPackage) {
-          const created = await window.R59.api.packages.createPackage({
-            title: pkg.name,
-            description: pkg.description,
-            price: Math.round((Number(pkg.price) || 0) * 100),
-            duration_minutes: Number(pkg.duration_minutes) || 60,
-            category: pkg.category || 'General',
-            is_active: pkg.active !== false ? 1 : 0
-          });
-          if (created?.id) {
-            pkg.id = created.id;
+        if (isNewPkg && api?.createPackage) {
+          const created = await api.createPackage(payload);
+          if (created?.id || created?.data?.id) {
+            pkg.id = String(created.id || created.data.id);
             delete pkg.isNew;
-            renderPackages();
           }
-        } else if (!isNewPkg && window.R59.api?.packages?.updatePackage) {
-          await window.R59.api.packages.updatePackage(pkg.id, {
-            title: pkg.name,
-            description: pkg.description,
-            price: Math.round((Number(pkg.price) || 0) * 100),
-            duration_minutes: Number(pkg.duration_minutes) || 60,
-            category: pkg.category || 'General',
-            is_active: pkg.active !== false ? 1 : 0
-          });
+        } else if (!isNewPkg && api?.updatePackage) {
+          await api.updatePackage(pkg.id, payload);
         }
       } catch (err) {
         console.warn('[payments] Failed to persist package:', err);
-        window.toast(`Could not save ${pkg.name}. Please try again.`, 4000);
+        window.toast?.(`Could not save ${name}. Please try again.`, 4000);
         return;
       }
+
+      // Update local state
+      pkg.name = name;
+      pkg.title = name;
+      pkg.description = description;
+      pkg.bestFor = bestFor;
+      pkg.best_for = bestFor;
+      pkg.price = price;
+      pkg.priceMinor = price !== null ? Math.round(price * 100) : null;
+      pkg.durationMinutes = durationMinutes;
+      pkg.duration_minutes = durationMinutes;
+      pkg.photoCount = photoCount;
+      pkg.photo_count = photoCount;
+      pkg.outfits = outfits;
+      pkg.bookingMode = bookingMode;
+      pkg.booking_mode = bookingMode;
+      pkg.additionalPeople = additionalPeople;
+      pkg.additional_people = additionalPeople;
+      pkg.active = active;
+      pkg.is_active = active ? 1 : 0;
+      delete pkg.isNew;
+
+      renderPackages();
       window.R59.state.markDirty();
-      window.toast('Package saved');
+      window.toast?.('Package saved');
     }
 
-    // Package active toggle listener
+    // Delegated change events for toggles and dropdowns
     document.addEventListener('change', e => {
-      const toggle = e.target.closest('.pkg-active-toggle, [data-pkg-toggle]');
-      if (!toggle) return;
-      const card = toggle.closest('.package-card');
-      const pkgId = toggle.dataset.pkgToggle || card?.dataset.pkgId;
-      if (!pkgId) return;
-      const currentState = window.R59.state.getState();
-      const pkg = currentState.packages?.find(p => String(p.id) === String(pkgId));
-      if (!pkg) return;
-      const nextActive = toggle.checked;
-      window.R59.confirmation.confirmToggleActive(
-        'package',
-        pkg.name || 'This package',
-        nextActive,
-        () => applyPackageActive(pkg, nextActive),
-        () => { toggle.checked = !nextActive; }
-      );
+      const target = e.target;
+      if (!target) return;
+
+      // Custom price toggle
+      const customPriceToggle = target.closest('.package-custom-price-toggle');
+      if (customPriceToggle) {
+        const card = customPriceToggle.closest('.package-card');
+        const priceInput = card?.querySelector('.package-price');
+        const priceBtn = card?.querySelector('.package-price-edit');
+        if (customPriceToggle.checked) {
+          if (priceInput) {
+            priceInput.readOnly = true;
+            priceInput.classList.add('price-locked');
+            priceInput.disabled = true;
+            priceInput.placeholder = 'Custom quote';
+          }
+          if (priceBtn) priceBtn.style.display = 'none';
+        } else {
+          if (priceInput) {
+            priceInput.disabled = false;
+            priceInput.readOnly = false;
+            priceInput.classList.remove('price-locked');
+            priceInput.placeholder = 'e.g. 150';
+            priceInput.focus();
+          }
+          if (priceBtn) {
+            priceBtn.style.display = '';
+            priceBtn.textContent = 'Finish editing';
+          }
+        }
+        window.R59.state.markDirty();
+        return;
+      }
+
+      // Booking mode change
+      const bookingModeSelect = target.closest('.package-booking-mode');
+      if (bookingModeSelect) {
+        const card = bookingModeSelect.closest('.package-card');
+        const customToggle = card?.querySelector('.package-custom-price-toggle');
+        if (bookingModeSelect.value === 'inquiry') {
+          if (customToggle && !customToggle.checked) {
+            customToggle.checked = true;
+            customToggle.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        } else if (bookingModeSelect.value === 'direct') {
+          if (customToggle && customToggle.checked) {
+            customToggle.checked = false;
+            customToggle.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+        window.R59.state.markDirty();
+        return;
+      }
+
+      // Package active toggle listener
+      const toggle = target.closest('.pkg-active-toggle, [data-pkg-toggle]');
+      if (toggle) {
+        const card = toggle.closest('.package-card');
+        const pkgId = toggle.dataset.pkgToggle || card?.dataset.pkgId;
+        if (!pkgId) return;
+        const currentState = window.R59.state.getState();
+        const pkg = currentState.packages?.find(p => String(p.id) === String(pkgId));
+        if (!pkg) return;
+        const nextActive = toggle.checked;
+        window.R59.confirmation.confirmToggleActive(
+          'package',
+          pkg.name || 'This package',
+          nextActive,
+          () => applyPackageActive(pkg, nextActive),
+          () => { toggle.checked = !nextActive; }
+        );
+        return;
+      }
+
+      // Coupon active toggle listener
+      const couponToggle = target.closest('[data-coupon-active], [data-coupon-toggle]');
+      if (couponToggle) {
+        const rawId = couponToggle.dataset.couponToggle || couponToggle.dataset.couponActive;
+        const currentState = window.R59.state.getState();
+        const targetCoupon = currentState.coupons.find(c => String(c.id) === String(rawId));
+        if (!targetCoupon) return;
+        const nextActive = couponToggle.checked;
+        window.R59.confirmation.confirmToggleActive(
+          'coupon',
+          targetCoupon.code,
+          nextActive,
+          () => applyCouponActive(targetCoupon, nextActive),
+          () => { couponToggle.checked = !nextActive; }
+        );
+        return;
+      }
     });
 
     function applyPackageActive(pkg, nextActive) {
       pkg.active = nextActive;
+      pkg.is_active = nextActive ? 1 : 0;
       window.R59.state.markDirty();
-      if (!pkg.isNew && !String(pkg.id).startsWith('pkg_') && window.R59.api?.packages?.updatePackage) {
-        window.R59.api.packages.updatePackage(pkg.id, {
+      const api = window.R59.api?.packages || window.R59.packagesApi;
+      if (!pkg.isNew && !String(pkg.id).startsWith('pkg_') && api?.updatePackage) {
+        api.updatePackage(pkg.id, {
           title: pkg.name,
-          description: pkg.description,
-          price: Math.round((Number(pkg.price) || 0) * 100),
-          is_active: pkg.active ? 1 : 0
+          name: pkg.name,
+          is_active: nextActive ? 1 : 0
         }).catch(err => console.warn('[payments] Failed to toggle package active status:', err));
       }
     }
@@ -504,12 +742,34 @@
         const h2 = card.querySelector('h2');
         if (h2) h2.textContent = e.target.value.trim() || 'Package';
         pkg.name = e.target.value.trim();
+        pkg.title = e.target.value.trim();
         window.R59.state.markDirty();
       } else if (e.target.classList.contains('package-price')) {
         pkg.price = parseFloat(e.target.value) || 0;
         window.R59.state.markDirty();
       } else if (e.target.classList.contains('desc-input')) {
         pkg.description = e.target.value.trim();
+        window.R59.state.markDirty();
+      } else if (e.target.classList.contains('package-best-for')) {
+        pkg.bestFor = e.target.value.trim();
+        pkg.best_for = e.target.value.trim();
+        window.R59.state.markDirty();
+      } else if (e.target.classList.contains('package-duration')) {
+        pkg.durationMinutes = e.target.value !== '' ? parseInt(e.target.value, 10) : null;
+        pkg.duration_minutes = pkg.durationMinutes;
+        window.R59.state.markDirty();
+      } else if (e.target.classList.contains('package-photo-count')) {
+        pkg.photoCount = e.target.value !== '' ? parseInt(e.target.value, 10) : null;
+        pkg.photo_count = pkg.photoCount;
+        window.R59.state.markDirty();
+      } else if (e.target.classList.contains('package-outfits')) {
+        pkg.outfits = e.target.value !== '' ? parseInt(e.target.value, 10) : null;
+        window.R59.state.markDirty();
+      } else if (
+        e.target.classList.contains('package-included-people') ||
+        e.target.classList.contains('package-max-people') ||
+        e.target.classList.contains('package-extra-price')
+      ) {
         window.R59.state.markDirty();
       }
     });
@@ -554,23 +814,6 @@
           window.toast('Coupon removed');
         });
       }
-    });
-
-    $('#couponList')?.addEventListener('change', e => {
-      const t = e.target.closest('[data-coupon-active], [data-coupon-toggle]');
-      if (!t) return;
-      const rawId = t.dataset.couponToggle || t.dataset.couponActive;
-      const currentState = window.R59.state.getState();
-      const target = currentState.coupons.find(c => String(c.id) === String(rawId));
-      if (!target) return;
-      const nextActive = t.checked;
-      window.R59.confirmation.confirmToggleActive(
-        'coupon',
-        target.code,
-        nextActive,
-        () => applyCouponActive(target, nextActive),
-        () => { t.checked = !nextActive; }
-      );
     });
 
     function applyCouponActive(target, nextActive) {
