@@ -58,27 +58,47 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
     ).run().catch(() => {})
 
     const sections = ['hero', 'recent', 'gallery', 'about'] as const
+    const seedFingerprint = sections.flatMap(sec =>
+      ((defaultPortfolioSeed as any)[sec] || []).map((i: any) => `${sec}:${i.title}:${i.display_order ?? i.order ?? 1}:${i.media_key}`)
+    ).join('|')
+
+    const settingsRows = await db.prepare(
+      "SELECT setting_key, setting_value FROM Admin_Settings WHERE setting_key LIKE 'portfolio_seeded_%' OR setting_key = 'portfolio_seed_fingerprint'"
+    ).all<{ setting_key: string; setting_value: string }>().catch(() => ({ results: [] as { setting_key: string; setting_value: string }[] }))
+    const settingsMap = new Map((settingsRows.results || []).map(r => [r.setting_key, r.setting_value]))
+
+    const allSeeded = sections.every(sec => settingsMap.has(`portfolio_seeded_${sec}`))
+    const currentFingerprint = settingsMap.get('portfolio_seed_fingerprint')
+
+    if (allSeeded && currentFingerprint === seedFingerprint) {
+      return
+    }
+
     const statements: any[] = []
 
-    // 1. Update any existing /assets/ rows whose hash changed on rebuild
-    for (const sec of sections) {
-      const defaults = (defaultPortfolioSeed as any)[sec] || []
-      for (const item of defaults) {
-        statements.push(
-          db.prepare(
-            "UPDATE Portfolio_Images SET media_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND media_key LIKE '/assets/%' AND media_key != ?"
-          ).bind(item.media_key, sec, item.title, item.display_order ?? item.order ?? 1, item.media_key)
-        )
+    // 1. Update any existing /assets/ rows whose hash changed on rebuild when fingerprint differs
+    if (currentFingerprint !== seedFingerprint) {
+      for (const sec of sections) {
+        const defaults = (defaultPortfolioSeed as any)[sec] || []
+        for (const item of defaults) {
+          statements.push(
+            db.prepare(
+              "UPDATE Portfolio_Images SET media_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND media_key LIKE '/assets/%' AND media_key != ?"
+            ).bind(item.media_key, sec, item.title, item.display_order ?? item.order ?? 1, item.media_key)
+          )
+        }
       }
+      statements.push(
+        db.prepare(
+          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('portfolio_seed_fingerprint', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+        ).bind(seedFingerprint)
+      )
     }
 
     // 2. Seed each section's default images exactly once. A flag in Admin_Settings records the
     //    first run so photos the admin later deletes are not re-inserted. Sections that already
     //    hold photos (databases seeded before the flag existed) are only marked, never re-seeded.
-    const flagRows = await db.prepare(
-      "SELECT setting_key FROM Admin_Settings WHERE setting_key LIKE 'portfolio_seeded_%'"
-    ).all<{ setting_key: string }>().catch(() => ({ results: [] as { setting_key: string }[] }))
-    const seededFlags = new Set((flagRows.results || []).map(row => row.setting_key))
+    const seededFlags = new Set(settingsRows.results?.map(row => row.setting_key) || [])
     const countRows = await db.prepare(
       'SELECT LOWER(section) AS section, COUNT(*) AS cnt FROM Portfolio_Images GROUP BY LOWER(section)'
     ).all<{ section: string; cnt: number }>().catch(() => ({ results: [] as { section: string; cnt: number }[] }))

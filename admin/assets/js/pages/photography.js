@@ -95,7 +95,8 @@
       }
     }
 
-    const aboutProfileCard = $('#aboutProfileCard');
+    const card = $('#aboutProfileCard') || $('[data-collapsible-id="about-profile"]');
+    const aboutProfileCard = card;
     if (aboutProfileCard) {
       aboutProfileCard.style.display = currentTab === 'about' ? '' : 'none';
     }
@@ -133,7 +134,7 @@
     if (emailEl && !emailEl.value) emailEl.value = currentState.email;
     const phoneEl = $('#phone');
     if (phoneEl && !phoneEl.value) phoneEl.value = currentState.phone;
-    const locEl = $('#location');
+    const locEl = $('#city') || $('#location');
     if (locEl && !locEl.value) locEl.value = currentState.location;
     const travelEl = $('#travel');
     if (travelEl && !travelEl.value) travelEl.value = currentState.travel;

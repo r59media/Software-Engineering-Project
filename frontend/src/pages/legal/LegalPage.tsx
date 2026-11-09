@@ -1,10 +1,14 @@
 import { ActionLink } from '../../components/ActionLink'
 import arrowLeft from '../../assets/legal/arrow-left.svg'
 import { legalContent } from './legalContent'
+import { footerContent } from '../../config/footer'
+import { usePublicProfile } from '../../sections/about/useAboutData'
 import './LegalPage.css'
 
 export function LegalPage({ page }: { page: 'privacy' | 'terms' }) {
+  const { profile } = usePublicProfile()
   const content = legalContent[page]
+  const contactEmail = profile?.email?.trim() || footerContent.email
 
   return (
     <main id="legal-content" className={`legal-page legal-page--${page}`}>
@@ -33,7 +37,7 @@ export function LegalPage({ page }: { page: 'privacy' | 'terms' }) {
         <section className="legal-page__questions">
           <h2>{content.questionHeading}</h2>
           <p>{content.questionText}</p>
-          <ActionLink className="legal-page__contact">Contact R59MEDIA →</ActionLink>
+          <ActionLink className="legal-page__contact" href={`mailto:${contactEmail}`}>Contact R59MEDIA →</ActionLink>
         </section>
       </div>
     </main>

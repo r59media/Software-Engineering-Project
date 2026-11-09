@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { HeroDestinations } from '../types/hero'
 import { footerSocialLinks } from '../config/footer'
+import { usePublicProfile } from '../sections/about/useAboutData'
 import { ActionLink } from './ActionLink'
 import instagram from '../assets/navigation/instagram.svg'
 import threads from '../assets/navigation/threads.svg'
@@ -12,7 +13,37 @@ import './SiteHeader.css'
 
 const socialIcons = { Instagram: instagram, Threads: threads, X: x }
 
+function extractSocialUrl(profileSocial: unknown, platform: string): string | undefined {
+  if (!profileSocial) return undefined
+  if (Array.isArray(profileSocial)) {
+    const item = profileSocial.find(
+      (s: unknown) =>
+        s &&
+        typeof s === 'object' &&
+        'platform' in s &&
+        typeof s.platform === 'string' &&
+        (s.platform.trim().toLowerCase() === platform.toLowerCase() ||
+          (platform.toLowerCase() === 'x' && s.platform.trim().toLowerCase() === 'twitter'))
+    )
+    if (item && typeof item === 'object') {
+      const url = 'url' in item ? item.url : 'href' in item ? item.href : undefined
+      if (typeof url === 'string' && /^https?:\/\//i.test(url)) return url
+    }
+  } else if (typeof profileSocial === 'object') {
+    const rec = profileSocial as Record<string, unknown>
+    const matchKey = Object.keys(rec).find(k => {
+      const lower = k.toLowerCase()
+      return lower === platform.toLowerCase() || (platform.toLowerCase() === 'x' && lower === 'twitter')
+    })
+    if (matchKey && typeof rec[matchKey] === 'string' && /^https?:\/\//i.test(rec[matchKey] as string)) {
+      return rec[matchKey] as string
+    }
+  }
+  return undefined
+}
+
 export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: HeroDestinations; homeHref?: string }) {
+  const { profile } = usePublicProfile()
   const header = useRef<HTMLElement>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -86,6 +117,15 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
     ['Portfolio', destinations.portfolio, 'portfolio'], ['Booking', destinations.booking, 'booking'],
     ['Get In Touch', destinations.contact, 'contact'], ['FAQ', destinations.faq, 'faq']] as const
 
+  const resolvedSocials = useMemo(() => {
+    const mapped = footerSocialLinks.map(({ platform, href: staticHref }) => {
+      const remoteUrl = extractSocialUrl(profile?.social, platform)
+      return { platform, href: remoteUrl || staticHref }
+    })
+    const active = mapped.filter(item => Boolean(item.href))
+    return active.length > 0 ? active : footerSocialLinks
+  }, [profile?.social])
+
   return <>
     <header ref={header} className="site-header" data-hidden={hidden && !open} onFocusCapture={() => setHidden(false)}>
       <div className="site-header__bar">
@@ -125,7 +165,7 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
         <ActionLink href={destinations.booking} className="mobile-navigation__booking" pressKey="booking-cta" pressed={pressed === 'booking-cta'} onNavigate={closeMenu}><span>Book Your Session</span></ActionLink>
         <div className="mobile-navigation__connect">
           <h2>CONNECT</h2>
-          <ul>{footerSocialLinks.map(({ platform, href }) => <li key={platform}>
+          <ul>{resolvedSocials.map(({ platform, href }) => <li key={platform}>
             {href && /^https:\/\//.test(href)
               ? <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`${platform} (opens in a new tab)`}><img src={socialIcons[platform]} alt="" /></a>
               : <span role="link" aria-disabled="true" aria-label={`${platform} — link coming soon`} title="Link coming soon"><img src={socialIcons[platform]} alt="" /></span>}

@@ -18,7 +18,6 @@ export type Bindings = {
   SQUARE_ACCESS_TOKEN?: string
   SQUARE_ENVIRONMENT?: string
   SQUARE_LOCATION_ID?: string
-  CLOUDFLARE_ACCOUNT_ID?: string
   ADMIN_SECRET?: string
   ADMIN_EMAIL?: string
   ALLOWED_ORIGINS?: string
@@ -71,9 +70,9 @@ app.use('*', async (c, next) => {
   const corsMiddleware = cors({
     origin: requestOrigin,
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-R59-Client'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-R59-Client', 'X-Requested-With'],
     exposeHeaders: ['Content-Length', 'X-Requested-With'],
-    credentials: false,
+    credentials: true,
   })
   return corsMiddleware(c, next)
 })
@@ -140,7 +139,7 @@ app.get('/admin', (c) => {
 })
 
 const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb)$/i
-const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|utils\/webpConverter\.js|api\/(bookingsApi|dashboardApi|packagesApi|paymentsApi|personalApi|photographyApi|scheduleApi)\.js)/i
+const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|utils\/webpConverter\.js|api\/(bookingsApi|packagesApi|paymentsApi|photographyApi|scheduleApi)\.js)/i
 
 app.get('/admin/*', async (c) => {
   if (!c.env.ASSETS) {
@@ -245,7 +244,11 @@ app.get('/api/health', async (c) => {
     await c.env.DB.prepare('SELECT 1').first()
     return c.json({ status: 'ok' })
   } catch {
-    return c.json({ status: 'error' }, 503)
+    return c.json({
+      status: 'error',
+      database: 'disconnected',
+      error: { code: 'DB_DISCONNECTED', message: 'Database connection check failed.', details: [] }
+    }, 500)
   }
 })
 
@@ -313,7 +316,7 @@ app.route('/api/admin', adminRouter)
 
 // D1 Media Storage Upload (admin only) — same limits the upload-url route advertises
 const MEDIA_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic']
-const MAX_MEDIA_BYTES = 50 * 1024 * 1024
+const MAX_MEDIA_BYTES = 15 * 1024 * 1024
 
 app.put('/api/media/*', adminAuth, async (c) => {
   const url = new URL(c.req.url)
@@ -327,12 +330,17 @@ app.put('/api/media/*', adminAuth, async (c) => {
     return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Only JPEG, PNG, WebP or HEIC images can be stored.', details: [] } }, 400)
   }
 
+  const declaredLength = Number(c.req.header('Content-Length') || '0')
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_MEDIA_BYTES) {
+    return c.json({ status: 'error', error: { code: 'FILE_TOO_LARGE', message: 'File exceeds maximum allowed size (15 MB).', details: [] } }, 413)
+  }
+
   const arrayBuffer = await c.req.arrayBuffer()
   if (!arrayBuffer || arrayBuffer.byteLength === 0) {
     return c.json({ error: { code: 'VALIDATION_FAILED', message: 'No file data received.', details: [] } }, 400)
   }
   if (arrayBuffer.byteLength > MAX_MEDIA_BYTES) {
-    return c.json({ error: { code: 'FILE_TOO_LARGE', message: 'File size exceeds the 50 MB maximum limit.', details: [] } }, 413)
+    return c.json({ status: 'error', error: { code: 'FILE_TOO_LARGE', message: 'File exceeds maximum allowed size (15 MB).', details: [] } }, 413)
   }
 
   try {
@@ -372,6 +380,18 @@ app.put('/api/media/*', adminAuth, async (c) => {
       await c.env.DB.batch(statements.slice(i, i + 50))
     }
 
+    const edgeCache = (caches as unknown as { default?: Cache }).default
+    if (edgeCache) {
+      const purgeUrl = new URL(c.req.url)
+      purgeUrl.search = ''
+      const purgeReq = new Request(purgeUrl.toString(), { method: 'GET' })
+      try {
+        c.executionCtx.waitUntil(edgeCache.delete(purgeReq))
+      } catch {
+        await edgeCache.delete(purgeReq).catch(() => {})
+      }
+    }
+
     return c.json({ success: true, fileKey: key, key }, 200)
   } catch (err: any) {
     return c.json({
@@ -385,7 +405,7 @@ app.put('/api/media/*', adminAuth, async (c) => {
 })
 
 // D1 Media Storage Retrieval
-app.get('/api/media/*', async (c) => {
+app.on(['GET', 'HEAD'], '/api/media/*', async (c) => {
   const fetchDest = c.req.header('Sec-Fetch-Dest')
   const fetchSite = c.req.header('Sec-Fetch-Site')
   if (fetchDest === 'document') {
@@ -405,10 +425,43 @@ app.get('/api/media/*', async (c) => {
   const url = new URL(c.req.url)
   const key = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
   if (!key || key.includes('..')) {
-    return c.json({ status: 'error', code: 'BAD_REQUEST', message: 'Invalid media key' }, 400)
+    return c.json({ status: 'error', error: { code: 'INVALID_KEY', message: 'Invalid key', details: [] } }, 400)
+  }
+
+  const isHead = c.req.method === 'HEAD'
+  const cacheUrl = new URL(c.req.url)
+  cacheUrl.search = ''
+  const cacheKey = new Request(cacheUrl.toString(), { method: 'GET' })
+  const edgeCache = (caches as unknown as { default?: Cache }).default
+
+  if (!isHead && edgeCache) {
+    const cached = await edgeCache.match(cacheKey).catch(() => undefined)
+    if (cached) return cached
   }
 
   try {
+    if (isHead) {
+      const meta = await c.env.DB.prepare(
+        'SELECT content_type, SUM(LENGTH(data)) AS total_length, COUNT(*) AS cnt FROM Media_Storage WHERE file_key = ?'
+      ).bind(key).first<{ content_type: string | null; total_length: number | null; cnt: number }>()
+
+      if (!meta || !meta.cnt) {
+        return c.notFound()
+      }
+
+      return new Response(null, {
+        status: 200,
+        headers: {
+          'Content-Type': meta.content_type || 'image/webp',
+          'Content-Length': String(meta.total_length || 0),
+          'Cache-Control': 'public, max-age=31536000, immutable',
+          'Cross-Origin-Resource-Policy': 'same-origin',
+          'Content-Disposition': 'inline',
+          'X-Content-Type-Options': 'nosniff',
+        }
+      })
+    }
+
     const rows = await c.env.DB.prepare(
       'SELECT chunk_index, content_type, data FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
     ).bind(key).all<{ chunk_index: number; content_type: string; data: any }>()
@@ -445,19 +498,28 @@ app.get('/api/media/*', async (c) => {
       }
 
       const contentType = results[0].content_type || 'image/webp'
-      return new Response(combined, {
+      const response = new Response(combined.buffer as ArrayBuffer, {
+        status: 200,
         headers: {
           'Content-Type': contentType,
           'Content-Length': String(totalLength),
           'Cache-Control': 'public, max-age=31536000, immutable',
           'Cross-Origin-Resource-Policy': 'same-origin',
           'Content-Disposition': 'inline',
-          'X-Content-Type-Options': 'nosniff'
+          'X-Content-Type-Options': 'nosniff',
         }
       })
+      if (edgeCache) {
+        try {
+          c.executionCtx.waitUntil(edgeCache.put(cacheKey, response.clone()))
+        } catch {
+          await edgeCache.put(cacheKey, response.clone()).catch(() => {})
+        }
+      }
+      return response
     }
-  } catch (dbErr) {
-    // Media_Storage table may not exist yet or query error
+  } catch (err) {
+    return c.json({ status: 'error', error: { code: 'MEDIA_FETCH_FAILED', message: 'Failed to retrieve media', details: [] } }, 500)
   }
 
   return c.notFound()
@@ -466,7 +528,7 @@ app.get('/api/media/*', async (c) => {
 app.get('*', async (c) => {
   const url = new URL(c.req.url)
   if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
-    return c.json({ status: 'error', code: 'NOT_FOUND', message: 'API endpoint not found' }, 404)
+    return c.json({ status: 'error', message: 'API endpoint not found', error: { code: 'NOT_FOUND', message: 'API endpoint not found', details: [] } }, 404)
   }
   if (!c.env.ASSETS) {
     return c.text('R59 Media API is running!')
@@ -537,7 +599,7 @@ app.get('*', async (c) => {
 app.notFound((c) => {
   const url = new URL(c.req.url)
   if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
-    return c.json({ status: 'error', code: 'NOT_FOUND', message: 'API endpoint not found' }, 404)
+    return c.json({ status: 'error', message: 'API endpoint not found', error: { code: 'NOT_FOUND', message: 'API endpoint not found', details: [] } }, 404)
   }
   return c.text('Not Found', 404)
 })

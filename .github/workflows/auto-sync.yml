@@ -34,7 +34,9 @@ jobs:
 
       - name: Build frontend & admin into backend/public
         run: |
-          pnpm --dir backend install
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend run build
+          pnpm --dir backend install --frozen-lockfile
           pnpm --dir backend run build
 
       - name: Commit and push changes if backend/public updated

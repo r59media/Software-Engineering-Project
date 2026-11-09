@@ -572,7 +572,8 @@
     initLogin();
     initGlobalActions();
 
-    if (window.R59.apiClient?.getAuthToken()) {
+    const hasLocalToken = Boolean(window.R59.apiClient?.getAuthToken?.());
+    if (hasLocalToken) {
       const valid = await window.R59.apiClient.verifySession();
       if (valid) {
         const modulesLoaded = await ensureAdminModulesLoaded();
@@ -588,11 +589,11 @@
           return;
         }
       }
+      window.R59.apiClient?.logout?.();
     }
 
     // Not authenticated (new tab, invalid session, or modules failed)
     window.R59.apiClient?.clearAuthToken?.();
-    window.R59.apiClient?.logout?.();
     setWorkspaceAuthenticated(false);
     const loginEl = $('#login');
     if (loginEl) loginEl.classList.add('open');

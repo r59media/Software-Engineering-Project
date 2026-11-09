@@ -8,6 +8,7 @@ export default defineConfig({
     // Send API and image requests to the local Worker (`pnpm dev` in backend/) so `pnpm dev` here shows real admin data
     proxy: {
       '/api': 'http://localhost:8787',
+      '/assets': 'http://localhost:8787',
     },
   },
   build: {

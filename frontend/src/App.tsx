@@ -14,7 +14,13 @@ function App() {
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
   const baseUrl = import.meta.env.BASE_URL
   const path = window.location.pathname.replace(/\/$/, '')
-  const legalPage = path === `${baseUrl}privacy-policy`.replace(/\/$/, '') ? 'privacy' : path === `${baseUrl}terms-and-conditions`.replace(/\/$/, '') ? 'terms' : null
+  const cleanBase = baseUrl.replace(/\/$/, '')
+  const legalPage =
+    path === `${cleanBase}/privacy-policy` || path === `${cleanBase}/privacy`
+      ? 'privacy'
+      : path === `${cleanBase}/terms-and-conditions` || path === `${cleanBase}/terms`
+        ? 'terms'
+        : null
 
   useEffect(() => {
     if (legalPage) document.title = legalPage === 'privacy' ? 'Privacy Policy | R59 Media' : 'Terms and Conditions | R59 Media'
