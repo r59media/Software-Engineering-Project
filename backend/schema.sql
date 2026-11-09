@@ -14,8 +14,17 @@ CREATE TABLE Services (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     description TEXT,
-    price INTEGER NOT NULL, -- Stored in cents
-    duration_minutes INTEGER NOT NULL,
+    best_for TEXT,
+    image_url TEXT,
+    image_alt TEXT,
+    price INTEGER, -- Stored in cents (null for custom pricing / inquiry)
+    duration_minutes INTEGER, -- Duration in minutes (null for custom scope)
+    photo_count INTEGER,
+    outfits INTEGER,
+    currency TEXT DEFAULT 'USD',
+    booking_mode TEXT DEFAULT 'direct', -- 'direct' or 'inquiry'
+    additional_people TEXT, -- JSON string for { includedPeople, maxPeople, extraPersonPriceMinor }
+    display_order INTEGER DEFAULT 0,
     is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -109,6 +118,7 @@ CREATE INDEX IF NOT EXISTS idx_portfolio_active ON Portfolio_Images(is_active, d
 CREATE INDEX IF NOT EXISTS idx_portfolio_active_cat_order ON Portfolio_Images(is_active, category, display_order);
 CREATE INDEX IF NOT EXISTS idx_portfolio_section_order ON Portfolio_Images(is_active, section, display_order);
 CREATE INDEX IF NOT EXISTS idx_services_active ON Services(is_active);
+CREATE INDEX IF NOT EXISTS idx_services_active_order ON Services(is_active, display_order);
 CREATE INDEX IF NOT EXISTS idx_bookings_slot ON Bookings(slot_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot ON Bookings(slot_id) WHERE status != 'cancelled';
 CREATE INDEX IF NOT EXISTS idx_bookings_service ON Bookings(service_id);
@@ -117,8 +127,20 @@ CREATE INDEX IF NOT EXISTS idx_leads_created ON Leads(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_blocked_dates ON Blocked_Dates(date);
 
 -- Seed Data
-INSERT INTO Services (name, description, price, duration_minutes) VALUES ('Portrait Session', 'A standard 1-hour portrait session.', 25000, 60);
-INSERT INTO Services (name, description, price, duration_minutes) VALUES ('Wedding Package', 'Full day wedding coverage.', 150000, 480);
+INSERT INTO Services (name, description, best_for, duration_minutes, photo_count, outfits, price, currency, booking_mode, additional_people, display_order)
+VALUES ('Portrait', 'Individual headshots and portraits that feel like you.', 'LinkedIn, resumes & personal branding', 60, 5, 1, 6000, 'USD', 'direct', '{"includedPeople":1}', 1);
+
+INSERT INTO Services (name, description, best_for, duration_minutes, photo_count, outfits, price, currency, booking_mode, additional_people, display_order)
+VALUES ('Grad Pics', 'Celebrate your achievement with photos made for you.', 'Graduation announcements & keepsakes', 120, 10, 2, 15000, 'USD', 'direct', '{"includedPeople":1}', 2);
+
+INSERT INTO Services (name, description, best_for, duration_minutes, photo_count, outfits, price, currency, booking_mode, additional_people, display_order)
+VALUES ('Branding Pics', 'A focused session to bring your personal brand to life.', 'Creators & entrepreneurs', 120, 15, NULL, 23000, 'USD', 'direct', NULL, 3);
+
+INSERT INTO Services (name, description, best_for, duration_minutes, photo_count, outfits, price, currency, booking_mode, additional_people, display_order)
+VALUES ('Event', 'Capture the people, details and moments that matter.', 'Celebrations & special occasions', 300, 300, NULL, 70000, 'USD', 'direct', NULL, 4);
+
+INSERT INTO Services (name, description, best_for, duration_minutes, photo_count, outfits, price, currency, booking_mode, additional_people, display_order)
+VALUES ('Business package', 'Photography tailored to your team, business and goals.', 'Teams & business content', NULL, NULL, NULL, NULL, 'USD', 'inquiry', NULL, 5);
 
 INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('booking_enabled', 'true');
 INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('timezone', 'America/New_York');
