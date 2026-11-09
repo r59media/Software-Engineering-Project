@@ -1,5 +1,6 @@
 import type { HeroSlide } from '../types/hero'
 import type { PhotoshootPhoto } from '../types/recentPhotoshoot'
+import type { BookingService } from '../types/booking'
 
 /** Which part of the site a portfolio photo is shown in (matches the admin "Photos" tabs). */
 export type PortfolioSection = 'recent' | 'gallery' | 'about' | 'hero'
@@ -278,6 +279,17 @@ export async function fetchHeroSlides(fallbackSlides: readonly HeroSlide[], sign
     mobileObjectPosition: '50% 50%',
     hasEmbeddedOverlay: false,
   }))
+}
+
+export async function fetchBookingServices(signal?: AbortSignal): Promise<readonly BookingService[]> {
+  const data = await apiGet<BookingService[] | { services?: BookingService[] }>('/services', signal)
+  if (Array.isArray(data)) {
+    return data
+  }
+  if (data && typeof data === 'object' && 'services' in data && Array.isArray(data.services)) {
+    return data.services
+  }
+  return []
 }
 
 export async function fetchServices(signal?: AbortSignal): Promise<ServicePackageItem[]> {

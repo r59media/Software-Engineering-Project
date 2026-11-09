@@ -1,18 +1,22 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import './styles/global.css'
-import { fetchHeroSlides } from './api/client'
+import { fetchBookingServices, fetchHeroSlides } from './api/client'
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
+import { previewBookingServices } from './config/booking'
 import { AboutToRecent } from './sections/transition/AboutToRecent'
 import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
 import { BookingServices } from './sections/booking/BookingServices'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
+import type { BookingService } from './types/booking'
 import { LegalPage } from './pages/legal/LegalPage'
 
 function App() {
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
+  const [bookingServices, setBookingServices] = useState<readonly BookingService[]>(previewBookingServices)
+  const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
   const baseUrl = import.meta.env.BASE_URL
   const path = window.location.pathname.replace(/\/$/, '')
   const cleanBase = baseUrl.replace(/\/$/, '')
@@ -22,6 +26,20 @@ function App() {
       : path === `${cleanBase}/terms-and-conditions` || path === `${cleanBase}/terms`
         ? 'terms'
         : null
+
+  const loadBookingServices = useCallback(async () => {
+    try {
+      const services = await fetchBookingServices()
+      if (services && services.length > 0) {
+        setBookingServices(services)
+      } else {
+        setBookingServices([])
+      }
+      setBookingStatus('ready')
+    } catch {
+      setBookingStatus('error')
+    }
+  }, [])
 
   useEffect(() => {
     if (legalPage) document.title = legalPage === 'privacy' ? 'Privacy Policy | R59 Media' : 'Terms and Conditions | R59 Media'
@@ -49,19 +67,23 @@ function App() {
         .catch(() => {})
     }
 
-    const onRevalidate = () => {
-      if (document.visibilityState === 'visible') load()
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        load()
+        void loadBookingServices()
+      }
     }
 
     load()
-    window.addEventListener('focus', onRevalidate)
-    document.addEventListener('visibilitychange', onRevalidate)
+    void Promise.resolve().then(() => loadBookingServices())
+    window.addEventListener('focus', handleVisibilityChange)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => {
       controller?.abort()
-      window.removeEventListener('focus', onRevalidate)
-      document.removeEventListener('visibilitychange', onRevalidate)
+      window.removeEventListener('focus', handleVisibilityChange)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [legalPage])
+  }, [legalPage, loadBookingServices])
 
   useEffect(() => {
     const isProtectedTarget = (target: HTMLElement | null): boolean => {
@@ -131,7 +153,7 @@ function App() {
       </div>
       <AboutToRecent />
       <PortfolioGallery />
-      <BookingServices />
+      <BookingServices services={bookingServices} status={bookingStatus} onRetry={loadBookingServices} inquiryHref="#contact" />
     </main>
     <SiteFooter />
   </div>
