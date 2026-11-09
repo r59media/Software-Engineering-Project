@@ -1,27 +1,56 @@
-# Graphify Knowledge Graph Workflow & Subagent Protocol
+# Graphify Knowledge Graph Workflow & Dispatch Protocol
 
-This repository maintains a persistent `graphify` knowledge graph in `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`, `graph.html`, `manifest.json`).
+This repository maintains a persistent `graphify` knowledge graph in `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`, `graph.html`, `manifest.json`). All development and maintenance tasks follow the **Cheapest 1-Main-Agent-Dispatch Configuration**.
 
-## 1. Pre-Edit Graph Discovery (Mandatory First Step)
-Before reading, grepping, or modifying files for any feature, bug fix, or architectural question, query `graphify-out/graph.json` first using `graphify-out/.venv/bin/graphify` (or `$(cat graphify-out/.graphify_python)`):
-- **Inspect a symbol, route, or D1 table**:
+---
+
+## 1. Architecture: 1-Main-Agent-Dispatch
+
+```
+Me (Main Agent) -> Builder Subagent (Gemini Flash High Effort, Model: 'flash') -> Me (Main Agent)
+```
+
+- **Main Agent**: Deconstructs requirements, prepares explicit pseudo-code and contracts, selects target symbols, and launches the Builder Subagent via `invoke_subagent` with `Model: 'flash'`.
+- **Builder Subagent**: Runs with high effort to execute AST lookups, perform surgical edits, run typechecks/builds, synchronize the graph via `graph-assist.py`, and report back via `send_message`.
+
+---
+
+## 2. Builder Subagent Workflow Lifecycle
+
+Inside the Builder Subagent, execution strictly follows three deterministic steps:
+
+### Step 1: AST Lookup First (<200ms) — Zero Blind Repo Scanning
+Never grep or scan the entire repository blindly. Query the AST coordinates directly via `graph-assist.py`:
+- **Explain symbol or fallback to query**:
   ```bash
-  graphify-out/.venv/bin/graphify explain "<SymbolOrNode>"
+  python3 graph-assist.py lookup "<SymbolOrQuery>"
   ```
-- **Trace cross-stack paths (Frontend <-> Admin <-> Worker <-> D1)**:
+- **Find path between two symbols**:
   ```bash
-  graphify-out/.venv/bin/graphify path "<NodeA>" "<NodeB>"
-  ```
-- **Query a concept or subsystem**:
-  ```bash
-  graphify-out/.venv/bin/graphify query "<tokens>"
+  python3 graph-assist.py path "<SourceSymbol>" "<TargetSymbol>"
   ```
 
-## 2. Parallel Subagent Execution
-- Delegate independent research and multi-file edits to parallel subagents (`invoke_subagent` with `Model: 'flash'` for fast execution) whenever possible.
-- Pass the exact `source_file`, line numbers (`source_location`), and connected neighbor contracts discovered from the `graphify` lookup directly into each subagent's prompt so subagents skip broad repository scanning.
+### Step 2: Surgical Edits & Verification
+- Read only the target line ranges identified by `graph-assist.py`.
+- Apply precise edits adhering to the spec while preserving existing comments, documentation, and code style.
+- Run project verifications:
+  ```bash
+  pnpm --dir frontend run check
+  pnpm --dir backend run typecheck
+  pnpm --dir backend run build
+  ```
 
-## 3. Post-Edit Incremental Graph Synchronization
-- After modifying, adding, or deleting files, keep `graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`, and `graphify-out/graph.html` synchronized:
-  - A Git `post-commit` hook (`graphify hook status`) is installed in `.git/hooks/post-commit` to automatically re-extract changed code files and rebuild `graph.json` and `GRAPH_REPORT.md` on every `git commit`.
-  - When making uncommitted edits or changing documentation/media files (`.md`, `.html`, `.webp`, `.svg`), run the incremental update flow (`detect_incremental` + `build_merge` as defined in the `graphify` skill's `references/update.md`) so the graph stays 100% up to date.
+### Step 3: Graph Synchronization
+Keep `graphify-out/graph.json` and `GRAPH_REPORT.md` synchronized after making code changes:
+- Run incremental update via CLI:
+  ```bash
+  python3 graph-assist.py update [files...]
+  ```
+  *(If omitted, `graph-assist.py` automatically detects modified/untracked files from git).*
+- Alternatively, if a `graphify-maintainer` subagent conversation ID is active, peer-message the modified file list via `send_message`.
+
+---
+
+## 3. Git Hooks & Continuous Sync
+- A Git `post-commit` hook is installed in `.git/hooks/post-commit` to rebuild `graph.json` and `GRAPH_REPORT.md` upon every `git commit`.
+- When changes occur outside commits (uncommitted work or staging), `python3 graph-assist.py update` guarantees zero graph drift.
