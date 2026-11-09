@@ -16,3 +16,7 @@ coverage/
 graphify-out/
 graph-assist.py
 
+# Personal workflows & agent rules
+.agents/
+.github/
+
