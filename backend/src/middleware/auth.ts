@@ -1,5 +1,5 @@
-import { Context, Next } from 'hono'
-import { Bindings } from '../index'
+import type { Context, Next } from 'hono'
+import type { Bindings } from '../index'
 
 /**
  * Constant-time string comparison to prevent timing attacks without length leaks.

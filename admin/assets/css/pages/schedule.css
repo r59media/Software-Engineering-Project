@@ -1,559 +1,217 @@
-/* ==========================================================================
-   R59 Media Admin — Schedule, Availability & Bookings Styles
-   ========================================================================== */
-
-    /* ---------- Schedule & Calendar ---------- */
-    .cal-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 12px;
-      margin-bottom: 18px;
-    }
-
-    .cal-views-wrap {
-      display: inline-flex;
-      gap: 4px;
-      background: var(--panel-2);
-      padding: 4px;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-    }
-
-    .cal-date-nav {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-top: 4px;
-    }
-
-    .cal-nav-btn {
-      width: 32px;
-      height: 32px;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: var(--panel-2);
-      color: var(--text);
-      cursor: pointer;
-      font-size: 18px;
-      line-height: 1;
-    }
-
-    .cal-nav-btn:hover {
-      background: var(--yellow);
-      color: var(--black);
-      border-color: var(--yellow);
-    }
-
-    .cal-range-title {
-      min-width: 190px;
-      text-align: center;
-      font-family: var(--display);
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text-soft);
-    }
-
-    .cal-view-btn {
-      padding: 7px 18px;
-      border-radius: 6px;
-      border: 0;
-      background: transparent;
-      color: var(--text-soft);
-      cursor: pointer;
-      font-family: var(--display);
-      font-size: 13px;
-      font-weight: 500;
-      transition: background .15s, color .15s;
-    }
-
-    .cal-view-btn:hover {
-      color: var(--text);
-    }
-
-    .cal-view-btn.active {
-      background: var(--yellow);
-      color: var(--black);
-      font-weight: 700;
-    }
-
-    .cal-month-grid {
-      display: grid;
-      grid-template-columns: repeat(7, 1fr);
-      gap: 6px;
-    }
-
-    .cal-day-header {
-      text-align: center;
-      font-family: var(--display);
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--muted);
-      padding: 6px 2px;
-      text-transform: uppercase;
-      letter-spacing: .06em;
-    }
-
-    .cal-day-cell {
-      background: var(--field);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      min-height: 90px;
-      padding: 6px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      transition: border-color .15s;
-    }
-
-    .cal-day-cell.other-month {
-      opacity: 0.35;
-    }
-
-    .cal-day-cell.has-booking {
-      border-color: rgba(255, 204, 34, 0.4);
-    }
-
-    .cal-day-cell.cal-selected,
-    .cal-week-col.cal-selected {
-      border-color: var(--yellow);
-      box-shadow: 0 0 0 1px var(--yellow);
-    }
-
-    .cal-day-cell.cal-blocked {
-      background: rgba(255, 34, 34, 0.05);
-      border-color: rgba(255, 34, 34, 0.35);
-    }
-
-    .cal-day-num {
-      font-family: var(--display);
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--text-soft);
-      line-height: 1;
-      margin-bottom: 2px;
-    }
-
-    .cal-event-chip {
-      background: rgba(255, 204, 34, 0.12);
-      border-left: 3px solid var(--yellow);
-      border-radius: 4px;
-      padding: 4px 6px;
-      font-size: 11px;
-      line-height: 1.3;
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      cursor: pointer;
-    }
-
-    .cal-event-chip.cancelled {
-      background: rgba(255, 34, 34, 0.08);
-      border-left-color: var(--red);
-      opacity: 0.6;
-    }
-
-    .cal-event-time {
-      font-weight: 700;
-      color: var(--yellow);
-    }
-
-    .cal-event-chip.cancelled .cal-event-time {
-      color: var(--red);
-    }
-
-    .cal-event-name {
-      color: var(--text);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .cal-event-pkg {
-      color: var(--muted);
-      font-size: 10px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .cal-blocked-tag {
-      background: rgba(255, 34, 34, 0.15);
-      color: #f87171;
-      border: 1px solid rgba(255, 34, 34, 0.3);
-      border-radius: 4px;
-      padding: 3px 6px;
-      font-size: 10px;
-      font-weight: 600;
-      line-height: 1.2;
-    }
-
-    /* Week View */
-    .cal-week-grid {
-      display: grid;
-      grid-template-columns: repeat(7, 1fr);
-      gap: 8px;
-    }
-
-    .cal-week-col {
-      background: var(--field);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      min-height: 220px;
-    }
-
-    .cal-week-col-head {
-      border-bottom: 1px solid var(--line);
-      padding-bottom: 6px;
-      text-align: center;
-    }
-
-    .cal-week-col-name {
-      font-family: var(--display);
-      font-size: 11px;
-      font-weight: 700;
-      color: var(--muted);
-      text-transform: uppercase;
-    }
-
-    .cal-week-col-date {
-      font-family: var(--display);
-      font-size: 16px;
-      font-weight: 900;
-      color: var(--accent-text);
-    }
-
-    /* Day View */
-    .cal-day-timeline {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    .cal-timeline-row {
-      display: grid;
-      grid-template-columns: 84px 1fr;
-      gap: 12px;
-      align-items: center;
-      padding: 10px 14px;
-      background: var(--field);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-    }
-
-    .cal-timeline-time {
-      font-family: var(--display);
-      font-weight: 700;
-      font-size: 13px;
-      color: var(--text-soft);
-    }
-
-    .cal-timeline-content {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
-    /* Status Badges */
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 3px 8px;
-      border-radius: 12px;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: .04em;
-      text-transform: uppercase;
-      width: fit-content;
-    }
-
-    .status-confirmed {
-      background: rgba(34, 197, 94, 0.15);
-      color: #4ade80;
-      border: 1px solid rgba(34, 197, 94, 0.3);
-    }
-
-    .status-pending {
-      background: rgba(255, 204, 34, 0.15);
-      color: var(--yellow);
-      border: 1px solid rgba(255, 204, 34, 0.3);
-    }
-
-    .status-cancelled {
-      background: rgba(255, 34, 34, 0.15);
-      color: #f87171;
-      border: 1px solid rgba(255, 34, 34, 0.3);
-    }
-
-    .status-available {
-      background: rgba(34, 197, 94, 0.12);
-      color: #4ade80;
-      border: 1px solid rgba(34, 197, 94, 0.25);
-    }
-
-    .status-unavailable {
-      background: rgba(154, 154, 154, 0.12);
-      color: var(--muted);
-      border: 1px solid rgba(154, 154, 154, 0.2);
-    }
-
-    /* Two-column layout */
-    .schedule-grid-2col {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 18px;
-      align-items: stretch;
-      margin-bottom: 24px;
-    }
-
-    .schedule-left-col {
-      display: flex;
-      flex-direction: column;
-      gap: 18px;
-    }
-
-    #card-bookings {
-      display: flex;
-      flex-direction: column;
-    }
-
-    #bookingsList {
-      flex: 1;
-      overflow-y: auto;
-      min-height: 0;
-    }
-
-    /* Availability */
-    .avail-day-card {
-      background: var(--field);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 14px 16px;
-      margin-bottom: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .avail-day-card:last-child {
-      margin-bottom: 0;
-    }
-
-    .avail-day-head {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-
-    .avail-day-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .avail-day-title strong {
-      font-family: var(--display);
-      font-size: 15px;
-      font-weight: 700;
-    }
-
-    .avail-slots-list {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
-    .avail-slot-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      flex-wrap: wrap;
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 7px 10px;
-      font-size: 13px;
-    }
-
-    .avail-slot-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .tf-badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 7px;
-      border-radius: 10px;
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: .03em;
-      text-transform: uppercase;
-    }
-
-    .tf-repeat {
-      background: rgba(255, 204, 34, 0.15);
-      color: var(--yellow);
-      border: 1px solid rgba(255, 204, 34, 0.3);
-    }
-
-    .tf-norepeat {
-      background: rgba(154, 154, 154, 0.15);
-      color: var(--muted);
-      border: 1px solid rgba(154, 154, 154, 0.25);
-    }
-
-    .timeframe-form {
-      background: var(--panel-2);
-      border: 1px dashed var(--yellow);
-      border-radius: 8px;
-      padding: 12px 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    /* Bookings */
-    .booking-group {
-      margin-bottom: 20px;
-    }
-
-    .booking-group:last-child {
-      margin-bottom: 0;
-    }
-
-    .booking-date-head {
-      font-family: var(--display);
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--accent-text);
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      padding-bottom: 6px;
-      border-bottom: 1px solid var(--line);
-      margin-bottom: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .booking-item {
-      background: var(--field);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 14px;
-      margin-bottom: 10px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .booking-item:last-child {
-      margin-bottom: 0;
-    }
-
-    .booking-item.cancelled {
-      opacity: 0.6;
-    }
-
-    .booking-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-
-    .booking-time {
-      font-family: var(--display);
-      font-size: 18px;
-      font-weight: 900;
-      color: var(--text);
-      line-height: 1;
-    }
-
-    .booking-client {
-      font-size: 15px;
-      font-weight: 700;
-      margin-top: 3px;
-    }
-
-    .booking-pkg {
-      color: var(--muted);
-      font-size: 13px;
-    }
-
-    .booking-notes {
-      color: var(--text-soft);
-      font-size: 12px;
-      margin-top: 4px;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-    }
-
-    .booking-financials {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 6px;
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 8px 10px;
-    }
-
-    .financial-stat span {
-      display: block;
-      font-size: 10px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: .04em;
-    }
-
-    .financial-stat b {
-      font-family: var(--display);
-      font-size: 14px;
-      font-weight: 700;
-      color: var(--accent-text);
-    }
-
-    .booking-foot {
-      display: flex;
-      justify-content: flex-end;
-      align-items: center;
-      gap: 8px;
-    }
-
-    /* Blocked Dates */
-    .blocked-date-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px 14px;
-      margin-bottom: 8px;
-    }
-
-    .blocked-date-item:last-child {
-      margin-bottom: 0;
-    }
-
-
+/**
+ * R59 Media Admin — Schedule view + the calendar shared with Overview ("Proof Sheet")
+ * Calendar month/week/day views, availability day rows, blocked-dates form, bookings list,
+ * booking modals' price summary and refund note. Tokens only; colour/opacity motion only.
+ */
+
+/* ================= Calendar frame toolbar ================= */
+.cal-tools{display:flex;align-items:center;gap:var(--s2) var(--s3);flex-wrap:wrap}
+.cal-tools .monthnav output{min-width:9.5rem}
+
+/* Day / Week / Month segmented control (aria-pressed) */
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden}
+.seg__btn{min-height:2.25rem;padding:0 var(--s3);border:0;background:transparent;color:var(--ink-2);font-size:.875rem;line-height:1;transition:background-color var(--t),color var(--t)}
+.seg__btn + .seg__btn{border-left:1px solid var(--hair)}
+.seg__btn:hover{background:color-mix(in srgb,var(--ink) 8%,transparent);color:var(--ink)}
+.seg__btn[aria-pressed="true"]{background:var(--ink);color:var(--on-ink);font-weight:700}
+.seg__btn:focus-visible{outline-offset:-3px}
+
+/* The calendar frames are their own containers so the grid adapts to the frame, not the page */
+#card-calendar,#card-ov-calendar{container:calframe / inline-size}
+
+/* ================= Month grid (.cal / .dow / .day) ================= */
+.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border-top:1px solid var(--rule);border-left:1px solid var(--hair)}
+.cal .dow{padding:var(--s2) var(--s1);color:var(--ink-3);border-right:1px solid var(--hair);border-bottom:1px solid var(--hair);text-align:left;overflow:hidden}
+.cal .dow__rest{display:none}
+.cal .day{position:relative;isolation:isolate;display:flex;flex-direction:column;gap:2px;min-width:0;min-height:3rem;padding:2px;border-right:1px solid var(--hair);border-bottom:1px solid var(--hair);font-size:.875rem;font-variant-numeric:tabular-nums}
+.cal .day.out{background:color-mix(in srgb,var(--paper) 60%,transparent)}
+.cal .day.today{font-weight:700}
+.cal .day.is-selected{outline:2px solid var(--ink);outline-offset:-2px;z-index:1}
+/* blocked: a light red wash; the "Blocked" word shows when there is room */
+.cal .day.is-blocked{background:color-mix(in srgb,var(--paper) 60%,transparent)}
+.cal .day.is-blocked::after,.week__day.is-blocked::after{content:"";position:absolute;top:var(--s1);right:var(--s1);width:.45rem;height:.45rem;border-radius:50%;background:var(--red)}   /* red draws the mark; the "Blocked" label carries the words */
+
+.day__n{position:relative;isolation:isolate;display:inline-grid;place-items:center;align-self:flex-start;min-width:1.5rem;min-height:1.5rem;padding:0 .2rem;border:0;border-radius:99px;background:none;color:inherit;font:inherit;line-height:1}
+button.day__n{cursor:pointer;transition:background-color var(--t)}
+button.day__n:hover{background:color-mix(in srgb,var(--ink) 10%,transparent)}
+.day__n .grease{left:-.2rem;top:-.15rem;width:calc(100% + .4rem);height:calc(100% + .3rem);z-index:-1}
+
+.day__blocked{display:none;color:var(--ink-2)}
+.day__evs{display:flex;flex-wrap:wrap;gap:2px;min-width:0}
+
+/* booking marker: a yellow pip (cancelled = hollow); text joins it when the frame is wide */
+.cal-ev{display:inline-flex;align-items:center;justify-content:center;gap:var(--s1);min-width:0;width:1.5rem;height:1.5rem;padding:0;border:0;border-radius:3px;background:transparent;color:var(--ink);font:400 .75rem/1.2 "Inter",system-ui,sans-serif;text-align:left;cursor:pointer;transition:background-color var(--t)}
+.cal-ev:hover{background:color-mix(in srgb,var(--ink) 10%,transparent)}
+.cal-ev__pip{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--yellow);box-shadow:0 0 0 1.5px var(--ink)}
+.cal-ev.is-cancelled .cal-ev__pip{background:transparent;box-shadow:0 0 0 1.5px var(--ink-3)}
+.cal-ev__t{display:none;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cal-ev.is-cancelled .cal-ev__t{color:var(--ink-3);text-decoration:line-through}
+.cal-more{font-size:.75rem;line-height:1.25rem;color:var(--ink-3);white-space:nowrap}
+.cal-more__w{display:none}
+
+@container calframe (min-width:30rem){
+  .cal .dow{padding-inline:var(--s2)}
+  .cal .day{padding:var(--s1) var(--s2)}
+}
+@container calframe (min-width:40rem){
+  .cal .dow__rest{display:inline}
+  .cal .day{min-height:4.75rem}
+  .day__blocked{display:block}
+  .day__evs{flex-direction:column;flex-wrap:nowrap}
+  .cal-ev{justify-content:flex-start;width:100%;height:auto;min-height:1.5rem;padding:0 var(--s1)}
+  .cal-ev__t{display:block}
+  .cal-more{padding-inline:var(--s1)}
+  .cal-more__w{display:inline}
+}
+
+.cal-foot{display:flex;justify-content:space-between;gap:var(--s2) var(--s4);flex-wrap:wrap;font-size:.8125rem;color:var(--ink-3)}
+
+/* ================= Week view ================= */
+.week{display:grid;grid-template-columns:minmax(0,1fr);border-top:1px solid var(--rule)}
+.week__day{display:grid;align-content:start;gap:var(--s2);min-width:0;padding:var(--s3) 0;border-bottom:1px solid var(--hair)}
+.week__day.is-blocked{position:relative;background:color-mix(in srgb,var(--paper) 60%,transparent)}
+.week__head{display:flex;align-items:center;gap:var(--s3);width:100%;min-height:var(--ctl);padding:0 var(--s2);border:0;border-radius:var(--radius);background:none;color:var(--ink-2);text-align:left;transition:background-color var(--t)}
+.week__head:hover{background:color-mix(in srgb,var(--ink) 8%,transparent)}
+.week__head[aria-pressed="true"]{color:var(--ink);box-shadow:inset 0 0 0 2px var(--ink)}
+.week__n{position:relative;isolation:isolate;display:inline-grid;place-items:center;min-width:2rem;min-height:2rem;font:700 1.25rem/1 "Jost",sans-serif;color:var(--ink)}
+.week__n .grease{left:-.15rem;top:-.1rem;width:calc(100% + .3rem);height:calc(100% + .2rem);z-index:-1}
+.week__list{list-style:none;margin:0;padding:0;display:grid;gap:var(--s2)}
+.week__none{padding:0 var(--s2);font-size:.8125rem;color:var(--ink-3)}
+.week__none--blocked{color:var(--ink-2);font-weight:700}
+
+.cal-ev--block{display:grid;justify-items:start;gap:.125rem;width:100%;height:auto;padding:var(--s2);border:1px solid var(--hair);border-radius:var(--radius);background:var(--paper);font-size:.8125rem;line-height:1.35}
+.cal-ev--block:hover{background:var(--paper);border-color:var(--ink)}
+.cal-ev--block .cal-ev__time{color:var(--ink-2)}
+.cal-ev--block .cal-ev__name{font-size:.875rem;overflow-wrap:anywhere}
+.cal-ev--block .cal-ev__pkg{color:var(--ink-3);overflow-wrap:anywhere}
+.cal-ev--block .tag{margin-top:var(--s1)}
+.cal-ev--block.is-cancelled .cal-ev__name{color:var(--ink-3);text-decoration:line-through}
+
+@container calframe (min-width:48rem){
+  .week{grid-template-columns:repeat(7,minmax(0,1fr));border-left:1px solid var(--hair)}
+  .week__day{padding:var(--s2);border-right:1px solid var(--hair);min-height:12rem}
+  .week__head{flex-direction:column;align-items:flex-start;gap:var(--s1);padding:var(--s2)}
+  .week__none{padding:0;text-align:left}
+}
+
+/* ================= Day view ================= */
+.dayview{display:grid;gap:var(--s4)}
+.day-jumps{gap:var(--s2)}
+.day-blocked{display:flex;align-items:flex-start;gap:var(--s3);padding:var(--s3) var(--s4);border:1px solid var(--rule);border-radius:var(--radius);background:var(--paper);font-size:.9375rem}
+.day-blocked .ico{color:var(--red);stroke-width:2;width:1.25rem;height:1.25rem;margin-top:.1rem}
+.timeline{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
+.tl-row{display:grid;grid-template-columns:5.25rem minmax(0,1fr);gap:var(--s3);align-items:start;padding:var(--s3) 0;border-bottom:1px solid var(--hair)}
+.tl-time{padding-top:.15rem;font-size:.8125rem;font-weight:700;color:var(--ink-3);white-space:nowrap}
+.tl-body{display:flex;align-items:center;justify-content:space-between;gap:var(--s2) var(--s3);flex-wrap:wrap;min-width:0}
+.tl-body--stack{display:grid;gap:var(--s3)}
+.tl-row.is-booked .tl-time{color:var(--ink)}
+.tl-booking{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--s2) var(--s3);flex-wrap:wrap;padding-left:var(--s3);border-left:1px solid var(--rule);min-width:0}
+.tl-booking__main{flex:1 1 14rem;min-width:0;display:grid;gap:.125rem;overflow-wrap:anywhere}
+.tl-booking__title{font-size:.9375rem}
+.tl-booking.is-cancelled .tl-booking__title{color:var(--ink-3);text-decoration:line-through}
+.tl-booking .tag,.tl-body > .tag{flex:none}
+
+/* ================= Status tag modifier (confirmed / available) ================= */
+.bk-tag--confirmed{border-color:var(--rule);color:var(--ink)}
+.bk-tag--confirmed::before{content:"";flex:none;width:.45rem;height:.45rem;border-radius:50%;background:var(--yellow);box-shadow:0 0 0 1px var(--ink)}
+
+/* ================= Availability / blocked dates / bookings: frame layout ================= */
+@container (min-width:54rem){
+  .frames.sched{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .frames.sched > .sched__avail{grid-column:1;grid-row:1}
+  .frames.sched > .sched__blocked{grid-column:1;grid-row:2}
+  .frames.sched > .sched__bookings{grid-column:2;grid-row:1 / span 2}
+  .sched__bookings .bk-list{max-height:72rem;overflow:auto;overscroll-behavior:contain;padding-right:var(--s1)}
+}
+
+/* ================= Booking availability ================= */
+.avail{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
+.avail__day{display:grid;gap:var(--s2);padding:var(--s3) 0;border-bottom:1px solid var(--hair)}
+.avail__head{display:flex;align-items:center;justify-content:space-between;gap:var(--s2) var(--s3);flex-wrap:wrap}
+.avail__title{display:flex;align-items:center;gap:var(--s3);flex-wrap:wrap}
+.avail__title strong{font:700 1.0625rem/1.2 "Jost",sans-serif}
+.avail__none{font-size:.875rem}
+.avail__slots{border-top:0}
+.avail__slots .row{padding:var(--s2) 0}
+.avail__slots .row:last-child{border-bottom:0}
+.avail__slots .row__main p{display:flex;align-items:center;gap:var(--s2) var(--s3);flex-wrap:wrap}
+
+.tf-form{display:grid;gap:var(--s4);margin-top:var(--s2);padding:var(--s4);border:1px dashed var(--ink-3);border-radius:var(--radius);background:var(--paper)}
+.tf-form__title{font-weight:700}
+.tf-repeat{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s5);margin:0;padding:0;border:0;min-width:0}
+.tf-repeat legend{padding:0;margin-bottom:var(--s2);width:100%}
+.radio{display:inline-flex;align-items:center;gap:var(--s2);min-height:var(--ctl);font-size:.9375rem;cursor:pointer}
+.radio input{width:1.125rem;height:1.125rem;margin:0;accent-color:var(--ink)}
+.tf-form__acts{display:flex;gap:var(--s2);flex-wrap:wrap}
+
+/* ================= Blocked dates ================= */
+.block-form{display:grid;gap:var(--s4)}
+.list-cap{margin:var(--s2) 0 0;color:var(--ink-3)}
+#blockedDatesList .row__main strong{font:700 1.0625rem/1.2 "Jost",sans-serif}
+
+/* ================= Bookings list (Schedule + Overview) ================= */
+.bk-list{display:grid;gap:var(--s5);min-width:0}
+.bk-group{display:grid;gap:var(--s2)}
+.bk-group__head{display:flex;justify-content:space-between;gap:var(--s3);flex-wrap:wrap;color:var(--ink-2)}
+.bk-group__head span + span{color:var(--ink-3)}
+.bk{align-items:flex-start}
+.bk .row__main{gap:.2rem}
+.bk__when{font-size:.8125rem;font-weight:700;color:var(--ink-2)}
+.bk__who{display:flex;align-items:center;gap:var(--s2) var(--s3);flex-wrap:wrap}
+.bk__who strong{font:700 1.125rem/1.2 "Jost",sans-serif}
+.bk__notes{font-size:.875rem;color:var(--ink-2);white-space:pre-line}
+.bk__money{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,6.5rem),1fr));gap:var(--s2) var(--s3);margin:var(--s2) 0 0;padding-top:var(--s2);border-top:1px dashed var(--hair)}
+.bk__money div{min-width:0}
+.bk__money dt{color:var(--ink-3);line-height:1.3}
+.bk__money dd{margin:.2rem 0 0;font:700 1rem/1.1 "Jost",sans-serif}
+.bk.is-cancelled .bk__who strong{color:var(--ink-3);text-decoration:line-through;text-decoration-thickness:1px}
+.bk.is-cancelled .bk__money dd{color:var(--ink-3)}
+.bk .row__acts{padding-top:var(--s1)}
+
+.head-acts{display:flex;align-items:center;gap:var(--s2);flex-wrap:wrap}
+
+/* ================= Booking modals ================= */
+.price-summary:empty{display:none}
+.price-summary{margin-top:var(--s5)}
+.ps{margin:0;border-top:1px solid var(--rule)}
+.ps__row{display:flex;justify-content:space-between;gap:var(--s4);padding:var(--s2) 0;border-bottom:1px solid var(--hair);font-size:.9375rem}
+.ps__row dt{color:var(--ink-2);min-width:0;overflow-wrap:anywhere}
+.ps__row dd{margin:0;font-weight:700;white-space:nowrap}
+.ps__row--total{border-bottom-color:var(--rule)}
+.ps__row--total dt,.ps__row--total dd{color:var(--ink);font:700 1.125rem/1.3 "Jost",sans-serif}
+#newBookingModal .form-error,#bookingModal .form-error{margin-top:var(--s4)}
+
+/* refund note: ink words, red alert mark (red text fails contrast on paper) */
+.refund-note{display:flex;align-items:flex-start;gap:var(--s2);font-size:.875rem;line-height:1.45;color:var(--ink)}
+.refund-note .ico{color:var(--red);stroke-width:2;margin-top:.15rem}
+
+/* ================= Edit booking: payments (record actions) ================= */
+.pay{display:grid;gap:var(--s3);margin-top:var(--s6);padding-top:var(--s5);border-top:1px solid var(--rule);min-width:0}
+.pay__head h3{font:700 1.25rem/1.2 "Jost",sans-serif;margin:0}
+.pay__figs{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,8rem),1fr));gap:var(--s2) var(--s4);margin:0;padding:var(--s3) 0;border-top:1px solid var(--hair);border-bottom:1px solid var(--hair)}
+.pay__figs div{min-width:0}
+.pay__figs dt{color:var(--ink-3);line-height:1.3}
+.pay__figs dd{margin:.2rem 0 0;font:700 1rem/1.2 "Jost",sans-serif;overflow-wrap:anywhere}
+.pay__due dt{color:var(--ink-2)}
+.pay__due dd{font-size:1.125rem}
+.pay__rows .row{padding:var(--s2) 0}
+.pay__row .row__main p:first-child{display:flex;align-items:baseline;gap:var(--s2);flex-wrap:wrap}
+.pay__row .row__main strong{font:700 1.0625rem/1.2 "Jost",sans-serif}
+.pay__method{font-size:.9375rem;color:var(--ink-2)}
+.pay__note{white-space:pre-line}
+.pay__empty{padding:var(--s2) 0}
+.pay__form{display:grid;gap:var(--s4);margin-top:var(--s2);padding:var(--s4);border:1px dashed var(--ink-3);border-radius:var(--radius);background:var(--paper)}
+
+/* ================= Edit booking: extra charges + Square invoice ================= */
+/* Charge rows reuse .pay__row; the description reads as content, not as a muted method label */
+#chargeList .pay__method{color:var(--ink);overflow-wrap:anywhere}
+.pay__via{font-size:.8125rem;color:var(--ink-3)}
+.inv{display:grid;gap:var(--s3);min-width:0}
+#invoiceBox{display:grid;gap:var(--s3);min-width:0}
+#invoiceBox:empty{display:none}
+#invoiceBox .pay__row .row__main p:first-child{align-items:center}
+#invoiceBox .list-cap{margin:0}
+.inv__hist{list-style:none;margin:0;padding:0;border-top:1px solid var(--hair);font-size:.875rem;color:var(--ink-2)}
+.inv__hist li{padding:var(--s2) 0;border-bottom:1px dashed var(--hair);overflow-wrap:anywhere}
+.inv__hint{margin-top:0}
+.inv__acts{align-items:center}

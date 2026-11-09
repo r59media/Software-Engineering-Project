@@ -1,377 +1,77 @@
-    :root {
-      /* brand */
-      --yellow: #FFCC22;
-      --black: #111111;
-      --red: #FF2222;
-      --light: #F0F0F0;
-      --radius: 10px;
-      --display: 'Poppins', system-ui, sans-serif;
-      --body: 'Space Grotesk', system-ui, sans-serif;
-      /* fluid layout tokens */
-      --admin-max-width: min(1380px, 94vw);
-      --admin-gutter: clamp(16px, 3.5vw, 44px);
-      --admin-padding-y: clamp(20px, 3vw, 36px);
-      /* dark theme tokens (default) */
-      color-scheme: dark;
-      --bg: #111111;
-      --panel: #1a1a1a;
-      --panel-2: #222;
-      --field: #111111;
-      --line: #2e2e2e;
-      --text: #f0f0f0;
-      --text-soft: #cfcfcf;
-      --muted: #9a9a9a;
-      --accent-text: #FFCC22;
-      --focus: #FFCC22;
-      --preview-bg: #F0F0F0;
-      --preview-border: transparent;
-      --em-color: #FFCC22;
-      --em-bg: none;
-      --shadow: 0 10px 30px rgba(0, 0, 0, .5);
-      --scrim: rgba(0, 0, 0, .6);
-    }
+/**
+ * R59 Media Admin — Base ("Proof Sheet")
+ * Fonts, document base, utilities, grease-pencil marks, view switching.
+ * Colours, spacing and motion come from tokens.css only.
+ */
 
-    /* light theme tokens: follow the OS unless the user picked dark, or when light is picked */
-    @media (prefers-color-scheme: light) {
-      :root:not([data-theme="dark"]) {
-        color-scheme: light;
-        --bg: #F0F0F0;
-        --panel: #ffffff;
-        --panel-2: #f5f5f5;
-        --field: #fafafa;
-        --line: #dcdcdc;
-        --text: #111111;
-        --text-soft: #3a3a3a;
-        --muted: #6b6b6b;
-        --accent-text: #8A6500;
-        --focus: #111111;
-        --preview-bg: #ffffff;
-        --preview-border: #dcdcdc;
-        --em-color: #111111;
-        --em-bg: linear-gradient(transparent 60%, #FFCC22 60%, #FFCC22 90%, transparent 90%);
-        --shadow: 0 10px 30px rgba(0, 0, 0, .12);
-        --scrim: rgba(17, 17, 17, .35);
-      }
-    }
+/* ================= Fonts (self-hosted, WOFF2) ================= */
+@font-face{font-family:"Jost";font-weight:700;font-style:normal;font-display:swap;src:url("../fonts/jost-700.woff2") format("woff2")}
+@font-face{font-family:"Jost";font-weight:500;font-style:italic;font-display:swap;src:url("../fonts/jost-500-italic.woff2") format("woff2")}
+@font-face{font-family:"Inter";font-weight:300;font-style:normal;font-display:swap;src:url("../fonts/inter-300.woff2") format("woff2")}
+@font-face{font-family:"Inter";font-weight:400;font-style:normal;font-display:swap;src:url("../fonts/inter-400.woff2") format("woff2")}
+@font-face{font-family:"Inter";font-weight:700;font-style:normal;font-display:swap;src:url("../fonts/inter-700.woff2") format("woff2")}
 
-    :root[data-theme="light"] {
-      color-scheme: light;
-      --bg: #F0F0F0;
-      --panel: #ffffff;
-      --panel-2: #f5f5f5;
-      --field: #fafafa;
-      --line: #dcdcdc;
-      --text: #111111;
-      --text-soft: #3a3a3a;
-      --muted: #6b6b6b;
-      --accent-text: #8A6500;
-      --focus: #111111;
-      --preview-bg: #ffffff;
-      --preview-border: #dcdcdc;
-      --em-color: #111111;
-      --em-bg: linear-gradient(transparent 60%, #FFCC22 60%, #FFCC22 90%, transparent 90%);
-      --shadow: 0 10px 30px rgba(0, 0, 0, .12);
-      --scrim: rgba(17, 17, 17, .35);
-    }
+/* ================= Base ================= */
+*,*::before,*::after{box-sizing:border-box}
+html{min-height:100%;-webkit-text-size-adjust:100%;text-size-adjust:100%;scrollbar-color:var(--ink-3) var(--page)}
+body{
+  margin:0;min-height:100dvh;position:relative;
+  background:var(--page-bg);color:var(--ink);
+  font:400 1rem/1.55 "Inter",system-ui,sans-serif;
+  overflow-x:hidden;caret-color:var(--red);
+  -webkit-font-smoothing:antialiased;
+}
+/* static dark-mode glow (no blur filter, no motion); light mode: --glow is none */
+body::before{content:"";position:absolute;z-index:-1;top:0;left:0;right:0;height:72rem;pointer-events:none;background:var(--glow) var(--glow-pos) / var(--glow-size) no-repeat;opacity:var(--glow-o)}
 
-    * {
-      box-sizing: border-box
-    }
+::selection{background:var(--yellow);color:#111}
+::-webkit-scrollbar{width:12px;height:12px}
+::-webkit-scrollbar-track{background:var(--page)}
+::-webkit-scrollbar-thumb{background:var(--ink-3);border:3px solid var(--page);border-radius:99px}
 
-    html,
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--body);
-      font-size: 15px;
-      line-height: 1.5;
-      transition: background-color .25s, color .25s
-    }
+img,svg,video{display:block;max-width:100%}
+a{color:inherit;text-underline-offset:.22em;text-decoration-thickness:1px}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+button:disabled{cursor:not-allowed}
+p{margin:0}
+h1,h2,h3,h4{margin:0;color:var(--ink)}
+ul,ol{margin:0}
+[hidden]{display:none !important}
 
-    button,
-    input,
-    select,
-    textarea {
-      font: inherit;
-      color: inherit
-    }
+:focus{outline:none}
+:focus-visible{outline:var(--focus);outline-offset:2px}
 
-    :focus-visible {
-      outline: 2px solid var(--focus);
-      outline-offset: 2px
-    }
+/* ================= Type ================= */
+h1{font:700 clamp(2.25rem,1.4rem + 3.6vw,4.25rem)/1.02 "Jost",sans-serif;letter-spacing:-.02em;text-wrap:balance}
+h2{font:700 1.375rem/1.15 "Jost",sans-serif;letter-spacing:-.01em;text-wrap:balance}
+h3{font:700 1.25rem/1.2 "Jost",sans-serif;letter-spacing:-.005em}
+h1 em,h2 em,h3 em,.accent{font-family:"Jost",sans-serif;font-style:italic;font-weight:500}
+.lead{margin-top:var(--s3);font-weight:300;font-size:1.125rem;color:var(--ink-2);max-width:60ch}
 
-    .sr-only {
-      position: absolute;
-      width: 1px;
-      height: 1px;
-      overflow: hidden;
-      clip: rect(0 0 0 0);
-      white-space: nowrap
-    }
+/* ================= Utilities ================= */
+.sr-only{position:absolute !important;width:1px;height:1px;margin:-1px;padding:0;border:0;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap}
+.wrap{max-width:84rem;margin-inline:auto;padding-inline:16px}
+@media (min-width:40rem){.wrap{padding-inline:var(--s6)}}
+.ico{display:inline-block;width:1.05em;height:1.05em;flex:none;stroke:currentColor;fill:none;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;vertical-align:-.15em}
+.caps{font:700 .6875rem/1 "Inter",sans-serif;letter-spacing:.14em;text-transform:uppercase;font-variant-numeric:tabular-nums}
+.num{font-variant-numeric:tabular-nums lining-nums}
 
-    /* ---------- Top bar ---------- */
-    .topbar {
-      position: sticky;
-      top: 0;
-      z-index: 30;
-      display: flex;
-      align-items: center;
-      gap: clamp(10px, 1.5vw, 14px);
-      height: 64px;
-      padding: 0 var(--admin-gutter);
-      padding-left: max(var(--admin-gutter), env(safe-area-inset-left));
-      padding-right: max(var(--admin-gutter), env(safe-area-inset-right));
-      background: var(--bg);
-      border-bottom: 1px solid var(--line)
-    }
+/* ================= Grease pencil (static SVG marks) ================= */
+.grease{position:absolute;pointer-events:none;overflow:visible;mix-blend-mode:var(--grease-blend)}
+.grease path{fill:none;stroke-linecap:round;stroke-linejoin:round}
+.grease.y path{stroke:var(--yellow)}
+.grease.r path{stroke:var(--red);vector-effect:non-scaling-stroke}
+.mark{position:relative;isolation:isolate;white-space:nowrap}
+.mark > .grease{z-index:-1}
+h1 .mark .grease{left:-.1em;bottom:var(--hl-bottom);height:var(--hl-h);width:calc(100% + .2em)}
+h1 .mark .grease path{stroke:var(--hl-page)}
 
-    .burger {
-      width: 42px;
-      height: 42px;
-      display: grid;
-      place-items: center;
-      background: none;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      cursor: pointer
-    }
+/* ================= Views ================= */
+.view{display:none}
+.view.active{display:block}
 
-    .burger span,
-    .burger span::before,
-    .burger span::after {
-      display: block;
-      width: 18px;
-      height: 2px;
-      background: var(--text);
-      position: relative;
-      transition: .25s
-    }
-
-    .burger span::before,
-    .burger span::after {
-      content: "";
-      position: absolute;
-      left: 0
-    }
-
-    .burger span::before {
-      top: -6px
-    }
-
-    .burger span::after {
-      top: 6px
-    }
-
-    .burger[aria-expanded="true"] span {
-      background: transparent
-    }
-
-    .burger[aria-expanded="true"] span::before {
-      top: 0;
-      transform: rotate(45deg);
-      background: var(--accent-text)
-    }
-
-    .burger[aria-expanded="true"] span::after {
-      top: 0;
-      transform: rotate(-45deg);
-      background: var(--accent-text)
-    }
-
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-family: var(--display);
-      font-weight: 900;
-      letter-spacing: .02em;
-      white-space: nowrap
-    }
-
-    .logo-mark {
-      background: var(--red);
-      color: #fff;
-      font-size: 12px;
-      line-height: 1;
-      padding: 6px 7px;
-      border-radius: 4px
-    }
-
-    .logo small {
-      font-family: var(--body);
-      font-weight: 400;
-      color: var(--muted);
-      font-size: 12px;
-      letter-spacing: .08em;
-      text-transform: uppercase
-    }
-
-    .spacer {
-      flex: 1
-    }
-
-    .status {
-      font-size: 12px;
-      padding: 4px 10px;
-      border-radius: 999px;
-      border: 1px solid var(--line);
-      color: var(--muted);
-      white-space: nowrap
-    }
-
-    .status.dirty {
-      border-color: var(--yellow);
-      color: var(--accent-text)
-    }
-
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 9px 16px;
-      border-radius: 6px;
-      border: 1px solid var(--line);
-      background: var(--panel-2);
-      cursor: pointer;
-      font-family: var(--display);
-      font-weight: 500;
-      font-size: 13px;
-      white-space: nowrap
-    }
-
-    .btn:hover {
-      border-color: var(--muted)
-    }
-
-    .btn-primary {
-      background: var(--yellow);
-      color: var(--black);
-      border-color: var(--yellow);
-      font-weight: 700
-    }
-
-    .btn-primary:hover {
-      filter: brightness(1.05);
-      border-color: var(--yellow)
-    }
-
-    .btn-danger {
-      background: transparent;
-      color: var(--red);
-      border-color: rgba(255, 34, 34, .4)
-    }
-
-    .btn-danger:hover {
-      background: rgba(255, 34, 34, .1);
-      border-color: var(--red)
-    }
-
-    .btn:disabled {
-      opacity: .4;
-      cursor: not-allowed
-    }
-
-    .btn-sm {
-      padding: 6px 10px;
-      font-size: 12px
-    }
-
-    .icon-btn {
-      width: 32px;
-      height: 32px;
-      display: grid;
-      place-items: center;
-      border-radius: 6px;
-      border: 1px solid var(--line);
-      background: var(--panel-2);
-      cursor: pointer
-    }
-
-    .thumb .icon-btn {
-      background: rgba(17, 17, 17, .8);
-      border-color: #2e2e2e;
-      color: #f0f0f0
-    }
-
-    .icon-btn:hover {
-      border-color: var(--yellow)
-    }
-
-    .theme-btn {
-      width: 42px;
-      height: 42px;
-      display: grid;
-      place-items: center;
-      border-radius: 8px;
-      border: 1px solid var(--line);
-      background: none;
-      cursor: pointer
-    }
-
-    .theme-btn:hover {
-      border-color: var(--yellow)
-    }
-
-    .theme-btn .sun {
-      display: none
-    }
-
-    :root[data-theme-effective="light"] .theme-btn .sun {
-      display: block
-    }
-
-    :root[data-theme-effective="light"] .theme-btn .moon {
-      display: none
-    }
-
-    .seg {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 4px;
-      padding: 4px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      margin-bottom: 12px
-    }
-
-    .seg button {
-      padding: 7px 0;
-      border: 0;
-      border-radius: 6px;
-      background: none;
-      cursor: pointer;
-      font-size: 12px;
-      color: var(--text-soft)
-    }
-
-    .seg button[aria-pressed="true"] {
-      background: var(--yellow);
-      color: var(--black);
-      font-weight: 500
-    }
-
-    .seg-label {
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: .12em;
-      color: var(--muted);
-      margin: 0 0 6px
-    }
-
-    .icon-btn.del:hover {
-      border-color: var(--red);
-      color: var(--red)
-    }
-
-    svg.i {
-      width: 16px;
-      height: 16px;
-      fill: none;
-      stroke: currentColor;
-      stroke-width: 2;
-      stroke-linecap: round;
-      stroke-linejoin: round
-    }
-
+/* ================= Reduced motion ================= */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:.01ms !important;animation-duration:.01ms !important;animation-iteration-count:1 !important;scroll-behavior:auto !important}
+}

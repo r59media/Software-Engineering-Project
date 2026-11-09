@@ -1,4 +1,4 @@
-export interface AdminState {
+interface AdminState {
   authenticated: boolean
   dirty: boolean
   packages: any[]
@@ -14,7 +14,8 @@ export interface AdminState {
   coupons: any[]
 }
 
-export interface R59Global {
+interface R59Global {
+  [key: string]: any
   state?: any
   navigation?: any
   apiClient?: any
@@ -27,7 +28,12 @@ export interface R59Global {
   notifications?: any
   confirmation?: any
   formValidation?: any
+  headerFold?: any
+  passwordReset?: any
+  reviewChanges?: any
+  settings?: any
   dashboard?: any
+  leads?: any
   payments?: any
   photography?: any
   schedule?: any
@@ -36,8 +42,8 @@ export interface R59Global {
   api?: any
 }
 
-declare global {
-  interface Window {
-    R59: R59Global
-  }
+interface Window {
+  R59: R59Global
+  R59_API_URL?: string
+  APP_CONFIG?: any
 }

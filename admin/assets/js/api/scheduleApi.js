@@ -1,95 +1,48 @@
+// @ts-nocheck
 /**
- * R59 Media Admin — Schedule & Availability API Service
+ * R59 Media Admin — Schedule API Service
  *
- * Integration layer for schedule slots, weekly availability, and blocked dates.
- * Connected to Cloudflare Workers /schedule and /admin/schedule backend routes.
+ * Weekly availability (a setting, saved through the unsaved bar) and blocked dates (records)
+ * against the Worker's /admin/availability and /admin/blocked-dates routes. Every function
+ * rejects on an HTTP or network failure so the caller can mark the area failed or report it.
  */
-import { apiClient } from './apiClient';
-const getClient = () => {
-    if (typeof window !== 'undefined' && window.R59?.apiClient) {
-        return window.R59.apiClient;
-    }
-    return apiClient;
-};
-export const scheduleApi = {
-    /**
-     * Fetch available schedule slots.
-     * Established backend endpoint: GET /schedule
-     */
-    async getSlots({ limit = 100, offset = 0 } = {}) {
-        const data = await getClient().get('/schedule', { limit, offset });
-        return (data && data.slots) || [];
-    },
-    /**
-     * Create a new available timeslot.
-     * Established backend endpoint: POST /admin/schedule
-     */
-    async createSlot({ date, startTime, endTime }) {
-        return await getClient().post('/admin/schedule', {
-            date,
-            start_time: startTime,
-            end_time: endTime
-        });
-    },
-    /**
-     * Delete an unbooked timeslot.
-     * Established backend endpoint: DELETE /admin/schedule/:id
-     */
-    async deleteSlot(id) {
-        return await getClient().delete(`/admin/schedule/${id}`);
-    },
-    /**
-     * Fetch weekly recurring availability rules.
-     * [Pending Agreement]: Proposed endpoint GET /admin/availability
-     */
-    async getWeeklyAvailability() {
-        try {
-            const res = await getClient().get('/admin/availability');
-            return res?.availability || null;
-        }
-        catch {
+(function () {
+    'use strict';
+    const client = () => window.R59.apiClient;
+    const scheduleApi = {
+        /** Weekly availability: GET /admin/availability → [{ day, available, timeframes }] */
+        async getWeeklyAvailability() {
+            const res = await client().get('/admin/availability');
+            if (res && Array.isArray(res.availability))
+                return res.availability;
+            if (res && Array.isArray(res.data))
+                return res.data;
             return null;
+        },
+        /** Replace the weekly availability: PUT /admin/availability */
+        async saveWeeklyAvailability(availability) {
+            return client().put('/admin/availability', { availability });
+        },
+        /** Blocked dates: GET /admin/blocked-dates → [{ id, date, dateStr, reason }] */
+        async getBlockedDates() {
+            const res = await client().get('/admin/blocked-dates');
+            if (res && Array.isArray(res.blockedDates))
+                return res.blockedDates;
+            if (res && Array.isArray(res.data))
+                return res.data;
+            return null;
+        },
+        /** Block a date: POST /admin/blocked-dates → { id, date, dateStr, reason } */
+        async addBlockedDate({ date, reason }) {
+            return client().post('/admin/blocked-dates', { date, reason });
+        },
+        /** Unblock a date: DELETE /admin/blocked-dates/:id */
+        async removeBlockedDate(id) {
+            return client().delete(`/admin/blocked-dates/${encodeURIComponent(id)}`);
         }
-    },
-    /**
-     * Save weekly recurring availability rules.
-     * [Pending Agreement]: Proposed endpoint PUT /admin/availability
-     */
-    async saveWeeklyAvailability(availability) {
-        return await getClient().put('/admin/availability', { availability });
-    },
-    /**
-     * Fetch blocked calendar dates.
-     * [Pending Agreement]: Proposed endpoint GET /admin/blocked-dates
-     */
-    async getBlockedDates() {
-        try {
-            const res = await getClient().get('/admin/blocked-dates');
-            return res?.blockedDates || [];
-        }
-        catch {
-            return [];
-        }
-    },
-    /**
-     * Add a blocked calendar date.
-     * [Pending Agreement]: Proposed endpoint POST /admin/blocked-dates
-     */
-    async addBlockedDate({ date, reason }) {
-        return await getClient().post('/admin/blocked-dates', { date, reason });
-    },
-    /**
-     * Remove a blocked date.
-     * [Pending Agreement]: Proposed endpoint DELETE /admin/blocked-dates/:id
-     */
-    async removeBlockedDate(id) {
-        return await getClient().delete(`/admin/blocked-dates/${id}`);
-    }
-};
-if (typeof window !== 'undefined') {
+    };
     window.R59 = window.R59 || {};
     window.R59.scheduleApi = scheduleApi;
     window.R59.api = window.R59.api || {};
     window.R59.api.schedule = scheduleApi;
-}
-export default scheduleApi;
+})();

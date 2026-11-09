@@ -58,47 +58,27 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
     ).run().catch(() => {})
 
     const sections = ['hero', 'recent', 'gallery', 'about'] as const
-    const seedFingerprint = sections.flatMap(sec =>
-      ((defaultPortfolioSeed as any)[sec] || []).map((i: any) => `${sec}:${i.title}:${i.display_order ?? i.order ?? 1}:${i.media_key}`)
-    ).join('|')
-
-    const settingsRows = await db.prepare(
-      "SELECT setting_key, setting_value FROM Admin_Settings WHERE setting_key LIKE 'portfolio_seeded_%' OR setting_key = 'portfolio_seed_fingerprint'"
-    ).all<{ setting_key: string; setting_value: string }>().catch(() => ({ results: [] as { setting_key: string; setting_value: string }[] }))
-    const settingsMap = new Map((settingsRows.results || []).map(r => [r.setting_key, r.setting_value]))
-
-    const allSeeded = sections.every(sec => settingsMap.has(`portfolio_seeded_${sec}`))
-    const currentFingerprint = settingsMap.get('portfolio_seed_fingerprint')
-
-    if (allSeeded && currentFingerprint === seedFingerprint) {
-      return
-    }
-
     const statements: any[] = []
 
-    // 1. Update any existing /assets/ rows whose hash changed on rebuild when fingerprint differs
-    if (currentFingerprint !== seedFingerprint) {
-      for (const sec of sections) {
-        const defaults = (defaultPortfolioSeed as any)[sec] || []
-        for (const item of defaults) {
-          statements.push(
-            db.prepare(
-              "UPDATE Portfolio_Images SET media_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND media_key LIKE '/assets/%' AND media_key != ?"
-            ).bind(item.media_key, sec, item.title, item.display_order ?? item.order ?? 1, item.media_key)
-          )
-        }
+    // 1. Update any existing /assets/ rows whose hash changed on rebuild
+    for (const sec of sections) {
+      const defaults = (defaultPortfolioSeed as any)[sec] || []
+      for (const item of defaults) {
+        statements.push(
+          db.prepare(
+            "UPDATE Portfolio_Images SET media_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND media_key LIKE '/assets/%' AND media_key != ?"
+          ).bind(item.media_key, sec, item.title, item.display_order ?? item.order ?? 1, item.media_key)
+        )
       }
-      statements.push(
-        db.prepare(
-          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('portfolio_seed_fingerprint', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-        ).bind(seedFingerprint)
-      )
     }
 
     // 2. Seed each section's default images exactly once. A flag in Admin_Settings records the
     //    first run so photos the admin later deletes are not re-inserted. Sections that already
     //    hold photos (databases seeded before the flag existed) are only marked, never re-seeded.
-    const seededFlags = new Set(settingsRows.results?.map(row => row.setting_key) || [])
+    const flagRows = await db.prepare(
+      "SELECT setting_key FROM Admin_Settings WHERE setting_key LIKE 'portfolio_seeded_%'"
+    ).all<{ setting_key: string }>().catch(() => ({ results: [] as { setting_key: string }[] }))
+    const seededFlags = new Set((flagRows.results || []).map(row => row.setting_key))
     const countRows = await db.prepare(
       'SELECT LOWER(section) AS section, COUNT(*) AS cnt FROM Portfolio_Images GROUP BY LOWER(section)'
     ).all<{ section: string; cnt: number }>().catch(() => ({ results: [] as { section: string; cnt: number }[] }))
@@ -216,20 +196,14 @@ function validationError(message: string, field: string) {
   }
 }
 
-export const DEFAULT_PROFILE = {
-  bio: "I'm the photographer behind R59—drawn to quiet frames, honest light, and the small gestures that make a portrait feel lived-in.\n\nMost of my work sits between editorial portraiture and documentary storytelling. Whether we're in a studio or chasing late-afternoon sun on location, the goal is always the same: images that still feel like you ten years from now.",
-  email: "hello@r59.Portraits",
-  phone: "123-456-7890",
-  location: "Studio & On-Location",
-  travel: true,
-  social: {
-    instagram: "https://www.instagram.com",
-    facebook: "https://www.facebook.com",
-    pinterest: "https://www.pinterest.com",
-    x: "",
-    tiktok: "",
-    youtube: ""
-  }
+// Public profile: no placeholder content. A field that was never saved is empty.
+export const EMPTY_PROFILE = {
+  bio: '',
+  email: '',
+  phone: '',
+  location: '',
+  travel: '',
+  social: [] as { platform: string; url: string }[]
 }
 
 export const portfolioRouter = new Hono<{ Bindings: Bindings }>()
@@ -249,72 +223,121 @@ portfolioRouter.get('/profile', async (c) => {
       } catch {}
     }
 
+    // A stored value (including '') is returned as stored; a missing or null field is empty
+    const text = (value: unknown): string =>
+      value === undefined || value === null ? '' : String(value).trim()
+
     const profile = {
-      bio: (parsed?.bio && String(parsed.bio).trim()) || DEFAULT_PROFILE.bio,
-      email: (parsed?.email && String(parsed.email).trim()) || DEFAULT_PROFILE.email,
-      phone: (parsed?.phone && String(parsed.phone).trim()) || DEFAULT_PROFILE.phone,
-      location: (parsed?.location && String(parsed.location).trim()) || DEFAULT_PROFILE.location,
+      bio: text(parsed?.bio),
+      email: text(parsed?.email),
+      phone: text(parsed?.phone),
+      location: text(parsed?.location),
       // The admin saves travel as a label (e.g. "Studio only"); keep that text instead of coercing it to true
-      travel: parsed?.travel !== undefined
+      travel: parsed?.travel !== undefined && parsed?.travel !== null
         ? (typeof parsed.travel === 'string' ? parsed.travel : Boolean(parsed.travel))
-        : DEFAULT_PROFILE.travel,
-      social: parsed?.social || DEFAULT_PROFILE.social
+        : EMPTY_PROFILE.travel,
+      // No placeholder social links: an unsaved profile has none
+      social: parsed?.social ?? []
     }
 
     c.header('Cache-Control', 'no-store')
     return c.json({
       status: 'success',
-      profile
+      profile,
+      data: profile
     })
   } catch {
-    return c.json({ status: 'success', profile: { ...DEFAULT_PROFILE } })
+    const profile = { ...EMPTY_PROFILE, social: [] }
+    return c.json({ status: 'success', profile, data: profile })
   }
 })
+
+export interface PortfolioListQuery {
+  limit?: string
+  offset?: string
+  category?: string
+  section?: string
+}
+
+export type PortfolioListResult =
+  | { ok: true; body: { images: any[]; limit: number; offset: number; status: 'success'; data: any[] } }
+  | { ok: false; status: 400; body: ReturnType<typeof validationError> }
+
+/**
+ * The one photo-list query behind GET /api/portfolio (public, active photos only) and
+ * GET /api/admin/portfolio (includeInactive: hidden photos too). Same params, hero rules,
+ * filters, ordering, paging and row shape for both.
+ */
+export async function listPortfolio(
+  db: D1Database,
+  query: PortfolioListQuery,
+  { includeInactive = false }: { includeInactive?: boolean } = {}
+): Promise<PortfolioListResult> {
+  await ensurePortfolioSchema(db)
+
+  const limit = Math.max(1, Math.min(parseInt(query.limit || '50', 10) || 50, 100))
+  const offset = Math.max(0, parseInt(query.offset || '0', 10) || 0)
+  const category = (query.category || '').trim()
+  const rawSection = query.section
+
+  const where: string[] = includeInactive ? [] : ['is_active = 1']
+  const params: (string | number)[] = []
+
+  const isHeroQuery =
+    category.toLowerCase() === 'hero' ||
+    (rawSection !== undefined && rawSection.trim().toLowerCase() === 'hero')
+
+  if (isHeroQuery) {
+    where.push("(LOWER(category) = 'hero' OR is_featured = 1 OR LOWER(section) = 'hero')")
+  } else {
+    if (rawSection !== undefined && rawSection.trim() !== '') {
+      const section = parseSection(rawSection)
+      if (!section) {
+        return {
+          ok: false,
+          status: 400,
+          body: validationError(`Unknown section. Use one of: ${PORTFOLIO_SECTIONS.join(', ')}.`, 'section')
+        }
+      }
+      where.push('section = ?')
+      params.push(section)
+    }
+
+    if (category && category.toLowerCase() !== 'all') {
+      where.push('LOWER(category) = LOWER(?)')
+      params.push(category)
+    }
+  }
+
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''
+  const queryRes = await db.prepare(
+    `SELECT ${SELECT_COLUMNS} FROM Portfolio_Images ${whereSql} ORDER BY display_order ASC, id ASC LIMIT ? OFFSET ?`
+  ).bind(...params, limit, offset).all<any>()
+
+  // is_active is always 1 or 0 (the public list only ever holds 1)
+  const images = (queryRes.results || []).map((row: any) => withUrls({ ...row, is_active: row.is_active ? 1 : 0 }))
+  return { ok: true, body: { images, limit, offset, status: 'success', data: images } }
+}
+
+/** Reads the list params from a request. */
+export function portfolioListQuery(req: { query: (name: string) => string | undefined }): PortfolioListQuery {
+  return {
+    limit: req.query('limit'),
+    offset: req.query('offset'),
+    category: req.query('category'),
+    section: req.query('section')
+  }
+}
 
 // GET: Public gallery, optionally narrowed to one site section and/or category
 portfolioRouter.get('/', async (c) => {
   try {
-    await ensurePortfolioSchema(c.env.DB)
-
-    const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100))
-    const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
-    const category = (c.req.query('category') || '').trim()
-    const rawSection = c.req.query('section')
-
-    const where: string[] = ['is_active = 1']
-    const params: (string | number)[] = []
-
-    const isHeroQuery =
-      category.toLowerCase() === 'hero' ||
-      (rawSection !== undefined && rawSection.trim().toLowerCase() === 'hero')
-
-    if (isHeroQuery) {
-      where.push("(LOWER(category) = 'hero' OR is_featured = 1 OR LOWER(section) = 'hero')")
-    } else {
-      if (rawSection !== undefined && rawSection.trim() !== '') {
-        const section = parseSection(rawSection)
-        if (!section) {
-          return c.json(validationError(`Unknown section. Use one of: ${PORTFOLIO_SECTIONS.join(', ')}.`, 'section'), 400)
-        }
-        where.push('section = ?')
-        params.push(section)
-      }
-
-      if (category && category.toLowerCase() !== 'all') {
-        where.push('LOWER(category) = LOWER(?)')
-        params.push(category)
-      }
-    }
-
-    const queryRes = await c.env.DB.prepare(
-      `SELECT ${SELECT_COLUMNS} FROM Portfolio_Images WHERE ${where.join(' AND ')} ORDER BY display_order ASC, id ASC LIMIT ? OFFSET ?`
-    ).bind(...params, limit, offset).all<any>()
-
-    const mapped = (queryRes.results || []).map(withUrls)
+    const result = await listPortfolio(c.env.DB, portfolioListQuery(c.req))
+    if (!result.ok) return c.json(result.body, result.status)
 
     // Admin edits must show up on the next page load, so never let browsers or CDNs cache this list
     c.header('Cache-Control', 'no-store')
-    return c.json({ images: mapped, limit, offset, status: 'success', data: mapped })
+    return c.json(result.body)
   } catch (e: any) {
     return c.json({
       error: {

@@ -1,192 +1,90 @@
 /* ==========================================================================
-   R59 Media Admin — Payments, Packages & Coupons Styles
+   R59 Media Admin — Payment page (pricing, packages, coupons)
+   Page-specific layout only. Components (.roll, .strip, .frame, .field, .btn,
+   .rows, .switch, .tag, .load-error, .skel, .empty) live in components.css.
+   Grids follow the film strip width (.strip is an inline-size container).
    ========================================================================== */
 
-    /* ---------- Payment & Pricing ---------- */
-    .pricing-grid {
-      grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
-      gap: clamp(12px, 1.5vw, 18px);
-      margin-bottom: 24px;
-    }
+/* ---------- Roll intro hint + inline notices ---------- */
+.pay-roll-hint{margin-top:0;max-width:60ch}
+.pay-notice:empty{display:none}
 
-    .price-display {
-      font-family: var(--display);
-      font-size: 26px;
-      font-weight: 900;
-      color: var(--accent-text);
-      margin-bottom: 12px;
-    }
+/* ---------- Pricing roll: 1 → 3 frames ---------- */
+.frames.pay-pricing{grid-template-columns:minmax(0,1fr)}
+@container (min-width:36rem){
+  .frames.pay-pricing{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .frames.pay-pricing > .slot:last-child{grid-column:1/-1}
+}
+@container (min-width:56rem){
+  .frames.pay-pricing{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .frames.pay-pricing > .slot:last-child{grid-column:auto}
+}
 
-    /* Locked price fields */
-    .price-field-row {
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 10px;
-      margin-top: 12px;
-      margin-bottom: 6px;
-    }
+/* the price figure sits under the frame head, like the mockup's contact-frame figures */
+.pay-price .pay-figure{margin-top:0;font-size:clamp(2.25rem,1.9rem + 1.4vw,3rem);overflow-wrap:anywhere}
+.pay-figure.is-pending{color:var(--ink-3)}
+.pay-price > .field{margin-top:auto}
 
-    .price-field-row label.f {
-      margin: 0;
-    }
+/* label + "Edit price" lock button on one line, wrapping on narrow frames */
+.pay-label-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:var(--s1) var(--s3);min-height:var(--ctl)}
+.pay-label-row .btn{margin-inline-end:calc(var(--s2) * -1)}
+.pay-label-row .btn[aria-pressed="true"]{border-color:var(--rule)}
 
-    .price-field-row .btn-sm {
-      padding: 4px 12px;
-    }
+/* ---------- Packages roll: 1 → 2 → 3 frames ---------- */
+.frames.pay-packages{grid-template-columns:minmax(0,1fr)}
+@container (min-width:44rem){.frames.pay-packages{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@container (min-width:72rem){.frames.pay-packages{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/* the list wrapper is transparent to the grid: its slots sit beside the "Add package" slot */
+.pay-pkg-list{display:contents}
 
-    .input[readonly].price-locked {
-      opacity: .65;
-      cursor: not-allowed;
-      background: var(--panel-2);
-    }
+.pay-pkg.is-inactive h3{color:var(--ink-2)}
+.pay-tags{margin-top:var(--s2)}
+.pay-pkg .frame-head .switch{flex:none}
+textarea.field__input.pay-desc{min-height:6.5rem}
+/* Session length: [ 1 ] h : [ 30 ] min, then "Entire day" on the same line (wraps below on a narrow frame) */
+.pay-outfits .field__control{max-width:9rem}
+.pay-session__line{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2) var(--s5)}
+.pay-session__units{display:flex;align-items:center;gap:var(--s2)}
+.pay-session__unit{flex:none;width:4.75rem}
+.pay-session__unit .field__input{text-align:right}
+.pay-session__suffix{font-size:.875rem;font-weight:700;color:var(--ink-2);cursor:pointer;transition:color var(--t)}
+.pay-session__sep{font:700 1.125rem/1 "Jost",sans-serif;color:var(--ink-3);padding-inline:var(--s1)}
+/* Entire day ticked: the fields are disabled (dashed, muted by components.css) and their units fade with them */
+.pay-session__units:has(.field__input:disabled) .pay-session__suffix{color:var(--ink-3);cursor:default}
+.pay-session__units:has(.field__input:disabled) .pay-session__sep{opacity:.6}
+.pay-check{display:inline-flex;align-items:center;gap:var(--s2);min-height:2.75rem;font-size:.875rem;font-weight:700;color:var(--ink);cursor:pointer;user-select:none}
+.pay-check input{flex:none;width:1.125rem;height:1.125rem;margin:0;accent-color:var(--yellow);cursor:inherit}
+.pay-check input:focus-visible{outline:var(--focus);outline-offset:2px}
+.pay-pkg-foot{margin-top:auto;padding-top:var(--s2)}
 
-    .section-head {
-      margin: 28px 0 14px;
-    }
+/* "Add package" tile: the whole frame is the button until the form opens */
+.pay-add{justify-content:center}
+.pay-add-btn{
+  flex:1;display:grid;place-items:center;align-content:center;gap:var(--s2);
+  min-height:13rem;width:100%;padding:var(--s5);
+  border:1px dashed var(--ink-3);border-radius:2px;background:transparent;color:var(--ink);
+  text-align:center;font:inherit;
+  transition:border-color var(--t),background-color var(--t);
+}
+.pay-add-btn .ico{width:1.75rem;height:1.75rem;stroke-width:1.5}
+.pay-add-btn strong{font:700 1.25rem/1.2 "Jost",sans-serif}
+.pay-add-btn .hint{margin-top:0}
+.pay-add-btn:hover{border-color:var(--ink);background:color-mix(in srgb,var(--ink) 4%,transparent)}
+.pay-add-btn:disabled,.pay-add-btn:disabled:hover{border-color:var(--ink-3);background:transparent;color:var(--ink-3)}
+.pay-add-form{align-content:start}
 
-    .packages-grid {
-      grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-      gap: clamp(14px, 2vw, 20px);
-    }
+/* shared action row (form buttons, package foot) */
+.pay-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2)}
 
-    textarea.input.desc-input {
-      min-height: 80px;
-    }
+/* ---------- Coupons roll ---------- */
+/* code / type / amount / buttons: one row on a wide strip, wrapping cleanly down to 360px */
+.pay-coupon-form{display:grid;gap:var(--s4);grid-template-columns:repeat(auto-fit,minmax(min(100%,11rem),1fr));align-items:end}
+.pay-coupon-acts{min-height:2.75rem}
+.field__input.pay-code{text-transform:uppercase;letter-spacing:.04em}
+.field__input.pay-code::placeholder{text-transform:none;letter-spacing:0}
 
-    .add-package-card {
-      min-height: 260px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-      border: 2px dashed var(--line);
-      background: transparent;
-      color: var(--text);
-      cursor: pointer;
-      text-align: center;
-    }
-    .add-package-card:hover { border-color: var(--yellow); }
-    .add-package-plus {
-      display: grid; place-items: center;
-      width: 54px; height: 54px; border-radius: 50%;
-      background: var(--yellow); color: var(--black);
-      font-size: 38px; font-weight: 500; line-height: 1;
-    }
-    .package-remove-confirm { max-width: 420px; }
+.frame h3.pay-list-label{font:700 .6875rem/1 "Inter",sans-serif;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);margin-top:var(--s2)}
 
-    /* Coupons + new booking */
-    .coupon-row {
-      display: flex;
-      gap: 8px;
-    }
-
-    .coupon-row .input {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .price-summary {
-      margin-top: 16px;
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 12px 14px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      font-size: 13px;
-    }
-
-    .price-summary .ps-row {
-      display: flex;
-      justify-content: space-between;
-      gap: 12px;
-      color: var(--text-soft);
-    }
-
-    .price-summary .ps-row.discount b {
-      color: #4ade80;
-    }
-
-    .price-summary .ps-row.total {
-      border-top: 1px solid var(--line);
-      padding-top: 8px;
-      margin-top: 2px;
-      font-family: var(--display);
-      font-weight: 700;
-      color: var(--text);
-    }
-
-    .price-summary .ps-row.total b {
-      color: var(--accent-text);
-      font-size: 16px;
-    }
-
-    .coupon-form {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)) auto;
-      gap: clamp(8px, 1.5vw, 12px);
-      align-items: end;
-    }
-
-    @media (max-width: 700px) {
-      .coupon-form {
-        grid-template-columns: 1fr;
-      }
-
-      .coupon-form-actions {
-        width: 100%;
-      }
-
-      .coupon-form-actions .btn {
-        flex: 1;
-        justify-content: center;
-      }
-    }
-
-    .coupon-form label.f {
-      margin-top: 0;
-    }
-
-    .coupon-form-actions {
-      display: flex;
-      gap: 8px;
-    }
-
-    .coupon-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 10px;
-      background: var(--panel-2);
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px 14px;
-      margin-bottom: 8px;
-    }
-
-    .coupon-item:last-child {
-      margin-bottom: 0;
-    }
-
-    .coupon-item.inactive .coupon-code,
-    .coupon-item.inactive .hint {
-      opacity: .5;
-    }
-
-    .coupon-code {
-      font-family: var(--display);
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: .06em;
-      color: var(--text);
-    }
-
-    .coupon-actions {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
+.pay-coupon-code{font:700 1.0625rem/1.25 "Jost",sans-serif;letter-spacing:.04em;font-variant-numeric:tabular-nums lining-nums}
+.pay-coupon .sub{display:inline-flex;align-items:center;flex-wrap:wrap;gap:var(--s2)}
+.pay-coupon.is-inactive .pay-coupon-code{color:var(--ink-2)}

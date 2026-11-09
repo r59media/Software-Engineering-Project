@@ -1,197 +1,155 @@
+// @ts-nocheck
 /**
  * R59 Media Admin — Navigation & Theming
- * 
- * Handles single-page view routing (`go()`), mobile drawer navigation,
- * anchor scrolling, and light/dark appearance theming.
+ *
+ * Single-page view routing (`go()`), header/menu "current page" state, anchor focusing,
+ * and the single System -> Light -> Dark theme button.
+ * Header folding, the Menu panel and dropdowns live in components/headerFold.js.
  */
 
-const $ = <T extends HTMLElement = HTMLElement>(s: string): T | null => document.querySelector<T>(s);
-const $$ = <T extends HTMLElement = HTMLElement>(s: string): T[] => Array.from(document.querySelectorAll<T>(s));
+(function () {
+  'use strict';
 
-export interface GoOptions {
-  anchor?: string;
-  tab?: string;
-}
+  const $ = s => document.querySelector(s);
+  const $$ = s => [...document.querySelectorAll(s)];
 
-export function setDrawer(open: boolean): void {
-  const drawer = $('#drawer');
-  const burger = $('#burger');
-  const scrim = $('#scrim');
+  /* ---------- Current-page state ---------- */
+  // header top-level item for each view (dropdown buttons carry the group's current state)
+  const GROUP_OF_VIEW = {
+    overview: 'navOverview',
+    text: 'ddPersonalBtn',
+    payment: 'ddBusinessBtn',
+    schedule: 'ddBusinessBtn',
+    leads: 'ddBusinessBtn',
+    images: 'ddImagesBtn'
+  };
 
-  if (!drawer || !burger || !scrim) return;
-  drawer.classList.toggle('open', open);
-  scrim.classList.toggle('open', open);
-  burger.setAttribute('aria-expanded', String(open));
-  drawer.setAttribute('aria-hidden', String(!open));
-  burger.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
-  if (open) {
-    const firstLink = drawer.querySelector<HTMLElement>('.nav-link');
-    if (firstLink) firstLink.focus();
-  } else {
-    burger.focus();
+  function markCurrent(view, anchor, tab) {
+    const groupId = GROUP_OF_VIEW[view];
+    ['navOverview', 'ddPersonalBtn', 'ddBusinessBtn', 'ddImagesBtn'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (id === groupId) el.setAttribute('aria-current', 'page');
+      else el.removeAttribute('aria-current');
+    });
+
+    // dropdown + menu panel items: exact item match (view, then tab for images, anchor for text)
+    $$('.drop-item[data-go], .menu-item[data-go]').forEach(item => {
+      let match = item.dataset.go === view;
+      if (match && view === 'images') match = item.dataset.tab === tab;
+      if (match && view === 'text') match = anchor ? item.dataset.anchor === anchor : item.dataset.anchor === 'card-bio';
+      if (match) item.setAttribute('aria-current', 'page');
+      else item.removeAttribute('aria-current');
+    });
   }
-}
 
-export function go(view: string, { anchor, tab }: GoOptions = {}): void {
-  if (!document.body.classList.contains('authenticated')) {
-    return;
-  }
-  $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
+  /* ---------- Anchor focusing (contract §8) ---------- */
+  const FOCUSABLE = 'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), select:not([disabled])';
+  const CONTROL = /^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/;
 
-  if (tab && window.R59?.photography?.setTab) {
-    window.R59.photography.setTab(tab);
-  }
-
-  const currentTab = window.R59?.photography?.getCurrentTab
-    ? window.R59.photography.getCurrentTab()
-    : 'main';
-
-  $$<HTMLElement>('.drawer .nav-link').forEach(l => {
-    const match = l.dataset.go === view &&
-      (view !== 'images' || l.dataset.tab === currentTab) &&
-      (l.dataset.anchor ? l.dataset.anchor === anchor : !anchor || view !== 'text');
-    l.classList.toggle('active', match);
-  });
-
-  if (anchor) {
+  function focusAnchor(anchor) {
     requestAnimationFrame(() => {
       const el = document.getElementById(anchor);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        const f = el.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea');
-        if (f) setTimeout(() => f.focus({ preventScroll: true }), 350);
-      }
+      if (!el) return;
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const target = (CONTROL.test(el.tagName) || el.hasAttribute('tabindex'))
+        ? el
+        : el.querySelector(FOCUSABLE);
+      el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: target === el ? 'center' : 'start' });
+      if (target) setTimeout(() => target.focus({ preventScroll: true }), reduce ? 0 : 350);
     });
-  } else {
-    window.scrollTo({ top: 0 });
   }
-}
 
-/* ---------- Theming ---------- */
-let themeChoice: string = typeof localStorage !== 'undefined'
-  ? (localStorage.getItem('r59_theme') || 'system')
-  : 'system';
+  function go(view, { anchor, tab } = {}) {
+    if (!document.body.classList.contains('authenticated')) {
+      return;
+    }
+    $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + view));
 
-export function getThemeChoice(): string {
-  return themeChoice;
-}
+    if (tab && window.R59.photography?.setTab) {
+      window.R59.photography.setTab(tab);
+    }
 
-export function setThemeChoice(choice: string): void {
-  themeChoice = choice;
-  if (typeof localStorage !== 'undefined') {
-    localStorage.setItem('r59_theme', themeChoice);
+    const currentTab = window.R59.photography?.getCurrentTab ? window.R59.photography.getCurrentTab() : (tab || 'main');
+    markCurrent(view, anchor, currentTab);
+
+    if (anchor) {
+      focusAnchor(anchor);
+    } else {
+      window.scrollTo({ top: 0 });
+    }
+
+    // Views that load on first open (Enquiries) listen for this
+    document.dispatchEvent(new CustomEvent('r59:view', { detail: { view } }));
   }
-  applyTheme();
-}
 
-export function applyTheme(): void {
-  if (typeof document === 'undefined') return;
+  /* ---------- Theming: one button cycling System -> Light -> Dark ---------- */
   const root = document.documentElement;
-  const mq = typeof window !== 'undefined' && window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+  const mq = matchMedia('(prefers-color-scheme: dark)');
+  const ORDER = ['system', 'light', 'dark'];
+  const NAME = { system: 'System', light: 'Light', dark: 'Dark' };
 
-  if (themeChoice === 'system') {
-    root.removeAttribute('data-theme');
-  } else {
-    root.dataset.theme = themeChoice;
+  function readChoice() {
+    try {
+      const v = localStorage.getItem('r59_theme');
+      return ORDER.includes(v) ? v : 'system';
+    } catch (e) {
+      return 'system';
+    }
   }
-  const eff = themeChoice === 'system' ? (mq && mq.matches ? 'light' : 'dark') : themeChoice;
-  root.dataset.themeEffective = eff;
 
-  const themeToggle = $('#themeToggle');
-  if (themeToggle) {
-    themeToggle.setAttribute('aria-label', eff === 'light' ? 'Switch to dark mode' : 'Switch to light mode');
+  let themeChoice = readChoice();
+
+  function applyTheme() {
+    if (themeChoice === 'system') root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', themeChoice);
+    const eff = themeChoice === 'system' ? (mq.matches ? 'dark' : 'light') : themeChoice;
+    root.setAttribute('data-theme-effective', eff);
+
+    const btn = $('#themeToggle');
+    if (btn) {
+      const next = ORDER[(ORDER.indexOf(themeChoice) + 1) % ORDER.length];
+      const label = `Theme: ${NAME[themeChoice]} (click for ${NAME[next]})`;
+      btn.setAttribute('aria-label', label);
+      btn.title = label;
+    }
   }
-  $$<HTMLElement>('[data-theme-set]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeSet === themeChoice)));
-}
 
-export function initNavigation(): void {
-  const burger = $('#burger');
-  const drawer = $('#drawer');
-  if (burger) {
-    burger.onclick = () => setDrawer(!drawer?.classList.contains('open'));
+  function cycleTheme() {
+    themeChoice = ORDER[(ORDER.indexOf(themeChoice) + 1) % ORDER.length];
+    try { localStorage.setItem('r59_theme', themeChoice); } catch (e) { /* storage blocked */ }
+    applyTheme();
   }
-  const closeBtn = $('#closeDrawer');
-  if (closeBtn) closeBtn.onclick = () => setDrawer(false);
-  const scrim = $('#scrim');
-  if (scrim) scrim.onclick = () => setDrawer(false);
 
-  document.addEventListener('click', (e: MouseEvent) => {
-    const target = e.target as HTMLElement | null;
-    const b = target?.closest<HTMLElement>('[data-go]');
-    if (!b) return;
-    go(b.dataset.go || '', { anchor: b.dataset.anchor, tab: b.dataset.tab });
-    if (drawer && drawer.contains(b)) setDrawer(false);
-  });
+  function initNavigation() {
+    document.addEventListener('click', e => {
+      const b = e.target.closest('[data-go]');
+      if (!b) return;
+      go(b.dataset.go, { anchor: b.dataset.anchor, tab: b.dataset.tab });
+    });
 
-  document.addEventListener('keydown', (e: KeyboardEvent) => {
-    if (e.key === 'Escape') {
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
       const modal = $('#modal');
       const bookingModal = $('#bookingModal');
       const newBookingModal = $('#newBookingModal');
-      if (modal && modal.classList.contains('open')) window.R59?.modal?.closeModal?.();
-      else if (bookingModal && bookingModal.classList.contains('open')) window.R59?.schedule?.closeBookingEditor?.();
-      else if (newBookingModal && newBookingModal.classList.contains('open')) window.R59?.schedule?.closeNewBooking?.();
-      else if (drawer && drawer.classList.contains('open')) setDrawer(false);
-    }
-  });
+      if (modal && modal.classList.contains('open')) window.R59.modal?.closeModal();
+      else if ($('#settingsModal')?.classList.contains('open')) window.R59.account?.closeSettings?.();
+      else if (bookingModal && bookingModal.classList.contains('open')) window.R59.schedule?.closeBookingEditor();
+      else if (newBookingModal && newBookingModal.classList.contains('open')) window.R59.schedule?.closeNewBooking();
+    });
 
-  const themeToggle = $('#themeToggle');
-  if (themeToggle) {
-    themeToggle.onclick = () => {
-      const root = document.documentElement;
-      themeChoice = root.dataset.themeEffective === 'light' ? 'dark' : 'light';
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem('r59_theme', themeChoice);
-      }
-      applyTheme();
-    };
+    $('#themeToggle')?.addEventListener('click', cycleTheme);
+
+    mq.addEventListener('change', () => { if (themeChoice === 'system') applyTheme(); });
+    applyTheme();
   }
 
-  $$<HTMLElement>('[data-theme-set]').forEach(b => {
-    b.onclick = () => {
-      themeChoice = b.dataset.themeSet || 'system';
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem('r59_theme', themeChoice);
-      }
-      applyTheme();
-    };
-  });
-
-  if (typeof window !== 'undefined' && window.matchMedia) {
-    const mq = window.matchMedia('(prefers-color-scheme: light)');
-    mq.addEventListener('change', applyTheme);
-  }
-  applyTheme();
-}
-
-export interface NavigationManager {
-  go: (view: string, options?: GoOptions) => void;
-  setDrawer: (open: boolean) => void;
-  applyTheme: () => void;
-  initNavigation: () => void;
-  getThemeChoice?: () => string;
-  setThemeChoice?: (choice: string) => void;
-}
-
-export const navigation: NavigationManager = {
-  go,
-  setDrawer,
-  applyTheme,
-  initNavigation,
-  getThemeChoice,
-  setThemeChoice
-};
-
-declare global {
-  interface Window {
-    go?: typeof go;
-  }
-}
-
-if (typeof window !== 'undefined') {
   window.R59 = window.R59 || {};
-  window.R59.navigation = navigation;
+  window.R59.navigation = {
+    go,
+    applyTheme,
+    initNavigation
+  };
   window.go = go;
-}
-
-export default navigation;
+})();

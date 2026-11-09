@@ -1,607 +1,830 @@
+// @ts-nocheck
 /**
  * R59 Media Admin — Main Application Entry Point
  *
- * Orchestrates module initialization, global save/discard bar actions,
- * user authentication flow, and initial render lifecycle.
+ * Startup session check, gated module loading, per-area data loading with load status,
+ * the save bar (Review & save / Discard), login and logout. The Settings dialog lives in
+ * components/settings.js (R59.account); Forgot password and #reset= links in components/passwordReset.js.
  */
-const $ = (s) => document.querySelector(s);
-const $$ = (s) => Array.from(document.querySelectorAll(s));
-export const GATED_ADMIN_SCRIPTS = [
-    'assets/js/api/bookingsApi.js',
-    'assets/js/api/packagesApi.js',
-    'assets/js/api/paymentsApi.js',
-    'assets/js/api/photographyApi.js',
-    'assets/js/api/scheduleApi.js',
-    'assets/js/pages/dashboard.js',
-    'assets/js/pages/schedule.js',
-    'assets/js/pages/payments.js',
-    'assets/js/utils/webpConverter.js',
-    'assets/js/pages/photography.js'
-];
-let adminModulesLoaded = false;
-let adminModulesPromise = null;
-export function setWorkspaceAuthenticated(isAuth) {
-    document.body.classList.toggle('authenticated', Boolean(isAuth));
-    const appEl = document.querySelector('.app');
-    if (appEl) {
-        if (isAuth) {
-            appEl.removeAttribute('inert');
-            appEl.removeAttribute('aria-hidden');
-        }
-        else {
-            appEl.setAttribute('inert', '');
-            appEl.setAttribute('aria-hidden', 'true');
+(function () {
+    'use strict';
+    const $ = s => document.querySelector(s);
+    const $$ = s => [...document.querySelectorAll(s)];
+    const R = () => window.R59;
+    const toast = (msg, opts) => window.R59.notifications?.toast?.(msg, opts);
+    // Served only to a signed-in session (GATED_ADMIN_SCRIPT_REGEX in backend/src/index.ts);
+    // index.html does not load these directly.
+    const GATED_ADMIN_SCRIPTS = [
+        'assets/js/api/bookingsApi.js',
+        'assets/js/api/packagesApi.js',
+        'assets/js/api/paymentsApi.js',
+        'assets/js/api/photographyApi.js',
+        'assets/js/api/scheduleApi.js',
+        'assets/js/utils/webpConverter.js',
+        'assets/js/pages/dashboard.js',
+        'assets/js/pages/schedule.js',
+        'assets/js/pages/payments.js',
+        'assets/js/pages/photography.js',
+        'assets/js/pages/leads.js'
+    ];
+    const AREA_NAMES = {
+        profile: 'profile',
+        pricing: 'pricing',
+        availability: 'availability',
+        packages: 'packages',
+        coupons: 'coupons',
+        bookings: 'bookings',
+        blockedDates: 'blocked dates',
+        images: 'photos'
+    };
+    const SETTINGS_AREAS = ['profile', 'pricing', 'availability', 'packages'];
+    let adminModulesLoaded = false;
+    let adminModulesPromise = null;
+    let hasEnteredApp = false;
+    let saving = false;
+    /* ---------- Shell ---------- */
+    function setWorkspaceAuthenticated(isAuth) {
+        document.body.classList.toggle('authenticated', Boolean(isAuth));
+        const appEl = $('.app');
+        if (appEl) {
+            if (isAuth) {
+                appEl.removeAttribute('inert');
+                appEl.removeAttribute('aria-hidden');
+            }
+            else {
+                appEl.setAttribute('inert', '');
+                appEl.setAttribute('aria-hidden', 'true');
+            }
         }
     }
-}
-export function loadScriptSequential(src) {
-    return new Promise((resolve, reject) => {
-        if (document.querySelector(`script[data-gated-src="${src}"]`)) {
-            resolve();
-            return;
-        }
-        const s = document.createElement('script');
-        s.src = src;
-        s.async = false;
-        s.setAttribute('data-gated-src', src);
-        s.onload = () => resolve();
-        s.onerror = () => reject(new Error(`Failed to load ${src}`));
-        document.body.appendChild(s);
-    });
-}
-export async function ensureAdminModulesLoaded() {
-    if (adminModulesLoaded)
-        return true;
-    if (adminModulesPromise)
-        return adminModulesPromise;
-    adminModulesPromise = (async () => {
-        try {
-            for (const src of GATED_ADMIN_SCRIPTS) {
-                await loadScriptSequential(src);
+    function loadScriptSequential(src) {
+        return new Promise((resolve, reject) => {
+            if (document.querySelector(`script[data-gated-src="${src}"]`)) {
+                resolve();
+                return;
             }
-            // Hook up pages namespace & event aliases for compatibility
-            const r59 = window.R59 || {};
-            r59.pages = r59.pages || {};
-            if (r59.schedule) {
-                r59.pages.schedule = r59.schedule;
-                r59.pages.schedule.initScheduleEvents = r59.schedule.initScheduleListeners;
-            }
-            if (r59.payments) {
-                r59.pages.payments = r59.payments;
-                r59.pages.payments.initPaymentEvents = r59.payments.initPaymentsListeners;
-            }
-            if (r59.photography) {
-                r59.pages.photography = r59.photography;
-                r59.pages.photography.initPhotographyEvents = r59.photography.initPhotographyListeners;
-            }
-            if (r59.dashboard) {
-                r59.pages.dashboard = r59.dashboard;
-                r59.pages.dashboard.initDashboardEvents = r59.dashboard.initDashboardListeners;
-            }
-            r59.pages?.schedule?.initScheduleEvents?.();
-            r59.pages?.payments?.initPaymentEvents?.();
-            r59.pages?.photography?.initPhotographyEvents?.();
-            r59.pages?.dashboard?.initDashboardEvents?.();
-            adminModulesLoaded = true;
+            const s = document.createElement('script');
+            s.src = src;
+            s.async = false;
+            s.setAttribute('data-gated-src', src);
+            s.addEventListener('load', () => resolve());
+            s.addEventListener('error', () => {
+                s.remove(); // allow a later retry to request it again
+                reject(new Error(`Failed to load ${src}`));
+            });
+            document.body.appendChild(s);
+        });
+    }
+    async function ensureAdminModulesLoaded() {
+        if (adminModulesLoaded)
             return true;
-        }
-        catch (err) {
-            console.error('[R59 Admin] Failed to load gated admin modules:', err);
-            adminModulesPromise = null;
-            return false;
-        }
-    })();
-    return adminModulesPromise;
-}
-export function renderAll() {
-    const currentState = window.R59.state ? window.R59.state.getState() : {};
-    // Bind basic text fields
-    $$('[data-bind]').forEach(el => {
-        const bindKey = el.dataset.bind;
-        if (bindKey && currentState[bindKey] !== undefined) {
-            el.value = currentState[bindKey];
-        }
-    });
-    // Render each domain
-    if (window.R59.photography) {
-        window.R59.photography.updateBioCount?.();
-        window.R59.photography.renderSocial?.();
-        window.R59.photography.renderImages?.();
+        if (adminModulesPromise)
+            return adminModulesPromise;
+        adminModulesPromise = (async () => {
+            try {
+                for (const src of GATED_ADMIN_SCRIPTS) {
+                    await loadScriptSequential(src);
+                }
+                // Pages namespace & event aliases for compatibility
+                const r = R();
+                r.pages = r.pages || {};
+                if (r.schedule) {
+                    r.pages.schedule = r.schedule;
+                    r.pages.schedule.initScheduleEvents = r.schedule.initScheduleListeners;
+                }
+                if (r.payments) {
+                    r.pages.payments = r.payments;
+                    r.pages.payments.initPaymentEvents = r.payments.initPaymentsListeners;
+                }
+                if (r.photography) {
+                    r.pages.photography = r.photography;
+                    r.pages.photography.initPhotographyEvents = r.photography.initPhotographyListeners;
+                }
+                if (r.dashboard) {
+                    r.pages.dashboard = r.dashboard;
+                    r.pages.dashboard.initDashboardEvents = r.dashboard.initDashboardListeners;
+                }
+                r.pages.schedule?.initScheduleEvents?.();
+                r.pages.payments?.initPaymentEvents?.();
+                r.pages.photography?.initPhotographyEvents?.();
+                r.pages.dashboard?.initDashboardEvents?.();
+                r.leads?.initLeadsListeners?.();
+                adminModulesLoaded = true;
+                return true;
+            }
+            catch (err) {
+                console.error('[R59 Admin] Failed to load gated admin modules:', err);
+                adminModulesPromise = null;
+                return false;
+            }
+        })();
+        return adminModulesPromise;
     }
-    if (window.R59.payments) {
-        window.R59.payments.renderPricing?.();
-        window.R59.payments.renderPackages?.();
-        window.R59.payments.resetCouponForm?.();
-        window.R59.payments.renderCoupons?.();
+    /* ---------- Rendering ---------- */
+    function fillBindings() {
+        const currentState = R().state ? R().state.getState() : {};
+        $$('[data-bind]').forEach(el => {
+            const v = currentState[el.dataset.bind];
+            if (v !== undefined && v !== null && typeof v !== 'object')
+                el.value = v;
+        });
     }
-    if (window.R59.schedule) {
-        window.R59.schedule.renderCalendar?.();
-        window.R59.schedule.renderAvailability?.();
-        window.R59.schedule.renderBookings?.();
-        window.R59.schedule.renderBlockedDates?.();
-    }
-    const pages = window.R59?.pages;
-    if (pages?.dashboard?.renderOverview) {
-        pages.dashboard.renderOverview();
-    }
-    else if (window.R59.dashboard?.renderOverview) {
-        window.R59.dashboard.renderOverview();
-    }
-}
-export function initSaveBar() {
-    $('#save')?.addEventListener('click', () => {
-        if (window.R59.payments?.pricingIsInvalid?.()) {
-            window.toast?.('Please enter valid amounts (prices 0 or more, down payment 0–100%) before saving');
-            return;
-        }
-        window.R59.confirmation?.confirmSaveChanges(saveChanges);
-    });
-    async function saveChanges() {
-        const currentState = window.R59.state.getState();
-        window.R59.state.setSaved(window.R59.state.clone(currentState));
-        window.R59.state.setDirty(false);
-        window.R59.state.setLastSaved(new Date());
-        // Re-lock pricing fields
-        window.R59.payments?.renderPricing?.();
-        window.R59.state.syncStatus();
-        if (window.R59.dashboard?.refreshOverview)
-            window.R59.dashboard.refreshOverview();
-        // Persist changes to the backend, and only report success once every request has gone through
+    const RENDER_HOOKS = {
+        profile: () => {
+            fillBindings();
+            R().photography?.updateBioCount?.();
+            R().photography?.renderSocial?.();
+            R().photography?.renderProfile?.();
+        },
+        pricing: () => R().payments?.renderPricing?.(),
+        packages: () => R().payments?.renderPackages?.(),
+        coupons: () => R().payments?.renderCoupons?.(),
+        availability: () => R().schedule?.renderAvailability?.(),
+        bookings: () => {
+            R().schedule?.renderBookings?.();
+            R().schedule?.renderCalendar?.();
+            R().dashboard?.renderOverview?.();
+        },
+        blockedDates: () => {
+            R().schedule?.renderBlockedDates?.();
+            R().schedule?.renderCalendar?.();
+        },
+        images: () => R().photography?.renderImages?.()
+    };
+    function renderArea(area) {
         try {
-            if (window.R59.paymentsApi) {
-                await window.R59.paymentsApi.updatePricingSettings(currentState.pricing);
-            }
-            if (window.R59.scheduleApi) {
-                await window.R59.scheduleApi.saveWeeklyAvailability(window.R59.state.getAvailability());
-            }
-            if (window.R59.photographyApi) {
-                await window.R59.photographyApi.saveProfile({
-                    bio: currentState.bio || '',
-                    email: currentState.email || '',
-                    phone: currentState.phone || '',
-                    location: currentState.location || '',
-                    travel: currentState.travel || '',
-                    social: currentState.social || []
-                });
-            }
+            RENDER_HOOKS[area]?.();
         }
         catch (err) {
-            console.warn('[app] Could not persist changes to backend:', err);
-            window.R59.state.setDirty(true);
-            window.R59.state.syncStatus();
-            window.toast?.('Some changes could not be saved. Check your connection and save again.', 5000);
+            console.error(`[app] Rendering ${area} failed:`, err);
+        }
+    }
+    function renderAll({ keepRecordForms = false } = {}) {
+        fillBindings();
+        const r = R();
+        if (r.photography) {
+            r.photography.updateBioCount?.();
+            r.photography.renderSocial?.();
+            r.photography.renderProfile?.();
+            r.photography.renderImages?.();
+        }
+        if (r.payments) {
+            r.payments.renderPricing?.();
+            r.payments.renderPackages?.();
+            if (!keepRecordForms)
+                r.payments.resetCouponForm?.();
+            r.payments.renderCoupons?.();
+        }
+        if (r.schedule) {
+            r.schedule.renderCalendar?.();
+            r.schedule.renderAvailability?.();
+            r.schedule.renderBookings?.();
+            r.schedule.renderBlockedDates?.();
+        }
+        (r.pages?.dashboard || r.dashboard)?.renderOverview?.();
+    }
+    /* ---------- Loading ---------- */
+    function formatLongDate(dateStr) {
+        const [y, m, d] = dateStr.split('-').map(Number);
+        return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    }
+    function mapBooking(b) {
+        const rawStart = b.start_time || b.time || '';
+        const rawEnd = b.end_time || '';
+        const dateStr = b.date || '';
+        let dateFormatted = b.dateFormatted || dateStr;
+        let dateLabel = b.dateLabel || dateStr;
+        if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+            dateFormatted = formatLongDate(dateStr);
+            dateLabel = dateFormatted.toUpperCase();
+        }
+        const rawPrice = b.totalPrice !== undefined
+            ? Number(b.totalPrice)
+            : (b.price_at_booking !== undefined ? Number(b.price_at_booking) / 100 : Number(b.price ?? 0));
+        // Money is kept in integer cents for balanceOf (state.js); price/deposit stay in dollars for display code
+        const wholeCents = v => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? null : Math.round(Number(v)));
+        const priceCents = wholeCents(b.total_cents) ?? wholeCents(b.price_at_booking) ?? Math.round((Number.isFinite(rawPrice) ? rawPrice : 0) * 100);
+        const depositCents = wholeCents(b.deposit_paid) ?? Math.round((Number(b.deposit) || 0) * 100);
+        const baseCents = wholeCents(b.base_cents) ?? Math.round((Number.isFinite(rawPrice) ? rawPrice : 0) * 100);
+        const chargesCents = wholeCents(b.charges_cents) ?? 0;
+        const depositPercent = wholeCents(b.deposit_percent);
+        const rawPackageId = b.packageId !== undefined ? b.packageId : b.service_id;
+        const packageId = rawPackageId === undefined || rawPackageId === null || rawPackageId === '' ? null : Number(rawPackageId);
+        const noPackage = R().state?.NO_PACKAGE || 'No package';
+        return {
+            id: b.id,
+            service_id: packageId,
+            packageId,
+            slot_id: b.slot_id,
+            date: dateStr,
+            dateFormatted,
+            dateLabel,
+            time: rawStart,
+            start_time: rawStart,
+            end_time: rawEnd,
+            timeRange: rawEnd ? `${rawStart} – ${rawEnd}` : rawStart,
+            customer: b.client_name || b.customer || '',
+            email: b.client_email || b.email || '',
+            phone: b.phone || '',
+            location: b.location || '',
+            notes: b.notes || '',
+            people: Number(b.people ?? b.attendees ?? 1),
+            attendees: Number(b.attendees ?? b.people ?? 1),
+            coupon: b.coupon || '',
+            package: packageId === null ? noPackage : (b.service_name || b.package || noPackage),
+            price: rawPrice,
+            deposit: Number(b.deposit ?? 0),
+            priceCents,
+            baseCents,
+            chargesCents,
+            depositCents,
+            depositPercent,
+            paymentsTotal: wholeCents(b.payments_total) ?? 0,
+            paymentsCount: wholeCents(b.payments_count) ?? 0,
+            squarePaymentId: b.square_payment_id ? String(b.square_payment_id) : '',
+            status: b.status ? (b.status.charAt(0).toUpperCase() + b.status.slice(1).toLowerCase()) : 'Confirmed'
+        };
+    }
+    function requireApi(name) {
+        const api = R()[name];
+        if (!api)
+            throw new Error('This part of the admin did not load. Refresh the page.');
+        return api;
+    }
+    const str = v => (v === undefined || v === null ? '' : (typeof v === 'string' ? v : String(v)));
+    // Each loader fetches one area (rejecting on any failure) and writes it into state.
+    const LOADERS = {
+        async packages() {
+            const services = await requireApi('packagesApi').getPackages();
+            if (!Array.isArray(services))
+                throw new Error('The server sent an unexpected package list.');
+            const st = R().state;
+            // Stored values only: a missing field stays empty (no placeholder defaults)
+            const whole = v => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? '' : Number(v));
+            st.getState().packages = services.map(s => ({
+                id: s.id,
+                name: str(s.name ?? s.title),
+                description: str(s.description),
+                price: (s.price || 0) / 100, // cents to dollars
+                duration_minutes: whole(s.duration_minutes),
+                outfits: whole(s.outfits),
+                full_day: s.full_day === true || Number(s.full_day) === 1,
+                category: str(s.category),
+                active: s.is_active !== 0 && s.is_active !== false
+            }));
+            st.commitSaved('packages', st.getSettings().packages);
+        },
+        async bookings() {
+            const api = requireApi('bookingsApi');
+            let rows;
+            if (typeof api.getAllBookings === 'function') {
+                rows = await api.getAllBookings();
+            }
+            else {
+                const res = await api.getBookings();
+                rows = res && res.bookings;
+            }
+            if (!Array.isArray(rows))
+                throw new Error('The server sent an unexpected booking list.');
+            R().state.setBookings(rows.map(mapBooking));
+        },
+        async pricing() {
+            const pricing = await requireApi('paymentsApi').getPricingSettings();
+            if (!pricing || typeof pricing !== 'object')
+                throw new Error('The server sent no pricing settings.');
+            const clean = pricing.data || pricing;
+            const st = R().state;
+            const cur = st.getState();
+            cur.pricing = {
+                baseFee: Number(clean.baseFee ?? cur.pricing.baseFee ?? 0),
+                perPerson: Number(clean.perPerson ?? cur.pricing.perPerson ?? 0),
+                depositPercent: Number(clean.depositPercent ?? cur.pricing.depositPercent ?? 60)
+            };
+            st.commitSaved('pricing', st.getSettings().pricing);
+        },
+        async coupons() {
+            const coupons = await requireApi('paymentsApi').getCoupons();
+            if (!Array.isArray(coupons))
+                throw new Error('The server sent an unexpected coupon list.');
+            R().state.getState().coupons = coupons.map(c => ({
+                id: c.id,
+                code: c.code,
+                type: c.type || c.discount_type || 'percent',
+                amount: Number(c.amount ?? c.discount ?? c.discount_value ?? 0),
+                discount: Number(c.discount ?? c.amount ?? c.discount_value ?? 0),
+                description: c.description || '',
+                active: c.active !== undefined ? Boolean(c.active) : c.is_active !== 0
+            }));
+        },
+        async availability() {
+            const avail = await requireApi('scheduleApi').getWeeklyAvailability();
+            if (!Array.isArray(avail))
+                throw new Error('The server sent an unexpected availability list.');
+            const st = R().state;
+            if (avail.length > 0) {
+                st.setAvailability(avail.map(d => ({
+                    ...d,
+                    available: Boolean(d.available),
+                    timeframes: Array.isArray(d.timeframes) ? d.timeframes : []
+                })));
+            }
+            st.commitSaved('availability', st.getSettings().availability);
+        },
+        async blockedDates() {
+            const blocked = await requireApi('scheduleApi').getBlockedDates();
+            if (!Array.isArray(blocked))
+                throw new Error('The server sent an unexpected blocked-date list.');
+            R().state.setBlockedDates(blocked.map(d => {
+                const dateStr = d.dateStr || d.date || '';
+                let dateFormatted = d.dateFormatted || dateStr;
+                if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+                    const [y, m, day] = dateStr.split('-').map(Number);
+                    dateFormatted = new Date(y, m - 1, day).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                }
+                return { id: d.id, date: dateStr, dateStr, dateFormatted, reason: d.reason || '' };
+            }));
+        },
+        async profile() {
+            const profile = await requireApi('photographyApi').getProfile();
+            if (!profile || typeof profile !== 'object')
+                throw new Error('The server sent no profile.');
+            const st = R().state;
+            const cur = st.getState();
+            // A missing value means an empty field (no placeholder defaults)
+            cur.bio = str(profile.bio);
+            cur.email = str(profile.email);
+            cur.phone = str(profile.phone);
+            cur.location = str(profile.location);
+            cur.travel = str(profile.travel);
+            // Each row gets a client-side _id (review diff key and field ids); it is never sent back
+            cur.social = Array.isArray(profile.social)
+                ? profile.social.map(s => ({ _id: st.newSocialId(), platform: str(s && s.platform), url: str(s && s.url) }))
+                : [];
+            st.commitSaved('profile', st.getSettings().profile);
+        },
+        async images() {
+            const records = await (R().api?.photography || requireApi('photographyApi')).getGalleryImages();
+            if (!Array.isArray(records))
+                throw new Error('The server sent an unexpected photo list.');
+            const photography = R().photography;
+            if (!photography?.setImagesFromRecords)
+                throw new Error('The photo library did not load. Refresh the page.');
+            photography.setImagesFromRecords(records);
+        }
+    };
+    function ensureImageBuckets() {
+        const cur = R().state.getState();
+        cur.images = cur.images || {};
+        ['main', 'gallery', 'about', 'hero'].forEach(k => {
+            cur.images[k] = Array.isArray(cur.images[k]) ? cur.images[k] : [];
+        });
+    }
+    /**
+     * Loads one area. A settings area with unsaved edits is left alone (e.g. after a re-login)
+     * unless `force` is set.
+     */
+    async function loadArea(area, { force = false } = {}) {
+        const st = R().state;
+        if (!LOADERS[area])
+            return;
+        if (!force && SETTINGS_AREAS.includes(area) && st.getLoadStatus(area) === 'loaded' && st.isAreaDirty(area)) {
             return;
         }
-        window.toast?.('Changes saved');
-    }
-    $('#discard')?.addEventListener('click', () => {
-        window.R59.confirmation?.confirmDiscardChanges(discardChanges);
-    });
-    function discardChanges() {
-        const savedState = window.R59.state.getSaved();
-        window.R59.state.setState(window.R59.state.clone(savedState));
-        window.R59.state.setDirty(false);
-        window.R59.state.syncStatus();
-        renderAll();
-        window.toast?.('Changes discarded');
-    }
-    window.addEventListener('beforeunload', e => {
-        if (window.R59.state?.isDirty && window.R59.state.isDirty()) {
-            e.preventDefault();
-            e.returnValue = '';
+        st.setLoadStatus(area, 'loading');
+        renderArea(area);
+        try {
+            await LOADERS[area]();
+            st.setLoadStatus(area, 'loaded');
         }
-    });
-}
-export function initAuth() {
-    function resetLoginForm() {
+        catch (err) {
+            console.warn(`[app] Could not load ${AREA_NAMES[area]}:`, err);
+            st.setLoadStatus(area, 'failed', (err && err.message) || `Couldn't load ${AREA_NAMES[area]}.`);
+        }
+        renderArea(area);
+        R().dashboard?.refreshOverview?.();
+        st.recompute();
+    }
+    function reloadArea(area) {
+        return loadArea(area);
+    }
+    async function loadInitialBackendData() {
+        ensureImageBuckets();
+        await Promise.allSettled(R().state.LOAD_AREAS.map(area => loadArea(area)));
+        R().state.recompute();
+    }
+    const loadBackendData = loadInitialBackendData;
+    function initRetry() {
+        document.addEventListener('click', async (e) => {
+            const btn = e.target.closest('[data-retry]');
+            if (!btn || btn.disabled)
+                return;
+            const area = btn.dataset.retry;
+            if (!LOADERS[area])
+                return;
+            btn.disabled = true;
+            try {
+                await reloadArea(area);
+            }
+            finally {
+                if (btn.isConnected)
+                    btn.disabled = false;
+            }
+        });
+    }
+    /* ---------- Save bar ---------- */
+    function joinLabels(list) {
+        if (list.length <= 1)
+            return list.join('');
+        return `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}`;
+    }
+    const withPeriod = s => {
+        const t = String(s || '').trim();
+        return !t ? '' : (/[.!?]$/.test(t) ? t : `${t}.`);
+    };
+    function setSaveControlsDisabled(disabled) {
+        ['#save', '#discard'].forEach(sel => { const b = $(sel); if (b)
+            b.disabled = disabled; });
+        R().reviewChanges?.setBusy?.(disabled);
+        R().state.setSaving(disabled);
+    }
+    /** Builds the ordered save steps (pricing → availability → profile → packages) with frozen payloads. */
+    function buildSaveSteps(rows) {
+        const st = R().state;
+        const cur = st.clone(st.getSettings());
+        const savedPkgs = st.getSaved().packages || {};
+        const areas = new Set(rows.map(r => r.area));
+        const steps = [];
+        if (areas.has('pricing')) {
+            const p = cur.pricing;
+            const payload = {
+                baseFee: Number(p.baseFee),
+                perPerson: Number(p.perPerson),
+                depositPercent: Number(p.depositPercent)
+            };
+            steps.push({ area: 'pricing', label: 'Pricing', payload, send: x => R().paymentsApi.updatePricingSettings(x) });
+        }
+        if (areas.has('availability')) {
+            const payload = cur.availability;
+            steps.push({ area: 'availability', label: 'Availability', payload, send: x => R().scheduleApi.saveWeeklyAvailability(x) });
+        }
+        if (areas.has('profile')) {
+            const p = cur.profile;
+            const trim = v => str(v).trim();
+            const payload = {
+                bio: trim(p.bio),
+                email: trim(p.email),
+                phone: trim(p.phone),
+                location: trim(p.location),
+                travel: trim(p.travel),
+                // Rows with both fields blank are dropped; _id stays in the committed baseline only
+                social: (p.social || [])
+                    .filter(s => trim(s.platform) !== '' || trim(s.url) !== '')
+                    .map(s => ({ _id: s._id, platform: trim(s.platform), url: trim(s.url) }))
+            };
+            const toServer = x => Object.assign({}, x, {
+                social: x.social.map(s => ({ platform: s.platform, url: s.url }))
+            });
+            steps.push({ area: 'profile', label: 'Profile', payload, send: x => R().photographyApi.saveProfile(toServer(x)) });
+        }
+        [...areas].filter(a => String(a).startsWith('package:')).forEach(area => {
+            const id = area.slice('package:'.length);
+            const p = cur.packages[id];
+            if (!p)
+                return;
+            const wholeOrNull = v => (str(v).trim() === '' ? null : Number(v));
+            const sp = savedPkgs[id] || {};
+            const fullDay = p.full_day === true;
+            const typedLength = str(p.duration_minutes).trim() === '' ? NaN : Number(p.duration_minutes);
+            const isLength = n => Number.isInteger(n) && n >= 15 && n <= 1440;
+            const payload = {
+                name: str(p.name).trim(),
+                price: Number(p.price),
+                description: str(p.description).trim(),
+                outfits: wholeOrNull(p.outfits),
+                // Entire day: the length inputs are disabled and not checked, so a length that is not valid
+                // keeps the saved one (the server keeps its stored length too)
+                duration_minutes: fullDay && !isLength(typedLength) ? sp.duration_minutes : typedLength,
+                full_day: fullDay
+            };
+            const savedName = str(sp.name).trim() || payload.name || 'Untitled';
+            const pkgId = Number.isNaN(Number(id)) ? id : Number(id);
+            // Outfits, session length and Entire day are sent when they changed (an older stored length
+            // outside 15–1440 is not re-sent, so a name or price edit still saves)
+            const same = (a, b) => str(a ?? '').trim() === str(b ?? '').trim();
+            const toServer = x => {
+                const out = Object.assign({}, x);
+                if (same(sp.outfits, x.outfits))
+                    delete out.outfits;
+                if (same(sp.duration_minutes, x.duration_minutes))
+                    delete out.duration_minutes;
+                if ((sp.full_day === true) === x.full_day)
+                    delete out.full_day;
+                return out;
+            };
+            steps.push({
+                area, label: `Package “${savedName}”`, payload,
+                send: x => R().packagesApi.updatePackage(pkgId, toServer(x))
+            });
+        });
+        return steps;
+    }
+    async function runSave() {
+        if (saving)
+            return;
+        const st = R().state;
+        const rows = st.recompute();
+        if (!rows.length || rows.some(r => r.invalid))
+            return;
+        const steps = buildSaveSteps(rows);
+        saving = true;
+        setSaveControlsDisabled(true);
+        const done = [];
+        let failure = null;
+        for (const step of steps) {
+            try {
+                await step.send(st.clone(step.payload));
+                st.commitSaved(step.area, step.payload);
+                done.push(step);
+            }
+            catch (err) {
+                failure = { step, err };
+                break;
+            }
+        }
+        saving = false;
+        setSaveControlsDisabled(false);
+        R().reviewChanges?.close?.();
+        // The saved baseline changed: drop blank social rows and re-check "can't be emptied" fields
+        if (done.some(step => step.area === 'profile'))
+            R().photography?.onProfileSaved?.();
+        st.recompute();
+        R().payments?.renderPricing?.();
+        R().payments?.renderPackages?.();
+        R().dashboard?.refreshOverview?.();
+        if (!document.activeElement || document.activeElement === document.body) {
+            const h1 = document.querySelector('.view.active h1');
+            if (h1) {
+                h1.setAttribute('tabindex', '-1');
+                h1.focus({ preventScroll: true });
+            }
+        }
+        if (!failure) {
+            toast('Changes saved', { type: 'success' });
+            return;
+        }
+        if (failure.err && failure.err.status === 401) {
+            // The login screen is showing (r59:unauthorized); edits stay in memory and stay unsaved.
+            return;
+        }
+        const savedPart = done.length
+            ? ` ${joinLabels(done.map(s => s.label))} ${done.length === 1 ? 'was' : 'were'} saved.`
+            : '';
+        st.setSaveFailed?.(true);
+        const reason = withPeriod(failure.err && failure.err.message);
+        toast(`${failure.step.label} couldn't be saved.${reason ? ' ' + reason : ''}${savedPart} Anything not saved is still in the save bar.`, { type: 'error' });
+    }
+    function onSaveClick() {
+        if (saving)
+            return;
+        const rows = R().state.recompute();
+        if (!rows.length) {
+            toast('No changes to save.', { type: 'info' });
+            return;
+        }
+        if (!R().reviewChanges?.open)
+            return;
+        R().reviewChanges.open(rows, runSave);
+    }
+    /** Settings snapshot limited to areas that loaded (a failed area is never touched). */
+    function loadedSavedSnapshot() {
+        const st = R().state;
+        const saved = st.clone(st.getSaved());
+        const snap = {};
+        SETTINGS_AREAS.forEach(area => {
+            if (st.getLoadStatus(area) === 'loaded')
+                snap[area] = saved[area];
+        });
+        return snap;
+    }
+    function discardChanges() {
+        const st = R().state;
+        st.setSettings(loadedSavedSnapshot());
+        renderAll({ keepRecordForms: true }); // Discard restores settings only (rule 7); an open coupon edit stays
+        st.recompute();
+        toast('Changes discarded', { type: 'info' });
+    }
+    function initSaveBar() {
+        $('#save')?.addEventListener('click', onSaveClick);
+        $('#discard')?.addEventListener('click', () => {
+            if (saving)
+                return;
+            if (!R().state.isDirty())
+                return;
+            R().confirmation.confirmDiscardChanges(discardChanges);
+        });
+        window.addEventListener('beforeunload', e => {
+            if (R().state?.isDirty?.()) {
+                e.preventDefault();
+                e.returnValue = '';
+            }
+        });
+    }
+    /* ---------- Login / logout ---------- */
+    function setLoginError(message) {
+        const errEl = $('#loginError');
+        if (!errEl)
+            return;
+        errEl.textContent = message || '';
+        errEl.hidden = !message;
+    }
+    function setRetryVisible(visible) {
+        const btn = $('#loginRetry');
+        if (btn) {
+            btn.hidden = !visible;
+            btn.disabled = false;
+        }
+    }
+    function resetLoginButton() {
         const submitBtn = $('#loginBtn');
         if (submitBtn) {
             submitBtn.disabled = false;
             submitBtn.textContent = 'Sign in';
         }
-        const errEl = $('#loginError');
-        if (errEl) {
-            errEl.textContent = '';
-            errEl.style.display = 'none';
-        }
-        const lp = $('#lp');
-        if (lp)
-            lp.value = '';
-        if ($('#modal')?.classList.contains('open')) {
-            window.R59.modal?.closeModal();
-        }
     }
-    function logout() {
-        const drawer = $('#drawer');
-        if (drawer && drawer.classList.contains('open')) {
-            window.R59.navigation?.setDrawer?.(false);
-        }
-        const doLogout = () => {
-            window.R59.apiClient?.logout?.();
-            window.R59.apiClient?.clearAuthToken?.();
-            setWorkspaceAuthenticated(false);
-            $('#login')?.classList.add('open');
-            resetLoginForm();
-            window.R59.state?.setDirty?.(false);
-            window.R59.state?.syncStatus?.();
-            window.toast?.('Logged out');
-            setTimeout(() => {
-                const u = $('#lu');
-                if (u && !u.value)
-                    u.focus();
-                else
-                    $('#lp')?.focus();
-            }, 50);
-        };
-        if (window.R59.state?.isDirty && window.R59.state.isDirty()) {
-            window.R59.confirmation?.confirmLogout(true, doLogout);
-        }
-        else {
-            doLogout();
-        }
+    function focusLogin() {
+        setTimeout(() => {
+            const u = $('#lu');
+            if (u && !u.value)
+                u.focus();
+            else
+                $('#lp')?.focus();
+        }, 50);
     }
-    window.addEventListener('r59:unauthorized', (e) => {
-        const customEvent = e;
-        window.R59.apiClient?.clearAuthToken?.();
+    /** Shows the login screen. In-memory edits are kept. */
+    function showLogin({ message = '', retry = false } = {}) {
+        R().reviewChanges?.close?.({ restoreFocus: false });
+        if ($('#modal')?.classList.contains('open'))
+            R().modal?.closeModal?.();
+        if ($('#bookingModal')?.classList.contains('open'))
+            R().schedule?.closeBookingEditor?.();
+        if ($('#newBookingModal')?.classList.contains('open'))
+            R().schedule?.closeNewBooking?.();
+        if ($('#settingsModal')?.classList.contains('open'))
+            R().account?.closeSettings?.({ restoreFocus: false });
+        R().passwordReset?.showSignIn?.(); // a Forgot password form left open goes back to Sign in
+        R().leads?.reset?.();
+        const menuPanel = $('#menuPanel');
+        if (menuPanel && !menuPanel.hidden) {
+            menuPanel.hidden = true;
+            $('#menuBtn')?.setAttribute('aria-expanded', 'false');
+        }
         setWorkspaceAuthenticated(false);
         $('#login')?.classList.add('open');
-        resetLoginForm();
-        const errEl = $('#loginError');
-        if (errEl) {
-            errEl.textContent = (customEvent.detail && customEvent.detail.message) || 'Session expired. Please sign in again.';
-            errEl.style.display = 'block';
-        }
-        setTimeout(() => $('#lp')?.focus(), 50);
-    });
-    $('#logoutTop')?.addEventListener('click', logout);
-    $('#logoutDrawer')?.addEventListener('click', logout);
-    $('#loginForm')?.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const email = $('#lu')?.value.trim() || '';
-        const password = $('#lp')?.value || '';
-        const errEl = $('#loginError');
-        const submitBtn = $('#loginBtn');
-        if (errEl) {
-            errEl.textContent = '';
-            errEl.style.display = 'none';
-        }
-        if (!email || !password) {
-            if (errEl) {
-                errEl.textContent = 'Please enter both email and password.';
-                errEl.style.display = 'block';
-            }
-            return;
-        }
-        if (submitBtn) {
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Signing in...';
-        }
-        try {
-            await window.R59.apiClient.login(email, password);
-        }
-        catch (err) {
-            if (errEl) {
-                errEl.textContent = err?.message || 'Invalid email address or password.';
-                errEl.style.display = 'block';
-            }
-            if (submitBtn) {
-                submitBtn.disabled = false;
-                submitBtn.textContent = 'Sign in';
-            }
-            $('#lp')?.focus();
-            return;
-        }
+        resetLoginButton();
+        if ($('#lp'))
+            $('#lp').value = '';
+        setLoginError(message);
+        setRetryVisible(retry);
+        focusLogin();
+    }
+    /** After a confirmed session: load modules, show the app, load data. */
+    async function enterApp() {
         const modulesLoaded = await ensureAdminModulesLoaded();
         if (!modulesLoaded) {
-            if (errEl) {
-                errEl.textContent = 'Failed to load administrative modules. Please refresh and try again.';
-                errEl.style.display = 'block';
-            }
-            if (submitBtn) {
-                submitBtn.disabled = false;
-                submitBtn.textContent = 'Sign in';
-            }
-            return;
+            showLogin({ message: 'Failed to load administrative modules. Please refresh and try again.' });
+            return false;
         }
-        // Login succeeded: transition UI immediately
         setWorkspaceAuthenticated(true);
         $('#login')?.classList.remove('open');
-        resetLoginForm();
+        setLoginError('');
+        setRetryVisible(false);
         renderAll();
-        const pages = window.R59?.pages;
-        if (pages?.dashboard?.renderOverview) {
-            pages.dashboard.renderOverview();
+        if (!hasEnteredApp) {
+            R().navigation?.go?.('overview');
+            hasEnteredApp = true;
         }
-        window.R59.navigation?.go?.('overview');
-        window.toast?.('Signed in');
-        // Fetch dashboard data concurrently in background without blocking UI
-        loadBackendData();
-    });
-}
-/**
- * Concurrently load backend records if the API is available.
- * If backend is not running or endpoints are not yet mounted,
- * frontend remains functional with empty state.
- */
-export async function loadInitialBackendData() {
-    try {
-        const initCurrentState = window.R59.state.getState();
-        initCurrentState.images = initCurrentState.images || {};
-        initCurrentState.images.main = Array.isArray(initCurrentState.images.main) ? initCurrentState.images.main : [];
-        initCurrentState.images.gallery = Array.isArray(initCurrentState.images.gallery) ? initCurrentState.images.gallery : [];
-        initCurrentState.images.about = Array.isArray(initCurrentState.images.about) ? initCurrentState.images.about : [];
-        initCurrentState.images.hero = Array.isArray(initCurrentState.images.hero) ? initCurrentState.images.hero : [];
-        await Promise.allSettled([
-            // 1. Packages / Services
-            (async () => {
-                if (!window.R59.packagesApi)
-                    return;
-                const services = await window.R59.packagesApi.getPackages().catch(() => []);
-                if (Array.isArray(services) && services.length > 0) {
-                    const currentState = window.R59.state.getState();
-                    currentState.packages = services.map((s) => ({
-                        id: s.id,
-                        name: s.name || s.title || 'Package',
-                        description: s.description || '',
-                        price: (s.price || 0) / 100, // convert cents to dollars
-                        duration_minutes: s.duration_minutes || 60,
-                        category: s.category || 'General',
-                        active: s.is_active !== 0
-                    }));
-                    window.R59.payments?.renderPackages?.();
-                }
-            })(),
-            // 2. Bookings
-            (async () => {
-                if (!window.R59.bookingsApi)
-                    return;
-                const res = await window.R59.bookingsApi.getBookings().catch(() => null);
-                if (res && Array.isArray(res.bookings) && res.bookings.length > 0) {
-                    const bookings = res.bookings.map((b) => {
-                        const rawStart = b.start_time || b.time || '';
-                        const rawEnd = b.end_time || '';
-                        const dateStr = b.date || '';
-                        let dateFormatted = b.dateFormatted || dateStr;
-                        let dateLabel = b.dateLabel || dateStr;
-                        if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-                            const [y, m, d] = dateStr.split('-').map(Number);
-                            const dt = new Date(y, m - 1, d);
-                            dateFormatted = dt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-                            dateLabel = dateFormatted.toUpperCase();
-                        }
-                        const rawPrice = b.totalPrice !== undefined
-                            ? Number(b.totalPrice)
-                            : (b.price_at_booking !== undefined ? Number(b.price_at_booking) / 100 : Number(b.price ?? 0));
-                        return {
-                            id: b.id,
-                            service_id: b.service_id,
-                            slot_id: b.slot_id,
-                            date: dateStr,
-                            dateFormatted,
-                            dateLabel,
-                            time: rawStart,
-                            start_time: rawStart,
-                            end_time: rawEnd,
-                            timeRange: rawEnd ? `${rawStart} – ${rawEnd}` : rawStart,
-                            customer: b.client_name || b.customer || '',
-                            email: b.client_email || b.email || '',
-                            phone: b.phone || '',
-                            location: b.location || '',
-                            notes: b.notes || '',
-                            people: Number(b.people ?? b.attendees ?? 1),
-                            attendees: Number(b.attendees ?? b.people ?? 1),
-                            coupon: b.coupon || '',
-                            package: b.service_name || b.package || 'Photoshoot',
-                            price: rawPrice,
-                            deposit: Number(b.deposit ?? 0),
-                            status: b.status ? (b.status.charAt(0).toUpperCase() + b.status.slice(1).toLowerCase()) : 'Confirmed'
-                        };
-                    });
-                    window.R59.state.setBookings(bookings);
-                    window.R59.schedule?.renderBookings?.();
-                    window.R59.schedule?.renderCalendar?.();
-                    window.R59.dashboard?.renderOverview?.();
-                }
-            })(),
-            // 3. Pricing Configuration
-            (async () => {
-                if (!window.R59.paymentsApi)
-                    return;
-                const pricing = await window.R59.paymentsApi.getPricingSettings().catch(() => null);
-                if (pricing && typeof pricing === 'object') {
-                    const cleanPricing = pricing.data || pricing;
-                    const currentState = window.R59.state.getState();
-                    currentState.pricing = {
-                        baseFee: Number(cleanPricing.baseFee ?? currentState.pricing.baseFee ?? 0),
-                        perPerson: Number(cleanPricing.perPerson ?? currentState.pricing.perPerson ?? 0),
-                        depositPercent: Number(cleanPricing.depositPercent ?? currentState.pricing.depositPercent ?? 50)
-                    };
-                    window.R59.payments?.renderPricing?.();
-                }
-            })(),
-            // 4. Coupons
-            (async () => {
-                if (!window.R59.paymentsApi)
-                    return;
-                const coupons = await window.R59.paymentsApi.getCoupons().catch(() => []);
-                if (Array.isArray(coupons)) {
-                    const currentState = window.R59.state.getState();
-                    currentState.coupons = coupons.map((c) => ({
-                        id: c.id,
-                        code: c.code,
-                        type: c.type || c.discount_type || 'percent',
-                        amount: Number(c.amount ?? c.discount ?? c.discount_value ?? 0),
-                        discount: Number(c.discount ?? c.amount ?? c.discount_value ?? 0),
-                        description: c.description || '',
-                        active: c.active !== undefined ? Boolean(c.active) : c.is_active !== 0
-                    }));
-                    window.R59.payments?.renderCoupons?.();
-                }
-            })(),
-            // 5. Weekly Availability
-            (async () => {
-                if (!window.R59.scheduleApi)
-                    return;
-                const avail = await window.R59.scheduleApi.getWeeklyAvailability().catch(() => null);
-                if (Array.isArray(avail) && avail.length > 0) {
-                    window.R59.state.setAvailability(avail);
-                    window.R59.schedule?.renderAvailability?.();
-                }
-            })(),
-            // 6. Blocked Dates
-            (async () => {
-                if (!window.R59.scheduleApi)
-                    return;
-                const blocked = await window.R59.scheduleApi.getBlockedDates().catch(() => []);
-                if (Array.isArray(blocked)) {
-                    const normalizedBlocked = blocked.map((d) => {
-                        const dateStr = d.dateStr || d.date || '';
-                        let dateFormatted = d.dateFormatted || dateStr;
-                        if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-                            const [y, m, day] = dateStr.split('-').map(Number);
-                            dateFormatted = new Date(y, m - 1, day).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-                        }
-                        return { id: d.id, date: dateStr, dateStr, dateFormatted, reason: d.reason || '' };
-                    });
-                    window.R59.state.setBlockedDates(normalizedBlocked);
-                    window.R59.schedule?.renderBlockedDates?.();
-                    window.R59.schedule?.renderCalendar?.();
-                }
-            })(),
-            // 7. Profile Information
-            (async () => {
-                if (!window.R59.photographyApi)
-                    return;
-                const profile = await window.R59.photographyApi.getProfile().catch(() => null);
-                if (profile && typeof profile === 'object') {
-                    const currentState = window.R59.state.getState();
-                    if (profile.bio !== undefined)
-                        currentState.bio = profile.bio;
-                    if (profile.email !== undefined)
-                        currentState.email = profile.email;
-                    if (profile.phone !== undefined)
-                        currentState.phone = profile.phone;
-                    if (profile.location !== undefined)
-                        currentState.location = profile.location;
-                    if (profile.travel !== undefined)
-                        currentState.travel = profile.travel;
-                    if (Array.isArray(profile.social))
-                        currentState.social = profile.social;
-                    renderAll();
-                }
-            })(),
-            // 8. Portfolio images, sorted into Most Recent / Gallery / Hero / About tabs by site section
-            (async () => {
-                const SECTION_TO_TAB = { recent: 'main', gallery: 'gallery', about: 'about', hero: 'hero' };
-                const currentState = window.R59.state.getState();
-                currentState.images = currentState.images || {};
-                currentState.images.main = Array.isArray(currentState.images.main) ? currentState.images.main : [];
-                currentState.images.gallery = Array.isArray(currentState.images.gallery) ? currentState.images.gallery : [];
-                currentState.images.about = Array.isArray(currentState.images.about) ? currentState.images.about : [];
-                currentState.images.hero = Array.isArray(currentState.images.hero) ? currentState.images.hero : [];
-                if (!window.R59.api?.photography)
-                    return;
-                const records = await window.R59.api.photography.getGalleryImages().catch((err) => {
-                    console.warn('[app] Could not load portfolio images:', err);
-                    return null;
-                });
-                if (Array.isArray(records)) {
-                    if (window.R59.photography?.setImagesFromRecords) {
-                        window.R59.photography.setImagesFromRecords(records);
-                    }
-                    else {
-                        const grouped = { main: [], gallery: [], about: [], hero: [] };
-                        records.forEach((p) => {
-                            let tab;
-                            const secLower = (p.section || '').toLowerCase();
-                            const catLower = (p.category || '').toLowerCase();
-                            if (secLower === 'hero' || ((!p.section || secLower === 'gallery') && (catLower === 'hero' || p.is_featured === 1))) {
-                                tab = 'hero';
-                            }
-                            else {
-                                tab = SECTION_TO_TAB[secLower || 'gallery'] || 'gallery';
-                            }
-                            const order = p.order !== undefined && p.order !== null ? Number(p.order) : (p.display_order ?? 0);
-                            grouped[tab].push({
-                                ...p,
-                                section: tab === 'hero' ? 'hero' : (p.section || (tab === 'main' ? 'recent' : tab)),
-                                order,
-                                display_order: order
-                            });
-                        });
-                        Object.values(grouped).forEach(list => list.sort((a, b) => (a.order ?? a.display_order ?? 0) - (b.order ?? b.display_order ?? 0) || a.id - b.id));
-                        currentState.images = grouped;
-                    }
-                }
-            })()
-        ]);
+        loadBackendData(); // in the background; areas render as they arrive
+        // Enquiries load on first open; after a re-login on that view, load it again (showLogin reset it)
+        if ($('#view-leads')?.classList.contains('active'))
+            R().leads?.load?.();
+        return true;
     }
-    finally {
-        const currentState = window.R59.state?.getState?.();
-        if (currentState) {
-            window.R59.state?.setSaved?.(JSON.parse(JSON.stringify(currentState)));
-            window.R59.state?.setDirty?.(false);
-            window.R59.state?.syncStatus?.();
+    async function checkSession() {
+        const retry = $('#loginRetry');
+        if (retry)
+            retry.disabled = true;
+        let authenticated = false;
+        try {
+            authenticated = await R().apiClient.verifySession();
+        }
+        catch {
+            showLogin({ message: "Can't reach the server. Check your connection and try again.", retry: true });
+            return;
+        }
+        if (authenticated) {
+            await enterApp();
+        }
+        else {
+            showLogin();
         }
     }
-}
-export const loadBackendData = loadInitialBackendData;
-export const initLogin = initAuth;
-export const initGlobalActions = initSaveBar;
-// App initialization
-if (typeof document !== 'undefined') {
-    document.addEventListener('DOMContentLoaded', async () => {
-        // 1. Initialize static shell component listeners only
-        window.R59.modal?.initModalListeners?.();
-        window.R59.navigation?.initNavigation?.();
-        initLogin();
-        initGlobalActions();
-        const hasLocalToken = Boolean(window.R59.apiClient?.getAuthToken?.());
-        if (hasLocalToken) {
-            const valid = await window.R59.apiClient.verifySession();
-            if (valid) {
-                const modulesLoaded = await ensureAdminModulesLoaded();
-                if (modulesLoaded) {
-                    setWorkspaceAuthenticated(true);
-                    $('#login')?.classList.remove('open');
-                    renderAll();
-                    const pages = window.R59?.pages;
-                    if (pages?.dashboard?.renderOverview) {
-                        pages.dashboard.renderOverview();
-                    }
-                    window.R59.navigation?.go?.('overview');
-                    loadBackendData();
-                    return;
-                }
+    async function doLogout() {
+        const ok = await R().apiClient?.logout?.();
+        if (ok === false) {
+            toast("Couldn't reach the server, so you are still signed in. Try logging out again.", { type: 'error' });
+            return;
+        }
+        // The confirm said unsaved changes will be lost: restore the saved settings.
+        R().state.setSettings(loadedSavedSnapshot());
+        renderAll();
+        R().state.recompute();
+        hasEnteredApp = false; // next sign-in starts on Overview
+        showLogin();
+        toast('Logged out', { type: 'info' });
+    }
+    function initAuth() {
+        document.addEventListener('click', e => {
+            const btn = e.target.closest('[data-logout]');
+            if (!btn)
+                return;
+            e.preventDefault();
+            if (saving)
+                return;
+            if (R().state?.isDirty?.()) {
+                R().confirmation.confirmLogout(true, doLogout);
             }
-            window.R59.apiClient?.logout?.();
-        }
-        // Not authenticated (new tab, invalid session, or modules failed)
-        window.R59.apiClient?.clearAuthToken?.();
-        setWorkspaceAuthenticated(false);
-        const loginEl = $('#login');
-        if (loginEl)
-            loginEl.classList.add('open');
-        const luEl = $('#lu');
-        const lpEl = $('#lp');
-        if (luEl) {
-            luEl.value = '';
-            luEl.focus();
-        }
-        if (lpEl)
-            lpEl.value = '';
+            else {
+                doLogout();
+            }
+        });
+        window.addEventListener('r59:unauthorized', () => {
+            // e.detail.message is the server's wording; the login screen uses its own, clearer copy.
+            const dirty = R().state?.isDirty?.();
+            showLogin({
+                message: dirty
+                    ? 'Your session has expired. Sign in again to keep working. Your unsaved changes are kept.'
+                    : 'Your session has expired. Sign in again to keep working.'
+            });
+        });
+        $('#loginRetry')?.addEventListener('click', () => {
+            setLoginError('');
+            checkSession();
+        });
+        $('#loginForm')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = $('#lu')?.value.trim() || '';
+            const password = $('#lp')?.value || '';
+            const submitBtn = $('#loginBtn');
+            setLoginError('');
+            setRetryVisible(false);
+            if (!email || !password) {
+                setLoginError('Please enter both email and password.');
+                return;
+            }
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Signing in…';
+            }
+            try {
+                await R().apiClient.login(email, password);
+            }
+            catch (err) {
+                setLoginError(err.message || 'Invalid email address or password.');
+                resetLoginButton();
+                $('#lp')?.focus();
+                return;
+            }
+            const entered = await enterApp();
+            if (entered) {
+                resetLoginButton();
+                if ($('#lp'))
+                    $('#lp').value = '';
+                toast('Signed in', { type: 'success' });
+            }
+        });
+    }
+    /* ---------- Boot ---------- */
+    document.addEventListener('DOMContentLoaded', () => {
+        R().modal?.initModalListeners?.();
+        R().navigation?.initNavigation?.();
+        initAuth();
+        initSaveBar();
+        initRetry();
+        R().state?.recompute?.();
+        // A #reset= link shows "Choose a new password" instead of the session check
+        if (R().passwordReset?.startFromLink?.())
+            return;
+        checkSession();
     });
-}
-export const app = {
-    renderAll,
-    loadInitialBackendData,
-    loadBackendData,
-    ensureAdminModulesLoaded,
-    setWorkspaceAuthenticated
-};
-if (typeof window !== 'undefined') {
     window.R59 = window.R59 || {};
-    window.R59.app = app;
+    window.R59.app = {
+        renderAll,
+        loadInitialBackendData,
+        loadBackendData,
+        reloadArea,
+        ensureAdminModulesLoaded,
+        setWorkspaceAuthenticated,
+        checkSession
+    };
     window.renderAll = renderAll;
-}
-export default app;
+})();
