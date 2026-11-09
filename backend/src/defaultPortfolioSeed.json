@@ -294,5 +294,72 @@
       "is_featured": 0,
       "is_active": 1
     }
+  ],
+  "services": [
+    {
+      "name": "Portrait",
+      "description": "Individual headshots and portraits that feel like you.",
+      "best_for": "LinkedIn, resumes & personal branding",
+      "duration_minutes": 60,
+      "photo_count": 5,
+      "outfits": 1,
+      "price": 6000,
+      "currency": "USD",
+      "booking_mode": "direct",
+      "additional_people": "{\"includedPeople\":1}",
+      "display_order": 1
+    },
+    {
+      "name": "Grad Pics",
+      "description": "Celebrate your achievement with photos made for you.",
+      "best_for": "Graduation announcements & keepsakes",
+      "duration_minutes": 120,
+      "photo_count": 10,
+      "outfits": 2,
+      "price": 15000,
+      "currency": "USD",
+      "booking_mode": "direct",
+      "additional_people": "{\"includedPeople\":1}",
+      "display_order": 2
+    },
+    {
+      "name": "Branding Pics",
+      "description": "A focused session to bring your personal brand to life.",
+      "best_for": "Creators & entrepreneurs",
+      "duration_minutes": 120,
+      "photo_count": 15,
+      "outfits": null,
+      "price": 23000,
+      "currency": "USD",
+      "booking_mode": "direct",
+      "additional_people": null,
+      "display_order": 3
+    },
+    {
+      "name": "Event",
+      "description": "Capture the people, details and moments that matter.",
+      "best_for": "Celebrations & special occasions",
+      "duration_minutes": 300,
+      "photo_count": 300,
+      "outfits": null,
+      "price": 70000,
+      "currency": "USD",
+      "booking_mode": "direct",
+      "additional_people": null,
+      "display_order": 4
+    },
+    {
+      "name": "Business package",
+      "description": "Photography tailored to your team, business and goals.",
+      "best_for": "Teams & business content",
+      "duration_minutes": null,
+      "photo_count": null,
+      "outfits": null,
+      "price": null,
+      "currency": "USD",
+      "booking_mode": "inquiry",
+      "additional_people": null,
+      "display_order": 5
+    }
   ]
 }
