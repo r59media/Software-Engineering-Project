@@ -1,28 +1,28 @@
 /**
  * R59 Media Admin — Notifications Component
- * 
+ *
  * Toast notifications for user feedback on actions, saves, and errors.
  */
-
-(function () {
-  'use strict';
-
-  let toastTimer = null;
-
-  function toast(message, duration = 2200) {
+let toastTimer = null;
+export function toast(message, duration = 2200) {
     const toastEl = document.querySelector('#toast');
-    if (!toastEl) return;
-
+    if (!toastEl)
+        return;
     toastEl.textContent = message;
     toastEl.classList.add('show');
-
-    clearTimeout(toastTimer);
+    if (toastTimer !== null) {
+        clearTimeout(toastTimer);
+    }
     toastTimer = setTimeout(() => {
-      toastEl.classList.remove('show');
+        toastEl.classList.remove('show');
     }, duration);
-  }
-
-  window.R59 = window.R59 || {};
-  window.R59.notifications = { toast };
-  window.toast = toast;
-})();
+}
+export const notifications = {
+    toast
+};
+if (typeof window !== 'undefined') {
+    window.R59 = window.R59 || {};
+    window.R59.notifications = notifications;
+    window.toast = toast;
+}
+export default notifications;
