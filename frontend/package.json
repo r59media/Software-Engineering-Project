@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "check": "pnpm lint && pnpm build",
     "preview": "vite preview",
-    "convert-webp": "node scripts/convert-to-webp.mjs"
+    "convert-webp": "node --experimental-strip-types scripts/convert-to-webp.ts"
   },
   "dependencies": {
     "@react-three/fiber": "^9.8.2",

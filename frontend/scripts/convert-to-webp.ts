@@ -8,7 +8,7 @@
  * preserving 1:1 original resolution without lossy compression.
  * 
  * Usage:
- *   node scripts/convert-to-webp.mjs [path] [--force] [--delete-original]
+ *   node --experimental-strip-types scripts/convert-to-webp.ts [path] [--force] [--delete-original]
  */
 
 import fs from 'node:fs';
@@ -19,19 +19,55 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const SUPPORTED_EXTS = new Set([
+export const SUPPORTED_EXTS = new Set<string>([
   'png', 'jpg', 'jpeg', 'heic', 'heif',
   'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'orf', 'rw2', 'pef', 'srw',
   'bmp', 'tiff', 'tif'
 ]);
 
-const RAW_EXTS = new Set([
+export const RAW_EXTS = new Set<string>([
   'cr2', 'cr3', 'nef', 'arw', 'dng', 'raf', 'orf', 'rw2', 'pef', 'srw'
 ]);
 
-// Determine available conversion CLI binaries
-function detectBinary() {
-  for (const cmd of ['magick', 'convert', 'ffmpeg']) {
+export type ConversionEngineType = 'magick' | 'convert' | 'ffmpeg';
+
+export interface BinaryInfo {
+  type: ConversionEngineType;
+  path: string;
+}
+
+export interface ConvertOptions {
+  force: boolean;
+  deleteOriginal: boolean;
+  lossless: boolean;
+}
+
+export interface ConvertSuccessResult {
+  success: true;
+  skipped?: false;
+  srcPath: string;
+  destPath: string;
+  originalSize: number;
+  convertedSize: number;
+  ratio: string;
+}
+
+export interface ConvertSkippedResult {
+  skipped: true;
+  success?: false;
+  reason: string;
+  srcPath: string;
+  destPath: string;
+}
+
+export type ConvertResult = ConvertSuccessResult | ConvertSkippedResult;
+
+/**
+ * Determine available conversion CLI binaries
+ */
+export function detectBinary(): BinaryInfo | null {
+  const candidates: ConversionEngineType[] = ['magick', 'convert', 'ffmpeg'];
+  for (const cmd of candidates) {
     const res = spawnSync('which', [cmd], { stdio: 'pipe', encoding: 'utf-8' });
     if (res.status === 0 && res.stdout.trim()) {
       return { type: cmd, path: res.stdout.trim() };
@@ -43,10 +79,10 @@ function detectBinary() {
 /**
  * Extract embedded full-resolution JPEG stream from Camera RAW file buffer
  */
-function extractEmbeddedJpegFromRaw(buffer) {
+export function extractEmbeddedJpegFromRaw(buffer: Buffer | Uint8Array): Uint8Array | null {
   const bytes = new Uint8Array(buffer);
   const len = bytes.length;
-  let largestSlice = null;
+  let largestSlice: Uint8Array | null = null;
   let maxSize = 0;
 
   for (let i = 0; i < len - 4; i++) {
@@ -95,7 +131,7 @@ function extractEmbeddedJpegFromRaw(buffer) {
 /**
  * Format bytes into human-readable string
  */
-function formatBytes(bytes) {
+export function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -106,7 +142,7 @@ function formatBytes(bytes) {
 /**
  * Recursively scan directory for convertible image files
  */
-function scanDirectory(dirPath, fileList = []) {
+export function scanDirectory(dirPath: string, fileList: string[] = []): string[] {
   if (!fs.existsSync(dirPath)) return fileList;
   const entries = fs.readdirSync(dirPath, { withFileTypes: true });
 
@@ -130,7 +166,7 @@ function scanDirectory(dirPath, fileList = []) {
 /**
  * Convert a single file to WebP
  */
-function convertFile(srcPath, options, binInfo) {
+export function convertFile(srcPath: string, options: ConvertOptions, binInfo: BinaryInfo): ConvertResult {
   const dir = path.dirname(srcPath);
   const ext = path.extname(srcPath).slice(1).toLowerCase();
   const baseName = path.basename(srcPath, path.extname(srcPath));
@@ -147,7 +183,7 @@ function convertFile(srcPath, options, binInfo) {
   const srcStat = fs.statSync(srcPath);
   const originalSize = srcStat.size;
 
-  let tempInputPath = null;
+  let tempInputPath: string | null = null;
   let inputPathToConvert = srcPath;
 
   // For Camera RAW, extract full-res JPEG stream if available
@@ -207,14 +243,18 @@ function convertFile(srcPath, options, binInfo) {
     };
   } finally {
     if (tempInputPath && fs.existsSync(tempInputPath)) {
-      try { fs.unlinkSync(tempInputPath); } catch {}
+      try {
+        fs.unlinkSync(tempInputPath);
+      } catch {
+        // Ignore failure to clean up temporary file
+      }
     }
   }
 }
 
-async function main() {
+export async function main(): Promise<void> {
   const args = process.argv.slice(2);
-  const options = {
+  const options: ConvertOptions = {
     force: args.includes('--force') || args.includes('-f'),
     deleteOriginal: args.includes('--delete-original'),
     lossless: args.includes('--lossless')
@@ -249,7 +289,7 @@ async function main() {
   console.log(`✓ Engine detected: ${binInfo.type} (${binInfo.path})`);
   console.log(`✓ Target: ${targetPath}`);
 
-  let files = [];
+  let files: string[] = [];
   if (fs.existsSync(targetPath)) {
     const stat = fs.statSync(targetPath);
     if (stat.isDirectory()) {
@@ -292,8 +332,9 @@ async function main() {
         totalConverted += res.convertedSize;
         convertedCount++;
       }
-    } catch (err) {
-      console.log(`❌ FAILED: ${err.message}`);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.log(`❌ FAILED: ${errMsg}`);
       errorCount++;
     }
   }
