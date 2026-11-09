@@ -1,5 +1,5 @@
 /**
- * backend/scripts/sync-defaults.mjs
+ * backend/scripts/sync-defaults.ts
  * 
  * Synchronizes default Main Page images (hero, recent photoshoot, gallery, about portrait)
  * into backend/src/defaultPortfolioSeed.json with their compiled Vite content-hashed assets.
@@ -20,14 +20,56 @@ const frontendDir = path.resolve(projectRootDir, 'frontend');
 const publicAssetsDir = path.resolve(backendDir, 'public/assets');
 const outputFile = path.resolve(backendDir, 'src/defaultPortfolioSeed.json');
 
-function getSha256(filePath) {
+export interface AssetDefinition {
+  file: string;
+  fallback: string;
+  title?: string;
+  alt: string;
+}
+
+export interface SeedMediaItem {
+  section: string;
+  category: string;
+  title: string;
+  alt_text: string;
+  display_order: number;
+  order: number;
+  media_key: string;
+  seed_key: string;
+  is_featured: number;
+  is_active: number;
+}
+
+export interface SeedServiceItem {
+  name: string;
+  description: string;
+  best_for: string;
+  duration_minutes: number | null;
+  photo_count: number | null;
+  outfits: number | null;
+  price: number | null;
+  currency: string;
+  booking_mode: 'direct' | 'inquiry';
+  additional_people: string | null;
+  display_order: number;
+}
+
+export interface SeedPayload {
+  hero: SeedMediaItem[];
+  recent: SeedMediaItem[];
+  gallery: SeedMediaItem[];
+  about: SeedMediaItem[];
+  services: SeedServiceItem[];
+}
+
+function getSha256(filePath: string): string | null {
   if (!fs.existsSync(filePath)) return null;
   const buffer = fs.readFileSync(filePath);
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
 // Build map of sha256 -> public asset URL (/assets/<name>)
-const hashMap = new Map();
+const hashMap = new Map<string, string>();
 if (fs.existsSync(publicAssetsDir)) {
   const files = fs.readdirSync(publicAssetsDir);
   for (const file of files) {
@@ -41,18 +83,18 @@ if (fs.existsSync(publicAssetsDir)) {
   }
 }
 
-function resolveAssetUrl(sourceRelativePath, fallbackHashName) {
+function resolveAssetUrl(sourceRelativePath: string, fallbackHashName?: string): string {
   const fullPath = path.resolve(frontendDir, 'src/assets', sourceRelativePath);
   const hash = getSha256(fullPath);
   if (hash && hashMap.has(hash)) {
-    return hashMap.get(hash);
+    return hashMap.get(hash)!;
   }
   // If public assets not yet compiled or hash not found, use fallback
   return fallbackHashName ? `/assets/${fallbackHashName}` : `/assets/${path.basename(sourceRelativePath)}`;
 }
 
 // 1. Hero slides (5 slides)
-const heroAssets = [
+const heroAssets: AssetDefinition[] = [
   { file: 'heroImages/heroImg1.webp', fallback: 'CdWg9zPd.webp', title: 'Twilight Highway Rolling Shot', alt: 'High-contrast automotive rolling shot on the open highway at twilight.' },
   { file: 'heroImages/heroImg2.webp', fallback: 'Sd96gpHk.webp', title: 'Studio Automotive Silhouette', alt: 'Dramatic studio automotive detail capturing reflections and sleek body lines.' },
   { file: 'heroImages/heroImg3.webp', fallback: 'D2thO5N_.webp', title: 'Cinematic Ambient Portrait', alt: 'Atmospheric portrait photography with warm cinematic lighting.' },
@@ -60,10 +102,10 @@ const heroAssets = [
   { file: 'heroImages/heroImg1.webp', fallback: 'CdWg9zPd.webp', title: 'Twilight Highway Rolling Shot II', alt: 'Atmospheric automotive perspective at dusk.' }
 ];
 
-const hero = heroAssets.map((item, idx) => ({
+const hero: SeedMediaItem[] = heroAssets.map((item, idx) => ({
   section: 'hero',
   category: 'hero',
-  title: item.title,
+  title: item.title || `Hero ${idx + 1}`,
   alt_text: item.alt,
   display_order: idx + 1,
   order: idx + 1,
@@ -74,7 +116,7 @@ const hero = heroAssets.map((item, idx) => ({
 }));
 
 // 2. Recent photoshoot images (9 images)
-const recentPhotosData = [
+const recentPhotosData: AssetDefinition[] = [
   { file: 'mrphshImages/mrphsh_img04.webp', fallback: 'D4wMHJae.webp', alt: 'Studio portrait in a black suit and patterned tie.' },
   { file: 'mrphshImages/mrphsh_img07.webp', fallback: 'CcvhJ4K9.webp', alt: 'Smiling studio portrait in a blue suit.' },
   { file: 'mrphshImages/mrphsh_img09.webp', fallback: 'Dw5-qK75.webp', alt: 'Studio portrait in a black suit with hands clasped.' },
@@ -86,7 +128,7 @@ const recentPhotosData = [
   { file: 'mrphshImages/mrphsh_img05.webp', fallback: 'MIyZqOug.webp', alt: 'Studio portrait with glasses, a white shirt, and black blazer.' }
 ];
 
-const recent = recentPhotosData.map((item, idx) => ({
+const recent: SeedMediaItem[] = recentPhotosData.map((item, idx) => ({
   section: 'recent',
   category: 'Portrait',
   title: `Recent Look ${idx + 1}`,
@@ -100,8 +142,8 @@ const recent = recentPhotosData.map((item, idx) => ({
 }));
 
 // 3. Gallery portfolio images (all 9 bundled shots are portraits, matching the design's category tags)
-const galleryCategories = ['Portrait'];
-const galleryPhotosData = [
+const galleryCategories: readonly string[] = ['Portrait'];
+const galleryPhotosData: AssetDefinition[] = [
   { file: 'mrphshImages/mrphsh_img01.webp', fallback: 'Dhi-pdrR.webp', alt: 'Studio series portrait in black blazer.' },
   { file: 'mrphshImages/mrphsh_img02.webp', fallback: 'CsJVCPMF.webp', alt: 'Editorial series portrait with glasses.' },
   { file: 'mrphshImages/mrphsh_img03.webp', fallback: 'BL_DFc6O.webp', alt: 'Commercial series portrait in grey suit.' },
@@ -113,7 +155,7 @@ const galleryPhotosData = [
   { file: 'mrphshImages/mrphsh_img09.webp', fallback: 'Dw5-qK75.webp', alt: 'Studio series portrait with hands clasped.' }
 ];
 
-const gallery = galleryPhotosData.map((item, idx) => ({
+const gallery: SeedMediaItem[] = galleryPhotosData.map((item, idx) => ({
   section: 'gallery',
   category: galleryCategories[idx % galleryCategories.length],
   title: `Studio Series ${idx + 1}`,
@@ -127,7 +169,7 @@ const gallery = galleryPhotosData.map((item, idx) => ({
 }));
 
 // 4. About portrait (1 portrait)
-const about = [
+const about: SeedMediaItem[] = [
   {
     section: 'about',
     category: 'Portrait',
@@ -143,7 +185,7 @@ const about = [
 ];
 
 // 5. Official studio tiers for Services
-const services = [
+const services: SeedServiceItem[] = [
   {
     name: 'Portrait',
     description: 'Individual headshots and portraits that feel like you.',
@@ -211,7 +253,7 @@ const services = [
   }
 ];
 
-const seedPayload = {
+const seedPayload: SeedPayload = {
   hero,
   recent,
   gallery,
