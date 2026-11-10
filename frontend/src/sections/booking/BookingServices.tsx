@@ -177,7 +177,7 @@ export function BookingServices({
                               +1 person{' '}
                               <strong>
                                 {extra.extraPersonPriceMinor === undefined
-                                  ? 'TBD'
+                                  ? '+30%'
                                   : `+${new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(extra.extraPersonPriceMinor / 100)}`}
                               </strong>
                             </small>

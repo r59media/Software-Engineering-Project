@@ -1,3 +1,4 @@
+import { previewBookingTimeSlots } from '../../config/booking'
 import { useMemo } from 'react'
 import './BookingTimeSlots.css'
 
@@ -15,20 +16,12 @@ export interface BookingTimeSlotsProps {
   durationMinutes?: number | null
   inquiryHref?: string
   onInquiryClick?: () => void
+  showHeaderTitle?: boolean
 }
 
-const DEFAULT_SLOTS: readonly TimeSlotItem[] = [
-  { time: '10:00 AM', period: 'morning', available: true },
-  { time: '11:30 AM', period: 'morning', available: true },
-  { time: '1:00 PM', period: 'afternoon', available: true },
-  { time: '2:30 PM', period: 'afternoon', available: true },
-  { time: '4:00 PM', period: 'afternoon', available: true },
-  { time: '5:30 PM', period: 'afternoon', available: true },
-]
-
 function normalizeSlots(rawSlots?: readonly string[] | readonly TimeSlotItem[]): TimeSlotItem[] {
-  if (!rawSlots || rawSlots.length === 0) {
-    return [...DEFAULT_SLOTS]
+  if (!rawSlots) {
+    return [...previewBookingTimeSlots]
   }
 
   return rawSlots.map(item => {
@@ -59,9 +52,10 @@ export function BookingTimeSlots({
   selectedSlot,
   onSelectSlot,
   slots,
-  durationMinutes,
+  durationMinutes = 60,
   inquiryHref = '#contact',
   onInquiryClick,
+  showHeaderTitle = true,
 }: BookingTimeSlotsProps) {
   const normalized = useMemo(() => normalizeSlots(slots), [slots])
 
@@ -84,90 +78,81 @@ export function BookingTimeSlots({
 
   const durationLabel =
     durationMinutes === null || durationMinutes === undefined
-      ? 'Custom duration tailored to you'
+      ? 'Custom duration'
       : durationMinutes >= 180
-        ? `~${durationMinutes / 60} hours per session`
-        : `~${durationMinutes} minutes per session`
+        ? `Up to ${durationMinutes / 60} hours`
+        : `Up to ${durationMinutes} minutes`
 
   return (
     <section className="booking-time-slots" aria-label="Available appointment times">
+      {showHeaderTitle && (
+        <h4 className="booking-time-slots__title">Select a time</h4>
+      )}
+
       <header className="booking-time-slots__header">
-        <div className="booking-time-slots__title-row">
-          <h4 className="booking-time-slots__title">Select a Time Slot</h4>
-          <span className="booking-time-slots__tz-badge" title="All times in Eastern Time">
-            🕒 Eastern Time (ET)
-          </span>
-        </div>
-        <p className="booking-time-slots__date-badge">
-          Date: <strong>{formatFriendlyDate(selectedDate)}</strong> · {durationLabel}
-        </p>
+        <div className="booking-time-slots__date-text">{formatFriendlyDate(selectedDate)}</div>
+        <div className="booking-time-slots__tz-text">Eastern Time (NY)</div>
       </header>
 
       <div className="booking-time-slots__groups">
-        {/* Morning Slots */}
+        {/* Morning */}
         <div className="booking-time-slots__group">
-          <h5 className="booking-time-slots__group-heading">Morning</h5>
-          {morningSlots.length > 0 ? (
-            <div className="booking-time-slots__grid" role="group" aria-label="Morning time slots">
-              {morningSlots.map(slot => {
-                const isSelected = selectedSlot === slot.time
-                return (
-                  <button
-                    key={slot.time}
-                    type="button"
-                    className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
-                    aria-pressed={isSelected}
-                    onClick={() => onSelectSlot(slot.time)}
-                  >
-                    <span className="booking-time-slot-btn__time">{slot.time}</span>
-                  </button>
-                )
-              })}
-            </div>
-          ) : (
-            <p className="booking-time-slots__empty-note">No morning slots available for this date.</p>
-          )}
+          <div className="booking-time-slots__group-heading">In the morning:</div>
+          <div className="booking-time-slots__grid" role="group" aria-label="Morning time slots">
+            {morningSlots.map(slot => {
+              const isSelected = selectedSlot === slot.time
+              return (
+                <button
+                  key={slot.time}
+                  type="button"
+                  className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
+                  aria-pressed={isSelected}
+                  onClick={() => onSelectSlot(slot.time)}
+                >
+                  {slot.time}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
-        {/* Afternoon Slots */}
+        {/* Afternoon */}
         <div className="booking-time-slots__group">
-          <h5 className="booking-time-slots__group-heading">Afternoon</h5>
-          {afternoonSlots.length > 0 ? (
-            <div className="booking-time-slots__grid" role="group" aria-label="Afternoon time slots">
-              {afternoonSlots.map(slot => {
-                const isSelected = selectedSlot === slot.time
-                return (
-                  <button
-                    key={slot.time}
-                    type="button"
-                    className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
-                    aria-pressed={isSelected}
-                    onClick={() => onSelectSlot(slot.time)}
-                  >
-                    <span className="booking-time-slot-btn__time">{slot.time}</span>
-                  </button>
-                )
-              })}
-            </div>
-          ) : (
-            <p className="booking-time-slots__empty-note">No afternoon slots available for this date.</p>
-          )}
+          <div className="booking-time-slots__group-heading">In the afternoon:</div>
+          <div className="booking-time-slots__grid" role="group" aria-label="Afternoon time slots">
+            {afternoonSlots.map(slot => {
+              const isSelected = selectedSlot === slot.time
+              return (
+                <button
+                  key={slot.time}
+                  type="button"
+                  className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
+                  aria-pressed={isSelected}
+                  onClick={() => onSelectSlot(slot.time)}
+                >
+                  {slot.time}
+                </button>
+              )
+            })}
+          </div>
         </div>
       </div>
 
       <footer className="booking-time-slots__footer">
-        <p className="booking-time-slots__help">
-          Need a time not listed or an on-location weekend shoot?{' '}
+        <div className="booking-time-slots__duration-note">{durationLabel}</div>
+        <div className="booking-time-slots__info-note">Times shown are session start times.</div>
+        <div className="booking-time-slots__inquiry-row">
+          <div className="booking-time-slots__inquiry-heading">Can’t find a time that works?</div>
           {onInquiryClick ? (
             <button type="button" className="booking-time-slots__inquiry-btn" onClick={onInquiryClick}>
-              Request custom availability →
+              Get in touch to discuss other availability.
             </button>
           ) : (
             <a href={inquiryHref} className="booking-time-slots__inquiry-link">
-              Request custom availability →
+              Get in touch to discuss other availability.
             </a>
           )}
-        </p>
+        </div>
       </footer>
     </section>
   )

@@ -1,137 +1,154 @@
 .booking-time-slots {
   background: #ffffff;
-  border-radius: 0.75rem;
-  padding: 1.5rem;
-  border: 1px solid rgba(17, 17, 17, 0.08);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+  border-radius: 7px;
+  padding: 18px 16px;
   width: 100%;
-}
-
-.booking-time-slots__header {
-  border-bottom: 1px solid rgba(17, 17, 17, 0.08);
-  padding-bottom: 1rem;
-  margin-bottom: 1.25rem;
-}
-
-.booking-time-slots__title-row {
+  height: 460px;
+  box-sizing: border-box;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  flex-wrap: wrap;
+  flex-direction: column;
 }
 
 .booking-time-slots__title {
-  margin: 0;
-  font-family: var(--font-title);
-  font-size: 1.25rem;
+  font-family: var(--font-title, sans-serif);
+  font-size: 24px;
   font-weight: 700;
-  color: var(--color-brand-black);
+  line-height: 32px;
+  color: #111111;
+  margin: 0 0 6px 0;
 }
 
-.booking-time-slots__tz-badge {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--color-gray);
-  background: var(--color-brand-white);
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
+.booking-time-slots__header {
+  margin-bottom: 6px;
 }
 
-.booking-time-slots__date-badge {
-  margin: 0.5rem 0 0;
-  font-size: 0.85rem;
-  color: var(--color-gray);
+.booking-time-slots__date-text {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111111;
+  line-height: 22px;
 }
 
-.booking-time-slots__date-badge strong {
-  color: var(--color-brand-black);
+.booking-time-slots__tz-text {
+  font-size: 16px;
+  color: #666666;
+  line-height: 22px;
 }
 
 .booking-time-slots__groups {
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: 8px;
 }
 
 .booking-time-slots__group-heading {
-  margin: 0 0 0.6rem;
-  font-size: 0.8rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-gray);
+  font-size: 15px;
+  font-weight: 400;
+  color: rgba(17, 17, 17, 0.45);
+  margin: 4px 0 4px 0;
 }
 
 .booking-time-slots__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 0.6rem;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
 }
 
 .booking-time-slot-btn {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 44px;
-  padding: 0.65rem 1rem;
-  border: 1px solid rgba(17, 17, 17, 0.15);
-  border-radius: 9999px;
-  background: var(--color-brand-white);
-  color: var(--color-brand-black);
+  width: 100%;
+  height: 44px;
+  border-radius: 7px;
+  border: none;
+  background: rgba(17, 17, 17, 0.08);
+  color: #666666;
+  font-size: 15px;
+  font-weight: 400;
   cursor: pointer;
-  font-family: inherit;
-  font-size: 0.9rem;
-  font-weight: 600;
-  transition: all 0.15s ease;
-  user-select: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.booking-time-slot-btn:hover {
-  background: rgba(255, 204, 34, 0.35);
-  border-color: var(--color-brand-yellow);
+/* Hover: Brand Yellow from Figma System Design */
+.booking-time-slot-btn:hover:not(.booking-time-slot-btn--selected) {
+  background: #ffcc00;
+  color: #111111;
 }
 
+/* Selected: Brand Red with white text from Figma System Design */
 .booking-time-slot-btn--selected {
-  background: var(--color-brand-yellow) !important;
-  color: var(--color-brand-black) !important;
-  border-color: var(--color-brand-yellow) !important;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  background: var(--color-brand-red, #ff2626) !important;
+  color: #ffffff !important;
   font-weight: 700;
 }
 
-.booking-time-slots__empty-note {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--color-gray);
-  font-style: italic;
+/* Focus */
+.booking-time-slot-btn:focus-visible {
+  background: #ffffff;
+  outline: 2px solid var(--color-brand-red, #ff2626);
+  color: #111111;
 }
 
 .booking-time-slots__footer {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid rgba(17, 17, 17, 0.08);
+  margin-top: auto;
+  padding-top: 8px;
 }
 
-.booking-time-slots__help {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--color-gray);
+.booking-time-slots__duration-note {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111111;
+  line-height: 22px;
+}
+
+.booking-time-slots__info-note {
+  font-size: 15px;
+  color: #666666;
+  line-height: 20px;
+}
+
+.booking-time-slots__inquiry-row {
+  margin-top: 6px;
+}
+
+.booking-time-slots__inquiry-heading {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111111;
+  line-height: 22px;
 }
 
 .booking-time-slots__inquiry-link,
 .booking-time-slots__inquiry-btn {
-  color: var(--color-brand-red);
-  font-weight: 600;
+  font-size: 15px;
+  color: #666666;
   text-decoration: underline;
-  background: transparent;
-  border: 0;
+  background: none;
+  border: none;
   padding: 0;
   cursor: pointer;
-  font: inherit;
+  line-height: 20px;
 }
 
-.booking-time-slots__inquiry-link:hover,
-.booking-time-slots__inquiry-btn:hover {
-  color: #cc0000;
+@media (max-width: 767px) {
+  .booking-time-slots {
+    height: auto;
+    padding: 12px;
+  }
 }
+
+@media (max-width: 767px) {
+  .booking-time-slots, .booking-time-slots__group { min-width: 0; }
+  .booking-time-slots__grid { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x proximity; padding: 5px; margin-inline: -5px; scrollbar-width: none; }
+  .booking-time-slot-btn { flex: 0 0 calc((100% - 24px) / 2); min-width: 112px; scroll-snap-align: start; }
+}
+
+.booking-time-slots, .booking-time-slots__groups, .booking-time-slots__group { min-width: 0; }
+.booking-time-slots__grid { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x proximity; padding: 5px; margin-inline: -5px; scrollbar-width: none; }
+.booking-time-slot-btn { flex: 0 0 calc((100% - 24px) / 2); min-width: 112px; scroll-snap-align: start; }
+@media (min-width: 768px) {
+  .booking-time-slots__footer { flex-shrink: 0; }
+}
+
+.booking-time-slots__grid::-webkit-scrollbar { display: none; width: 0; height: 0; }

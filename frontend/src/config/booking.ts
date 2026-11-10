@@ -7,3 +7,16 @@ export const previewBookingServices: readonly BookingService[] = [
   { id: 'preview-event', name: 'Event', description: 'Capture the people, details and moments that matter.', bestFor: 'Celebrations & special occasions', durationMinutes: 300, photoCount: 300, priceMinor: 70000, currency: 'USD', bookingMode: 'direct' },
   { id: 'preview-business', name: 'Business package', description: 'Photography tailored to your team, business and goals.', bestFor: 'Teams & business content', durationMinutes: null, priceMinor: null, currency: 'USD', bookingMode: 'inquiry' },
 ]
+
+export const previewBookingTimeSlots = [
+  { time: '09:00 AM', period: 'morning', available: true },
+  { time: '10:00 AM', period: 'morning', available: true },
+  { time: '11:00 AM', period: 'morning', available: true },
+  { time: '11:30 AM', period: 'morning', available: true },
+  { time: '12:00 PM', period: 'afternoon', available: true },
+  { time: '01:00 PM', period: 'afternoon', available: true },
+  { time: '03:00 PM', period: 'afternoon', available: true },
+  { time: '05:00 PM', period: 'afternoon', available: true },
+] as const
+
+export const previewBookingDepositPercent = 60

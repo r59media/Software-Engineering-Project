@@ -8,16 +8,17 @@ export interface BookingDatePickerProps {
   onSelectDate: (date: string) => void
   availableDates?: readonly string[]
   minDate?: string
+  showHeaderTitle?: boolean
 }
 
 const WEEKDAYS = [
-  { short: 'Sun', full: 'Sunday' },
   { short: 'Mon', full: 'Monday' },
   { short: 'Tue', full: 'Tuesday' },
   { short: 'Wed', full: 'Wednesday' },
   { short: 'Thu', full: 'Thursday' },
   { short: 'Fri', full: 'Friday' },
   { short: 'Sat', full: 'Saturday' },
+  { short: 'Sun', full: 'Sunday' },
 ]
 
 export function BookingDatePicker({
@@ -25,9 +26,9 @@ export function BookingDatePicker({
   onSelectDate,
   availableDates,
   minDate: explicitMinDate,
+  showHeaderTitle = true,
 }: BookingDatePickerProps) {
   const minDate = explicitMinDate || getEasternToday()
-  const today = getEasternToday()
   const initialDate = selectedDate || minDate
   const initialParsed = parseYMD(initialDate)
 
@@ -35,7 +36,6 @@ export function BookingDatePicker({
   const [currentMonth, setCurrentMonth] = useState(initialParsed.month)
   const [focusedDate, setFocusedDate] = useState(initialDate)
 
-  // Adjust state during render when prop changes (official React pattern)
   const [prevSelectedDate, setPrevSelectedDate] = useState(selectedDate)
   if (selectedDate !== prevSelectedDate) {
     setPrevSelectedDate(selectedDate)
@@ -60,7 +60,6 @@ export function BookingDatePicker({
     year: 'numeric',
   }).format(new Date(currentYear, currentMonth, 1))
 
-  // Can we navigate to the previous month?
   const minParsed = parseYMD(minDate)
   const isPrevDisabled =
     currentYear < minParsed.year || (currentYear === minParsed.year && currentMonth <= minParsed.month)
@@ -84,15 +83,14 @@ export function BookingDatePicker({
     }
   }
 
-  // Days matrix for the current month
   const calendarWeeks = useMemo(() => {
-    const firstDayIndex = new Date(currentYear, currentMonth, 1).getDay()
+    const rawFirst = new Date(currentYear, currentMonth, 1).getDay()
+    const firstDayIndex = (rawFirst + 6) % 7
     const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate()
 
     const weeks: Array<Array<{ dateStr: string; dayNumber: number; isCurrentMonth: boolean }>> = []
     let currentWeek: Array<{ dateStr: string; dayNumber: number; isCurrentMonth: boolean }> = []
 
-    // Previous month padding
     const prevMonthDays = new Date(currentYear, currentMonth, 0).getDate()
     for (let i = firstDayIndex - 1; i >= 0; i--) {
       const day = prevMonthDays - i
@@ -105,7 +103,6 @@ export function BookingDatePicker({
       })
     }
 
-    // Current month days
     for (let day = 1; day <= daysInMonth; day++) {
       currentWeek.push({
         dateStr: formatYMD(currentYear, currentMonth, day),
@@ -118,7 +115,6 @@ export function BookingDatePicker({
       }
     }
 
-    // Next month padding
     if (currentWeek.length > 0) {
       let nextDay = 1
       const nextMonth = currentMonth === 11 ? 0 : currentMonth + 1
@@ -136,7 +132,6 @@ export function BookingDatePicker({
     return weeks
   }, [currentYear, currentMonth])
 
-  // Move roving focus
   const moveFocus = (targetDate: string) => {
     setFocusedDate(targetDate)
     const { year, month } = parseYMD(targetDate)
@@ -144,7 +139,6 @@ export function BookingDatePicker({
       setCurrentYear(year)
       setCurrentMonth(month)
     }
-    // Focus the cell button once rendered
     setTimeout(() => {
       const btn = gridRef.current?.querySelector<HTMLButtonElement>(`button[data-date="${targetDate}"]`)
       btn?.focus()
@@ -199,29 +193,35 @@ export function BookingDatePicker({
 
   return (
     <div className="booking-date-picker">
+      {showHeaderTitle && (
+        <h4 className="booking-date-picker__main-title">Select a date</h4>
+      )}
+
       <header className="booking-date-picker__header">
-        <h3 id={`${gridId}-title`} className="booking-date-picker__month-title">
+        <button
+          type="button"
+          className="booking-date-picker__nav-arrow"
+          onClick={handlePrevMonth}
+          disabled={isPrevDisabled}
+          aria-label="Previous month"
+        >
+          <svg width="12" height="20" viewBox="0 0 12 20" fill="none" aria-hidden="true">
+            <path d="M10 2L2 10L10 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
+        <span id={`${gridId}-title`} className="booking-date-picker__month-title">
           {monthName}
-        </h3>
-        <div className="booking-date-picker__nav">
-          <button
-            type="button"
-            className="booking-date-picker__nav-btn"
-            onClick={handlePrevMonth}
-            disabled={isPrevDisabled}
-            aria-label="Previous month"
-          >
-            ←
-          </button>
-          <button
-            type="button"
-            className="booking-date-picker__nav-btn"
-            onClick={handleNextMonth}
-            aria-label="Next month"
-          >
-            →
-          </button>
-        </div>
+        </span>
+        <button
+          type="button"
+          className="booking-date-picker__nav-arrow"
+          onClick={handleNextMonth}
+          aria-label="Next month"
+        >
+          <svg width="12" height="20" viewBox="0 0 12 20" fill="none" aria-hidden="true">
+            <path d="M2 2L10 10L2 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
       </header>
 
       <table
@@ -248,7 +248,6 @@ export function BookingDatePicker({
                 const isAvailable = availableSet ? availableSet.has(cell.dateStr) : !isPast
                 const isSelected = selectedDate === cell.dateStr
                 const isFocused = focusedDate === cell.dateStr
-                const isToday = cell.dateStr === today
 
                 const dateObj = new Date(parseYMD(cell.dateStr).year, parseYMD(cell.dateStr).month, cell.dayNumber)
                 const accessibleLabel = new Intl.DateTimeFormat('en-US', {
@@ -261,7 +260,6 @@ export function BookingDatePicker({
                 const classNames = [
                   'booking-date-picker__day-btn',
                   cell.isCurrentMonth ? '' : 'booking-date-picker__day-btn--outside',
-                  isToday ? 'booking-date-picker__day-btn--today' : '',
                   isSelected ? 'booking-date-picker__day-btn--selected' : '',
                   !isAvailable ? 'booking-date-picker__day-btn--disabled' : '',
                 ]
@@ -270,24 +268,27 @@ export function BookingDatePicker({
 
                 return (
                   <td key={cell.dateStr} role="gridcell" className="booking-date-picker__cell">
-                    <button
-                      type="button"
-                      data-date={cell.dateStr}
-                      className={classNames}
-                      disabled={!isAvailable}
-                      tabIndex={isFocused ? 0 : -1}
-                      aria-selected={isSelected}
-                      aria-label={`${accessibleLabel}${isToday ? ', Today' : ''}${isSelected ? ', Selected' : ''}${!isAvailable ? ', Unavailable' : ''}`}
-                      onClick={() => {
-                        if (isAvailable) {
-                          setFocusedDate(cell.dateStr)
-                          onSelectDate(cell.dateStr)
-                        }
-                      }}
-                    >
-                      <span className="booking-date-picker__day-number">{cell.dayNumber}</span>
-                      {isAvailable && !isSelected && <span className="booking-date-picker__dot" aria-hidden="true" />}
-                    </button>
+                    {cell.isCurrentMonth ? (
+                      <button
+                        type="button"
+                        data-date={cell.dateStr}
+                        className={classNames}
+                        disabled={!isAvailable}
+                        tabIndex={isFocused ? 0 : -1}
+                        aria-selected={isSelected}
+                        aria-label={`${accessibleLabel}${isSelected ? ', Selected' : ''}${!isAvailable ? ', Unavailable' : ''}`}
+                        onClick={() => {
+                          if (isAvailable) {
+                            setFocusedDate(cell.dateStr)
+                            onSelectDate(cell.dateStr)
+                          }
+                        }}
+                      >
+                        <span className="booking-date-picker__day-number">{cell.dayNumber}</span>
+                      </button>
+                    ) : (
+                      <div className="booking-date-picker__day-placeholder" aria-hidden="true" />
+                    )}
                   </td>
                 )
               })}
