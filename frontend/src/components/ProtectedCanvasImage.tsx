@@ -10,6 +10,7 @@ export interface ProtectedCanvasImageProps {
   width?: number
   height?: number
   onError?: () => void
+  onLoad?: () => void
 }
 
 const MAX_CACHE_SIZE = 50
@@ -86,7 +87,7 @@ async function fetchAndCacheBitmap(url: string): Promise<ImageBitmap> {
   return request
 }
 
-function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): void {
+function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): boolean {
   if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
     canvas.width = bitmap.width
     canvas.height = bitmap.height
@@ -95,7 +96,9 @@ function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): voi
   if (ctx) {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     ctx.drawImage(bitmap, 0, 0)
+    return true
   }
+  return false
 }
 
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect
@@ -110,9 +113,14 @@ export function ProtectedCanvasImage({
   width,
   height,
   onError,
+  onLoad,
 }: ProtectedCanvasImageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const onErrorRef = useRef(onError)
+  const onLoadRef = useRef(onLoad)
+  useIsomorphicLayoutEffect(() => {
+    onLoadRef.current = onLoad
+  }, [onLoad])
 
   useEffect(() => {
     onErrorRef.current = onError
@@ -130,7 +138,7 @@ export function ProtectedCanvasImage({
     const cached = getCachedBitmap(src)
     if (cached) {
       if (canvasRef.current) {
-        drawBitmapToCanvas(canvasRef.current, cached)
+        if (drawBitmapToCanvas(canvasRef.current, cached)) onLoadRef.current?.()
       }
       return
     }
@@ -139,7 +147,7 @@ export function ProtectedCanvasImage({
       .then((bitmap) => {
         if (!isMounted) return
         if (canvasRef.current) {
-          drawBitmapToCanvas(canvasRef.current, bitmap)
+          if (drawBitmapToCanvas(canvasRef.current, bitmap)) onLoadRef.current?.()
         }
       })
       .catch((err) => {

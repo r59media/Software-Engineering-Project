@@ -20,18 +20,9 @@ export function PhotoViewer({ photo, position, total, onStep, onClose }: PhotoVi
     const dialog = dialogRef.current
     if (!dialog) return
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    const scrollY = window.scrollY
-    const body = document.body
-    const previous = { position: body.style.position, top: body.style.top, width: body.style.width, overflow: body.style.overflow }
-    body.style.position = 'fixed'
-    body.style.top = `-${scrollY}px`
-    body.style.width = '100%'
-    body.style.overflow = 'hidden'
     dialog.showModal()
     return () => {
       dialog.close()
-      Object.assign(body.style, previous)
-      window.scrollTo(0, scrollY)
       if (opener?.isConnected) opener.focus({ preventScroll: true })
     }
   }, [])

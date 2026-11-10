@@ -97,9 +97,11 @@ export function PortfolioGallery() {
                   loading="lazy"
                   decoding="async"
                 />
-                <div className="portfolio-gallery__meta" aria-hidden="true">
-                  <span className="portfolio-gallery__badge">{photo.category}</span>
-                </div>
+                {activeCategory.toLowerCase() === 'all' && (
+                  <div className="portfolio-gallery__meta" aria-hidden="true">
+                    <span className="portfolio-gallery__badge">{photo.category}</span>
+                  </div>
+                )}
               </button>
             ))}
           </div>

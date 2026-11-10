@@ -58,8 +58,8 @@ function App() {
           if (current.signal.aborted) return
           if (remoteSlides && remoteSlides.length > 0) {
             setSlides(prev => {
-              const prevSig = prev.map(s => `${s.id}|${s.imageUrl}|${s.alt}`).join('\n')
-              const nextSig = remoteSlides.map(s => `${s.id}|${s.imageUrl}|${s.alt}`).join('\n')
+              const prevSig = JSON.stringify(prev)
+              const nextSig = JSON.stringify(remoteSlides)
               return prevSig === nextSig ? prev : remoteSlides
             })
           }
