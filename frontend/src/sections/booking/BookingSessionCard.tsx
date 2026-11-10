@@ -1,3 +1,4 @@
+import { previewBookingDepositPercent } from '../../config/booking'
 import type { BookingSessionCardProps } from '../../types/booking'
 import './BookingSessionCard.css'
 
@@ -5,15 +6,15 @@ export function BookingSessionCard({
   service,
   people,
   dateTime,
-  onEditService,
-  onEditDateTime,
+  continueText,
+  onContinue,
+  isContinueDisabled = false,
 }: BookingSessionCardProps) {
   const extra = service.additionalPeople
   const extraPeople = extra ? Math.max(0, people - extra.includedPeople) : 0
   const extraCostMinor = extra ? extraPeople * (extra.extraPersonPriceMinor ?? 0) : 0
   const isCustomPrice = service.priceMinor === null
   const totalMinor = isCustomPrice ? null : (service.priceMinor ?? 0) + extraCostMinor
-  const depositMinor = totalMinor !== null ? Math.round(totalMinor * 0.5) : null
 
   const formatCurrency = (minor: number) =>
     new Intl.NumberFormat('en-US', {
@@ -22,23 +23,22 @@ export function BookingSessionCard({
       maximumFractionDigits: 0,
     }).format(minor / 100)
 
-  const formattedPrice = totalMinor !== null ? formatCurrency(totalMinor) : 'Custom pricing'
-  const formattedDeposit = depositMinor !== null ? formatCurrency(depositMinor) : null
+  const formattedPrice = totalMinor !== null ? formatCurrency(totalMinor) : 'Custom'
 
   const durationText =
     service.durationMinutes === null
-      ? 'Scope tailored to you'
+      ? 'Custom scope'
       : service.durationMinutes >= 180
         ? `${service.durationMinutes / 60} hours`
-        : `${service.durationMinutes} min`
+        : `${service.durationMinutes} minutes`
 
-  const formatDate = (dateStr: string) => {
+  const formatTicketDate = (dateStr: string) => {
     try {
       const [y, m, d] = dateStr.split('-').map(Number)
       const date = new Date(y, m - 1, d)
       return new Intl.DateTimeFormat('en-US', {
-        weekday: 'short',
-        month: 'short',
+        weekday: 'long',
+        month: 'long',
         day: 'numeric',
         year: 'numeric',
       }).format(date)
@@ -48,119 +48,67 @@ export function BookingSessionCard({
   }
 
   return (
-    <aside className="booking-session-card" aria-label="Session summary ticket">
-      <div className="booking-session-card__body">
-        <header className="booking-session-card__header">
-          <span className="booking-session-card__badge">SESSION TICKET</span>
-          <span className="booking-session-card__id">#R59-{service.id.toUpperCase()}</span>
-        </header>
+    <div className="booking-session-wrapper">
+      <aside className="booking-session-card" aria-label="Your session ticket">
+        <div className="booking-session-card__body">
+          <h3 className="booking-session-card__title">
+            <span className="booking-session-card__title-your">YOUR</span>
+            <span className="booking-session-card__title-session"> SESSION</span>
+          </h3>
 
-        <div className="booking-session-card__service-info">
-          <div className="booking-session-card__service-title-row">
-            <h4 className="booking-session-card__service-name">{service.name}</h4>
-            {onEditService && (
-              <button
-                type="button"
-                className="booking-session-card__change-btn"
-                onClick={onEditService}
-                aria-label={`Change service from ${service.name}`}
-              >
-                Change
-              </button>
-            )}
-          </div>
-          {service.bestFor && <p className="booking-session-card__best-for">Best for: {service.bestFor}</p>}
-        </div>
+          <div className="booking-session-card__service-name">{service.name}</div>
 
-        <dl className="booking-session-card__meta">
-          <div className="booking-session-card__meta-item">
-            <dt>Duration</dt>
-            <dd>{durationText}</dd>
-          </div>
-          <div className="booking-session-card__meta-item">
-            <dt>Attendees</dt>
-            <dd>{people === 1 ? '1 person' : `${people} people`}</dd>
-          </div>
-          {Boolean(service.photoCount) && (
-            <div className="booking-session-card__meta-item">
-              <dt>Deliverables</dt>
-              <dd>{service.photoCount} edited photos</dd>
+          <div className="booking-session-card__specs">
+            <div className="booking-session-card__spec-line">
+              {durationText} · {people === 1 ? '1 person' : `${people} people`}
             </div>
-          )}
-          {Boolean(service.outfits) && (
-            <div className="booking-session-card__meta-item">
-              <dt>Wardrobe</dt>
-              <dd>
-                {service.outfits} outfit{service.outfits === 1 ? '' : 's'}
-              </dd>
-            </div>
-          )}
-        </dl>
-
-        <div className="booking-session-card__perforation" aria-hidden="true">
-          <div className="booking-session-card__hole booking-session-card__hole--left" />
-          <div className="booking-session-card__dashes" />
-          <div className="booking-session-card__hole booking-session-card__hole--right" />
-        </div>
-
-        <section className="booking-session-card__datetime" aria-label="Selected date and time">
-          <div className="booking-session-card__datetime-header">
-            <span className="booking-session-card__datetime-label">APPOINTMENT</span>
-            {dateTime && onEditDateTime && (
-              <button
-                type="button"
-                className="booking-session-card__change-btn"
-                onClick={onEditDateTime}
-                aria-label="Change appointment date or time"
-              >
-                Change
-              </button>
-            )}
-          </div>
-          {dateTime ? (
-            <div className="booking-session-card__datetime-val">
-              <span className="booking-session-card__datetime-icon" aria-hidden="true">
-                📅
-              </span>
-              <div className="booking-session-card__datetime-text">
-                <strong>{formatDate(dateTime.date)}</strong>
-                <span>
-                  {dateTime.timeSlot} ({dateTime.timezone || 'ET'})
-                </span>
+            {(Boolean(service.photoCount) || Boolean(service.outfits)) && (
+              <div className="booking-session-card__spec-line">
+                {service.photoCount ? `${service.photoCount} photos` : ''}
+                {service.photoCount && service.outfits ? ' · ' : ''}
+                {service.outfits ? `${service.outfits} outfit${service.outfits === 1 ? '' : 's'}` : ''}
               </div>
-            </div>
-          ) : (
-            <div className="booking-session-card__datetime-val booking-session-card__datetime-val--pending">
-              <span className="booking-session-card__datetime-icon" aria-hidden="true">
-                ⏱
-              </span>
-              <span>Select date &amp; time</span>
-            </div>
-          )}
-        </section>
+            )}
+          </div>
 
-        <footer className="booking-session-card__pricing">
-          <div className="booking-session-card__price-row">
-            <span className="booking-session-card__price-label">Estimated Total</span>
-            <strong className="booking-session-card__price">{formattedPrice}</strong>
+          <div className="booking-session-card__section-label">DATE &amp; TIME</div>
+          <div className="booking-session-card__datetime-block">
+            {dateTime ? (
+              <>
+                <div className="booking-session-card__date-val">{formatTicketDate(dateTime.date)}</div>
+                <div className="booking-session-card__time-val">
+                  {dateTime.timeSlot} · {dateTime.timezone ? dateTime.timezone.replace('Eastern Time (ET)', 'ET').replace('Eastern Time (NY)', 'ET') : 'ET'}
+                </div>
+              </>
+            ) : (
+              <div className="booking-session-card__pending-text">Select a date &amp; time</div>
+            )}
           </div>
-          {extraPeople > 0 && extra?.extraPersonPriceMinor && (
-            <p className="booking-session-card__extra-note">
-              Includes +{extraPeople} additional {extraPeople === 1 ? 'person' : 'people'} (
-              +{formatCurrency(extraCostMinor)})
-            </p>
-          )}
-          <div className="booking-session-card__deposit-notice">
-            <span className="booking-session-card__deposit-tag">DEPOSIT POLICY</span>
-            <p>
-              {formattedDeposit
-                ? `A 50% deposit (${formattedDeposit}) is due upon booking to secure your slot. The remainder is due on session day.`
-                : 'Deposit and payment terms are detailed in your customized proposal.'}
-            </p>
+
+          <div className="booking-session-card__section-label">SESSION PRICE</div>
+          <div className="booking-session-card__price-block">
+            <div className="booking-session-card__price-amount">{formattedPrice}</div>
+            <div className="booking-session-card__price-note">
+              {previewBookingDepositPercent}% deposit to reserve
+            </div>
           </div>
-        </footer>
-      </div>
-      <div className="booking-session-card__sawtooth" aria-hidden="true" />
-    </aside>
+        </div>
+
+        {/* Sawtooth / zigzag receipt cut */}
+        <div className="booking-session-card__sawtooth" aria-hidden="true" />
+      </aside>
+
+      {/* Mobile-only CTA rendered under the ticket */}
+      {continueText && onContinue && (
+        <button
+          type="button"
+          className="booking-session-card__continue-btn booking-session-card__continue-btn--mobile"
+          disabled={isContinueDisabled}
+          onClick={onContinue}
+        >
+          {continueText}
+        </button>
+      )}
+    </div>
   )
 }

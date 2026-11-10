@@ -51,7 +51,7 @@ export function BookingYourInfo({
     if (!data.phone.trim()) {
       errs.phone = 'Phone number is required.'
     } else if (digitsOnly.length < 7) {
-      errs.phone = 'Please enter a valid phone number (at least 7 digits).'
+      errs.phone = 'Please enter a valid phone number.'
     }
     return errs
   }
@@ -71,14 +71,21 @@ export function BookingYourInfo({
     setErrors(prev => ({ ...prev, [field]: currentErrs[field as keyof FormErrors] }))
   }
 
-  const handleSubmit = (e: FormEvent) => {
-    e.preventDefault()
+  const isFormComplete = Boolean(
+    formData.firstName.trim() &&
+      formData.lastName.trim() &&
+      formData.email.trim() &&
+      formData.phone.trim() &&
+      Object.keys(validate(formData)).length === 0
+  )
+
+  const handleSubmit = (e?: FormEvent) => {
+    e?.preventDefault()
     setTouched({ firstName: true, lastName: true, email: true, phone: true })
     const errs = validate(formData)
     setErrors(errs)
 
     if (Object.keys(errs).length > 0) {
-      // Focus first error field
       const firstKey = Object.keys(errs)[0]
       const el = document.getElementById(`field-${firstKey}`)
       el?.focus()
@@ -90,6 +97,12 @@ export function BookingYourInfo({
 
   return (
     <div className="booking-your-info">
+      {/* Top Header */}
+      <header className="booking-your-info__top-header">
+        <h2 className="booking-your-info__main-title">BOOK YOUR SESSION</h2>
+        <p className="booking-your-info__subtitle">Share your details to book your session.</p>
+      </header>
+
       <BookingProgressBar
         currentStep="info"
         onStepClick={step => {
@@ -99,183 +112,197 @@ export function BookingYourInfo({
         }}
       />
 
-      <div className="booking-your-info__layout">
-        <div className="booking-your-info__main">
-          <header className="booking-your-info__header">
-            <h3 className="booking-your-info__title">Your Information</h3>
-            <p className="booking-your-info__desc">
-              Please provide your contact details so we can confirm your session and coordinate logistics.
-            </p>
-          </header>
+      {/* Sub Nav & Back Link */}
+      <div className="booking-your-info__subnav">
+        <div className="booking-your-info__subnav-text">
+          <h3 className="booking-your-info__subnav-title">Choose your date &amp; time</h3>
+          <p className="booking-your-info__subnav-desc">
+            Pick an available date, then choose a start time for your session.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="booking-your-info__back-link"
+          onClick={onBack}
+        >
+          ← Back to date &amp; time
+        </button>
+      </div>
 
-          {error && (
-            <div className="booking-your-info__error-banner" role="alert">
-              <span>⚠️</span>
-              <p>{error}</p>
-            </div>
-          )}
+      {error && (
+        <div className="booking-your-info__error-banner" role="alert">
+          <p>{error}</p>
+        </div>
+      )}
 
-          <form className="booking-your-info__form" onSubmit={handleSubmit} noValidate>
-            <div className="booking-your-info__row">
-              <div className="booking-your-info__field">
-                <label htmlFor="field-firstName" className="booking-your-info__label">
-                  First Name <span aria-hidden="true">*</span>
-                </label>
-                <input
-                  id="field-firstName"
-                  name="firstName"
-                  type="text"
-                  autoComplete="given-name"
-                  className={`booking-your-info__input ${errors.firstName ? 'booking-your-info__input--error' : ''}`}
-                  value={formData.firstName}
-                  onChange={e => handleChange('firstName', e.target.value)}
-                  onBlur={() => handleBlur('firstName')}
-                  aria-required="true"
-                  aria-invalid={Boolean(errors.firstName)}
-                  aria-describedby={errors.firstName ? 'firstName-err' : undefined}
-                  disabled={isSubmitting}
-                />
-                {errors.firstName && (
-                  <p id="firstName-err" className="booking-your-info__field-err" role="alert">
-                    {errors.firstName}
-                  </p>
-                )}
-              </div>
-
-              <div className="booking-your-info__field">
-                <label htmlFor="field-lastName" className="booking-your-info__label">
-                  Last Name <span aria-hidden="true">*</span>
-                </label>
-                <input
-                  id="field-lastName"
-                  name="lastName"
-                  type="text"
-                  autoComplete="family-name"
-                  className={`booking-your-info__input ${errors.lastName ? 'booking-your-info__input--error' : ''}`}
-                  value={formData.lastName}
-                  onChange={e => handleChange('lastName', e.target.value)}
-                  onBlur={() => handleBlur('lastName')}
-                  aria-required="true"
-                  aria-invalid={Boolean(errors.lastName)}
-                  aria-describedby={errors.lastName ? 'lastName-err' : undefined}
-                  disabled={isSubmitting}
-                />
-                {errors.lastName && (
-                  <p id="lastName-err" className="booking-your-info__field-err" role="alert">
-                    {errors.lastName}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <div className="booking-your-info__row">
-              <div className="booking-your-info__field">
-                <label htmlFor="field-email" className="booking-your-info__label">
-                  Email Address <span aria-hidden="true">*</span>
-                </label>
-                <input
-                  id="field-email"
-                  name="email"
-                  type="email"
-                  autoComplete="email"
-                  className={`booking-your-info__input ${errors.email ? 'booking-your-info__input--error' : ''}`}
-                  value={formData.email}
-                  onChange={e => handleChange('email', e.target.value)}
-                  onBlur={() => handleBlur('email')}
-                  aria-required="true"
-                  aria-invalid={Boolean(errors.email)}
-                  aria-describedby={errors.email ? 'email-err' : undefined}
-                  disabled={isSubmitting}
-                />
-                {errors.email && (
-                  <p id="email-err" className="booking-your-info__field-err" role="alert">
-                    {errors.email}
-                  </p>
-                )}
-              </div>
-
-              <div className="booking-your-info__field">
-                <label htmlFor="field-phone" className="booking-your-info__label">
-                  Phone Number <span aria-hidden="true">*</span>
-                </label>
-                <input
-                  id="field-phone"
-                  name="phone"
-                  type="tel"
-                  autoComplete="tel"
-                  className={`booking-your-info__input ${errors.phone ? 'booking-your-info__input--error' : ''}`}
-                  value={formData.phone}
-                  onChange={e => handleChange('phone', e.target.value)}
-                  onBlur={() => handleBlur('phone')}
-                  aria-required="true"
-                  aria-invalid={Boolean(errors.phone)}
-                  aria-describedby={errors.phone ? 'phone-err' : undefined}
-                  disabled={isSubmitting}
-                  placeholder="(555) 000-0000"
-                />
-                {errors.phone && (
-                  <p id="phone-err" className="booking-your-info__field-err" role="alert">
-                    {errors.phone}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <div className="booking-your-info__field">
-              <label htmlFor="field-notes" className="booking-your-info__label">
-                Session Notes &amp; Special Requests <span className="booking-your-info__optional">(Optional)</span>
-              </label>
-              <textarea
-                id="field-notes"
-                name="notes"
-                rows={4}
-                className="booking-your-info__textarea"
-                value={formData.notes || ''}
-                onChange={e => handleChange('notes', e.target.value)}
-                disabled={isSubmitting}
-                placeholder="Tell us about your creative vision, preferred locations, wardrobe ideas, or any questions you have..."
-              />
-            </div>
-
-            <div className="booking-your-info__privacy">
-              <span className="booking-your-info__privacy-icon" aria-hidden="true">
-                🔒
+      {/* 2-Column Grid */}
+      <div className="booking-your-info__grid">
+        <div className="booking-your-info__form-col">
+          <div className="booking-your-info__card">
+            <div className="booking-your-info__card-header">
+              <h4 className="booking-your-info__card-title">Contact details</h4>
+              <span className="booking-your-info__required-notice">
+                <span className="booking-your-info__star">*</span> Required fields
               </span>
-              <p>
-                <strong>Privacy Reassurance:</strong> Your information is confidential and will only be used
-                for booking confirmation and photoshoot coordination. We never share or sell personal information.
-              </p>
             </div>
 
-            <div className="booking-your-info__actions">
-              <button
-                type="button"
-                className="booking-your-info__btn booking-your-info__btn--back"
-                onClick={onBack}
-                disabled={isSubmitting}
-              >
-                ← Back to date &amp; time
-              </button>
-              <button
-                type="submit"
-                className="booking-your-info__btn booking-your-info__btn--submit"
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? 'Confirming booking...' : 'Continue to summary →'}
-              </button>
-            </div>
-          </form>
+            <form
+              id="booking-info-form"
+              className="booking-your-info__form"
+              onSubmit={handleSubmit}
+              noValidate
+            >
+              {/* Row 1: First and Last Name */}
+              <div className="booking-your-info__row">
+                <div className="booking-your-info__field">
+                  <label htmlFor="field-firstName" className="booking-your-info__label">
+                    First name <span className="booking-your-info__star">*</span>
+                  </label>
+                  <input
+                    id="field-firstName"
+                    name="firstName"
+                    type="text"
+                    autoComplete="given-name"
+                    placeholder="Alex"
+                    className={`booking-your-info__input ${errors.firstName ? 'booking-your-info__input--error' : ''}`}
+                    value={formData.firstName}
+                    onChange={e => handleChange('firstName', e.target.value)}
+                    onBlur={() => handleBlur('firstName')}
+                    aria-required="true"
+                    disabled={isSubmitting}
+                  />
+                  {errors.firstName && (
+                    <span className="booking-your-info__field-err">{errors.firstName}</span>
+                  )}
+                </div>
+
+                <div className="booking-your-info__field">
+                  <label htmlFor="field-lastName" className="booking-your-info__label">
+                    Last name <span className="booking-your-info__star">*</span>
+                  </label>
+                  <input
+                    id="field-lastName"
+                    name="lastName"
+                    type="text"
+                    autoComplete="family-name"
+                    placeholder="Morgan"
+                    className={`booking-your-info__input ${errors.lastName ? 'booking-your-info__input--error' : ''}`}
+                    value={formData.lastName}
+                    onChange={e => handleChange('lastName', e.target.value)}
+                    onBlur={() => handleBlur('lastName')}
+                    aria-required="true"
+                    disabled={isSubmitting}
+                  />
+                  {errors.lastName && (
+                    <span className="booking-your-info__field-err">{errors.lastName}</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Row 2: Email and Phone */}
+              <div className="booking-your-info__row">
+                <div className="booking-your-info__field">
+                  <label htmlFor="field-email" className="booking-your-info__label">
+                    Email address <span className="booking-your-info__star">*</span>
+                  </label>
+                  <input
+                    id="field-email"
+                    name="email"
+                    type="email"
+                    autoComplete="email"
+                    placeholder="alex.morgan@example.com"
+                    className={`booking-your-info__input ${errors.email ? 'booking-your-info__input--error' : ''}`}
+                    value={formData.email}
+                    onChange={e => handleChange('email', e.target.value)}
+                    onBlur={() => handleBlur('email')}
+                    aria-required="true"
+                    disabled={isSubmitting}
+                  />
+                  {errors.email && (
+                    <span className="booking-your-info__field-err">{errors.email}</span>
+                  )}
+                </div>
+
+                <div className="booking-your-info__field">
+                  <label htmlFor="field-phone" className="booking-your-info__label">
+                    Phone number <span className="booking-your-info__star">*</span>
+                  </label>
+                  <input
+                    id="field-phone"
+                    name="phone"
+                    type="tel"
+                    autoComplete="tel"
+                    placeholder="+1 (212) 555-0148"
+                    className={`booking-your-info__input ${errors.phone ? 'booking-your-info__input--error' : ''}`}
+                    value={formData.phone}
+                    onChange={e => handleChange('phone', e.target.value)}
+                    onBlur={() => handleBlur('phone')}
+                    aria-required="true"
+                    disabled={isSubmitting}
+                  />
+                  {errors.phone && (
+                    <span className="booking-your-info__field-err">{errors.phone}</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Row 3: Anything we should know? */}
+              <div className="booking-your-info__field booking-your-info__field--full">
+                <label htmlFor="field-notes" className="booking-your-info__label">
+                  Anything we should know? (optional)
+                </label>
+                <textarea
+                  id="field-notes"
+                  name="notes"
+                  rows={3}
+                  className="booking-your-info__textarea"
+                  placeholder="Share any ideas, preferences, or accessibility needs for your session."
+                  value={formData.notes || ''}
+                  onChange={e => handleChange('notes', e.target.value)}
+                  disabled={isSubmitting}
+                />
+              </div>
+
+              <div className="booking-your-info__note">
+                A little detail helps us make your session feel like you. Your details will only be used
+                to contact you about your booking.
+              </div>
+            </form>
+          </div>
+
+          <div className="booking-your-info__next-section">
+            <h5 className="booking-your-info__next-title">Next: secure your session</h5>
+            <p className="booking-your-info__next-desc">Review your total and pay your deposit.</p>
+          </div>
+
+          {/* Mobile Only Submit Area */}
+          <div className="booking-your-info__mobile-submit">
+            <button
+              type="button"
+              className="booking-your-info__mobile-btn"
+              disabled={!isFormComplete || isSubmitting}
+              onClick={() => handleSubmit()}
+            >
+              {isSubmitting ? 'Submitting...' : 'Continue to deposit →'}
+            </button>
+            {!isFormComplete && (
+              <span className="booking-your-info__mobile-hint">
+                Complete the required fields to continue
+              </span>
+            )}
+          </div>
         </div>
 
-        <div className="booking-your-info__sidebar">
-          <div className="booking-your-info__sticky-wrapper">
-            <BookingSessionCard
-              service={service}
-              people={people}
-              dateTime={dateTime}
-              onEditDateTime={onBack}
-            />
-          </div>
+        {/* Right Desktop Ticket */}
+        <div className="booking-your-info__ticket-col">
+          <BookingSessionCard
+            service={service}
+            people={people}
+            dateTime={dateTime}
+            continueText={isSubmitting ? 'Submitting...' : 'Continue to summary'}
+            onContinue={() => handleSubmit()}
+            isContinueDisabled={!isFormComplete || isSubmitting}
+          />
         </div>
       </div>
     </div>

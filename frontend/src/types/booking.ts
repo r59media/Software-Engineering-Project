@@ -18,7 +18,7 @@ export interface ServiceSelection {
   people: number
 }
 
-export type BookingStep = 'services' | 'datetime' | 'info' | 'summary'
+export type BookingStep = 'services' | 'datetime' | 'info' | 'summary' | 'deposit'
 
 export interface BookingDateTimeSelection {
   date: string
@@ -54,6 +54,9 @@ export interface BookingSessionCardProps {
   dateTime?: BookingDateTimeSelection | null
   onEditService?: () => void
   onEditDateTime?: () => void
+  continueText?: string
+  onContinue?: () => void
+  isContinueDisabled?: boolean
 }
 
 export interface BookingDateTimeProps {

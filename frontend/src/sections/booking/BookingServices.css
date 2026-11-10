@@ -55,7 +55,7 @@
   .booking h3 { font-size: 1.25rem; }
   .booking__intro { font-size: .875rem; }
   .booking__services { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; gap: 1rem; padding: 2rem max(1rem, calc((100% - 294px) / 2)); position: relative; }
-  .booking__service { flex: 0 0 min(294px, calc(100vw - 80px)); display: flex; flex-direction: column; align-items: stretch; gap: .7rem; padding: 1rem; background: var(--booking-placeholder); border: 1px solid var(--color-brand-black); border-radius: .875rem; scroll-snap-align: center; text-align: center; }
+  .booking__service { flex: 0 0 min(294px, calc(100vw - 80px)); display: flex; flex-direction: column; align-items: stretch; gap: .7rem; padding: 1.25rem 1rem; background: var(--color-white, #ffffff); border: 1px solid var(--color-brand-black, #111111); border-radius: .875rem; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.05); scroll-snap-align: center; text-align: center; }
   .booking__service:last-child { border-bottom: 1px solid var(--color-brand-black); }
   .booking__image { width: 160px; max-width: 100%; height: 72px; margin-inline: auto; background: var(--color-white); }
   .booking h4 { font-size: 1.5rem; }
@@ -89,3 +89,11 @@
 
 .booking__price[data-custom="true"] { white-space: normal; font-size: 1.125rem; word-break: normal; }
 @media (min-width: 1101px) and (max-width: 1300px) { .booking__service { gap: .65rem; } }
+
+@media (max-width: 767px) {
+  .booking__services { padding-top: 1.25rem; padding-bottom: .75rem; }
+  .booking__mobile-controls { padding-bottom: .5rem; }
+  .booking__dots button { min-width: 24px; width: 24px; min-height: 32px; padding: 0; }
+  .booking__dots span { width: 8px; height: 8px; }
+  .booking__browse { margin-top: 0; }
+}

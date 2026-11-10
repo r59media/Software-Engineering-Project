@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { KeyboardEvent } from 'react'
 import type { BookingProgressBarProps, BookingStep } from '../../types/booking'
 import './BookingProgressBar.css'
@@ -9,14 +10,31 @@ interface StepDef {
 }
 
 const STEPS: readonly StepDef[] = [
-  { id: 'services', label: 'Services', number: 1 },
-  { id: 'datetime', label: 'Date & Time', number: 2 },
-  { id: 'info', label: 'Your Information', number: 3 },
+  { id: 'services', label: 'Service', number: 1 },
+  { id: 'datetime', label: 'Date and Time', number: 2 },
+  { id: 'info', label: 'Your information', number: 3 },
   { id: 'summary', label: 'Summary', number: 4 },
+  { id: 'deposit', label: 'Deposit', number: 5 },
 ]
 
 export function BookingProgressBar({ currentStep, onStepClick }: BookingProgressBarProps) {
   const currentIndex = STEPS.findIndex(s => s.id === currentStep)
+  const listRef = useRef<HTMLOListElement>(null)
+
+  // Auto-scroll on mobile to keep current step centered
+  useEffect(() => {
+    if (!listRef.current) return
+    const activeItem = listRef.current.querySelector<HTMLElement>('[aria-current="step"]')
+    if (activeItem) {
+      const containerWidth = listRef.current.offsetWidth
+      const itemOffset = activeItem.offsetLeft
+      const itemWidth = activeItem.offsetWidth
+      listRef.current.scrollTo({
+        left: itemOffset - containerWidth / 2 + itemWidth / 2,
+        behavior: 'smooth',
+      })
+    }
+  }, [currentStep])
 
   const handleKeyDown = (e: KeyboardEvent<HTMLElement>, stepId: BookingStep, isNavigable: boolean) => {
     if (!isNavigable) return
@@ -28,7 +46,7 @@ export function BookingProgressBar({ currentStep, onStepClick }: BookingProgress
 
   return (
     <nav className="booking-progress" aria-label="Booking progress">
-      <ol className="booking-progress__list">
+      <ol ref={listRef} className="booking-progress__list">
         {STEPS.map((step, index) => {
           const isCurrent = index === currentIndex
           const isCompleted = index < currentIndex
@@ -55,7 +73,7 @@ export function BookingProgressBar({ currentStep, onStepClick }: BookingProgress
                     : `Step ${step.number}: ${step.label}`
               }
             >
-              <span className="booking-progress__badge" aria-hidden="true">
+              <span className="booking-progress__indicator" aria-hidden="true">
                 {isCompleted ? '✓' : step.number}
               </span>
               <span className="booking-progress__label">{step.label}</span>

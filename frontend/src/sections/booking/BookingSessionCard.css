@@ -1,263 +1,101 @@
-.booking-session-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  max-width: 380px;
-  background: var(--color-brand-yellow);
-  color: var(--color-brand-black);
-  border-radius: 0.75rem 0.75rem 0 0;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
-  font-family: var(--font-body);
-  user-select: none;
+.booking-session-wrapper { width: 100%; min-width: 0; display: flex; flex-direction: column; }
+.booking-session-card { position: relative; min-height: 467px; color: var(--color-brand-black); filter: drop-shadow(-3px 4px 5px rgb(0 0 0 / 12%)); isolation: isolate; }
+.booking-session-card::before { content: ''; position: absolute; inset: 0; z-index: -1; background: var(--color-brand-yellow); -webkit-mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; }
+.booking-session-card__body { position: relative; min-height: 467px; padding: 24px 24px 42px; border-radius: 7px 7px 0 0; overflow: hidden; }
+.booking-session-card__body::before { content: ''; position: absolute; inset: 0; z-index: -1; background: url('../../assets/booking/session-paper.jpeg') center / cover; opacity: .15; mix-blend-mode: multiply; -webkit-mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; }
+.booking-session-card__title { margin: 0 0 16px !important; font-family: var(--font-title); font-size: 48px !important; line-height: 40px !important; font-weight: 700; }
+.booking-session-card__title-your, .booking-session-card__title-session { display: block; }
+.booking-session-card__title-session { font-style: italic; }
+.booking-session-card__service-name { font-family: var(--font-title); font-size: 32px; line-height: 40px; font-weight: 700; margin-bottom: 16px; overflow-wrap: anywhere; }
+.booking-session-card__specs { border-left: 2px solid var(--color-brand-black); padding-left: 10px; font-size: 16px; line-height: 24px; font-weight: 700; margin-bottom: 16px; }
+.booking-session-card__section-label { font-size: 12px; line-height: 16px; font-weight: 300; margin-bottom: 8px; }
+.booking-session-card__datetime-block { position: relative; margin: 0 58px 12px -24px; padding: 6px 16px 6px 24px; min-height: 60px; border-radius: 0 7px 7px 0; background: var(--color-brand-red); color: var(--color-brand-white); box-shadow: -3px 3px 5px rgb(0 0 0 / 9%); width: calc(100% - 34px); }
+.booking-session-card__date-val, .booking-session-card__time-val { font-size: 16px; line-height: 24px; font-weight: 700; }
+.booking-session-card__pending-text { font-size: 14px; line-height: 24px; }
+.booking-session-card__price-block { display: grid; grid-template-columns: 136px minmax(0, 1fr); gap: 23px; align-items: center; margin-left: -24px; margin-right: -8px; }
+.booking-session-card__price-amount { background: var(--color-brand-black); color: var(--color-brand-white); border-radius: 0 7px 7px 0; min-height: 60px; display: flex; align-items: center; padding: 6px 24px; font-family: var(--font-title); font-size: 32px; line-height: 40px; font-weight: 700; white-space: nowrap; }
+.booking-session-card__price-note { font-size: 12px; line-height: 16px; font-weight: 300; }
+.booking-session-card__sawtooth { display: none; }
+/* Mobile-only Continue Button */
+.booking-session-card__continue-btn--mobile {
+  display: none;
 }
 
-.booking-session-card__body {
-  padding: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1.1rem;
+@media (max-width: 767px) {
+  .booking-session-wrapper {
+    max-width: 100%;
+    height: auto;
+    margin-top: 1rem;
+  }
+
+  .booking-session-card {
+    height: auto;
+  }
+
+  .booking-session-card__body {
+    padding: 18px 16px 12px 16px;
+  }
+
+  .booking-session-card__title {
+    font-size: 32px;
+    line-height: 30px;
+  }
+
+  .booking-session-card__service-name {
+    font-size: 24px;
+  }
+
+  /* Show mobile CTA under ticket */
+  .booking-session-card__continue-btn--mobile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 44px;
+    margin-top: 1rem;
+    padding: 10px 16px;
+    background: var(--color-brand-red, #ff2626);
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: 600;
+    border: none;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+  }
+
+  .booking-session-card__continue-btn--mobile:hover:not(:disabled) {
+    background: #111111;
+  }
+
+  .booking-session-card__continue-btn--mobile:disabled {
+    background: rgba(17, 17, 17, 0.1);
+    color: #888888;
+    cursor: not-allowed;
+  }
 }
 
-.booking-session-card__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-bottom: 2px solid rgba(17, 17, 17, 0.12);
-  padding-bottom: 0.5rem;
+@media (max-width: 767px) {
+  .booking-session-card { min-height: 280px; }
+  .booking-session-card__body { min-height: 280px; padding: 16px 16px 24px; }
+  .booking-session-card__title { font-size: 32px !important; line-height: 40px !important; margin-bottom: 6px !important; }
+  .booking-session-card__title-your, .booking-session-card__title-session { display: inline; }
+  .booking-session-card__service-name { font-size: 24px; line-height: 32px; margin-bottom: 6px; }
+  .booking-session-card__specs { border: 0; padding: 0; font-size: 14px; line-height: 20px; margin-bottom: 10px; }
+  .booking-session-card__datetime-block { margin-left: -16px; padding-left: 26px; width: calc(100% - 42px); }
+  .booking-session-card__price-block { margin-left: -16px; grid-template-columns: 132px minmax(0, 1fr); gap: 12px; }
 }
 
-.booking-session-card__badge {
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--color-brand-black);
+@media (min-width: 768px) {
+  .booking-session-card { min-height: 460px; }
+  .booking-session-card__body { min-height: 460px; padding: 24px 24px 44px; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 80px 40px 48px 16px 60px 16px 60px; row-gap: 8px; align-content: start; }
+  .booking-session-card__body > * { min-width: 0; margin-top: 0; margin-bottom: 0 !important; }
+  .booking-session-card__title { font-size: clamp(36px, 3.32vw, 48px) !important; }
+  .booking-session-card__service-name { font-size: clamp(24px, 2.22vw, 32px); }
+  .booking-session-card__specs { align-self: center; }
+  .booking-session-card__datetime-block { width: calc(100% - 10px); margin-left: -24px; margin-right: 0; }
+  .booking-session-card__price-block { grid-template-columns: minmax(112px, 136px) minmax(0, 1fr); gap: 16px; }
 }
 
-.booking-session-card__id {
-  font-family: monospace;
-  font-size: 0.75rem;
-  opacity: 0.7;
-}
-
-.booking-session-card__service-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
-.booking-session-card__service-title-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.booking-session-card__service-name {
-  margin: 0;
-  font-family: var(--font-title);
-  font-size: 1.35rem;
-  font-weight: 700;
-  line-height: 1.15;
-  color: var(--color-brand-black);
-}
-
-.booking-session-card__best-for {
-  margin: 0;
-  font-size: 0.8rem;
-  color: rgba(17, 17, 17, 0.75);
-}
-
-.booking-session-card__change-btn {
-  background: transparent;
-  border: 1px solid rgba(17, 17, 17, 0.3);
-  border-radius: 4px;
-  padding: 0.2rem 0.5rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--color-brand-black);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background-color 0.15s ease;
-}
-
-.booking-session-card__change-btn:hover {
-  background: rgba(17, 17, 17, 0.1);
-}
-
-.booking-session-card__meta {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.75rem 0.5rem;
-  margin: 0;
-  padding: 0.85rem;
-  background: rgba(255, 255, 255, 0.4);
-  border-radius: 0.5rem;
-}
-
-.booking-session-card__meta-item dt {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: rgba(17, 17, 17, 0.65);
-  margin-bottom: 0.15rem;
-}
-
-.booking-session-card__meta-item dd {
-  margin: 0;
-  font-size: 0.85rem;
-  font-weight: 600;
-  color: var(--color-brand-black);
-}
-
-.booking-session-card__perforation {
-  position: relative;
-  display: flex;
-  align-items: center;
-  margin: 0.25rem -1.5rem;
-  height: 20px;
-}
-
-.booking-session-card__dashes {
-  flex: 1;
-  border-bottom: 2px dashed rgba(17, 17, 17, 0.25);
-  height: 0;
-}
-
-.booking-session-card__hole {
-  width: 16px;
-  height: 20px;
-  background: var(--color-brand-white);
-}
-
-.booking-session-card__hole--left {
-  border-radius: 0 12px 12px 0;
-}
-
-.booking-session-card__hole--right {
-  border-radius: 12px 0 0 12px;
-}
-
-.booking-session-card__datetime {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.booking-session-card__datetime-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.booking-session-card__datetime-label {
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: rgba(17, 17, 17, 0.65);
-}
-
-.booking-session-card__datetime-val {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.75rem 0.85rem;
-  background: #ffffff;
-  border-radius: 0.5rem;
-  border: 1px solid rgba(17, 17, 17, 0.1);
-}
-
-.booking-session-card__datetime-val--pending {
-  border: 1px dashed rgba(17, 17, 17, 0.3);
-  background: rgba(255, 255, 255, 0.5);
-  color: rgba(17, 17, 17, 0.7);
-  font-size: 0.85rem;
-}
-
-.booking-session-card__datetime-icon {
-  font-size: 1.15rem;
-}
-
-.booking-session-card__datetime-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.25;
-}
-
-.booking-session-card__datetime-text strong {
-  font-size: 0.9rem;
-  color: var(--color-brand-black);
-}
-
-.booking-session-card__datetime-text span {
-  font-size: 0.8rem;
-  color: rgba(17, 17, 17, 0.75);
-}
-
-.booking-session-card__pricing {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  border-top: 2px solid rgba(17, 17, 17, 0.12);
-  padding-top: 0.9rem;
-}
-
-.booking-session-card__price-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-}
-
-.booking-session-card__price-label {
-  font-size: 0.85rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: rgba(17, 17, 17, 0.75);
-}
-
-.booking-session-card__price {
-  font-family: var(--font-title);
-  font-size: 1.75rem;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--color-brand-black);
-}
-
-.booking-session-card__extra-note {
-  margin: -0.25rem 0 0;
-  font-size: 0.75rem;
-  color: rgba(17, 17, 17, 0.75);
-}
-
-.booking-session-card__deposit-notice {
-  background: rgba(17, 17, 17, 0.06);
-  padding: 0.6rem 0.75rem;
-  border-radius: 0.375rem;
-  font-size: 0.75rem;
-  line-height: 1.4;
-  color: rgba(17, 17, 17, 0.85);
-}
-
-.booking-session-card__deposit-notice p {
-  margin: 0.25rem 0 0;
-  color: rgba(17, 17, 17, 0.85);
-}
-
-.booking-session-card__deposit-tag {
-  display: inline-block;
-  font-weight: 700;
-  font-size: 0.65rem;
-  letter-spacing: 0.05em;
-  color: var(--color-brand-black);
-}
-
-.booking-session-card__sawtooth {
-  width: 100%;
-  height: 12px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 10' preserveAspectRatio='none'%3E%3Cpolygon points='0,0 10,10 20,0' fill='%23ffcc22'/%3E%3C/svg%3E");
-  background-size: 16px 12px;
-  background-repeat: repeat-x;
-}
+.booking-session-card__continue-btn { appearance: none; -webkit-appearance: none; background-image: none; border: 0; box-shadow: none; text-decoration: none; position: relative; isolation: isolate; overflow: hidden; }
+.booking-session-card__continue-btn::before, .booking-session-card__continue-btn::after { content: none; }

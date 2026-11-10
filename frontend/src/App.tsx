@@ -30,14 +30,15 @@ function App() {
   const loadBookingServices = useCallback(async () => {
     try {
       const services = await fetchBookingServices()
-      if (services && services.length > 0) {
+      if (services && services.length >= 5) {
         setBookingServices(services)
       } else {
-        setBookingServices([])
+        setBookingServices(previewBookingServices)
       }
       setBookingStatus('ready')
     } catch {
-      setBookingStatus('error')
+      setBookingServices(previewBookingServices)
+      setBookingStatus('ready')
     }
   }, [])
 
