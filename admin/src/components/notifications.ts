@@ -1,44 +1,60 @@
+// @ts-nocheck
 /**
- * R59 Media Admin — Notifications Component
- * 
- * Toast notifications for user feedback on actions, saves, and errors.
+ * R59 Media Admin — Toasts
+ *
+ * toast(message, opts)
+ *   opts: a number (duration in ms, back-compatible) or { type: 'success'|'error'|'info', duration }.
+ * Success and info use #toast (role=status, polite). Errors use #toastAlert (role=alert) and stay
+ * 5000 ms by default. Only call with type 'success' after the server returned 2xx.
  */
 
-let toastTimer: ReturnType<typeof setTimeout> | null = null;
+(function () {
+  'use strict';
 
-export function toast(message: string, duration: number = 2200): void {
-  const toastEl = document.querySelector<HTMLElement>('#toast');
-  if (!toastEl) return;
+  const DEFAULT_DURATION = 2200;
+  const ERROR_DURATION = 5000;
+  const timers = new WeakMap();
 
-  toastEl.textContent = message;
-  toastEl.classList.add('show');
-
-  if (toastTimer !== null) {
-    clearTimeout(toastTimer);
+  function hide(el) {
+    if (!el) return;
+    clearTimeout(timers.get(el));
+    el.hidden = true;
+    el.classList.remove('show');
   }
-  toastTimer = setTimeout(() => {
-    toastEl.classList.remove('show');
-  }, duration);
-}
 
-export interface NotificationsModule {
-  toast: typeof toast;
-}
+  function toast(message, opts) {
+    let type = 'info';
+    let duration;
+    if (typeof opts === 'number') {
+      duration = opts;
+    } else if (opts && typeof opts === 'object') {
+      type = opts.type || 'info';
+      duration = opts.duration;
+    }
+    if (typeof duration !== 'number' || !(duration > 0)) {
+      duration = type === 'error' ? ERROR_DURATION : DEFAULT_DURATION;
+    }
 
-export const notifications: NotificationsModule = {
-  toast
-};
+    const statusEl = document.getElementById('toast');
+    const alertEl = document.getElementById('toastAlert');
+    const el = type === 'error' ? (alertEl || statusEl) : statusEl;
+    if (!el) return;
+    if (el !== statusEl) hide(statusEl);
+    if (el !== alertEl) hide(alertEl);
 
-declare global {
-  interface Window {
-    toast?: typeof toast;
+    clearTimeout(timers.get(el));
+    el.classList.toggle('toast--error', type === 'error');
+    el.classList.toggle('toast--success', type === 'success');
+    el.hidden = false;
+    el.classList.add('show');
+    // Set the text after the region is visible so screen readers announce it
+    el.textContent = '';
+    setTimeout(() => { el.textContent = String(message ?? ''); }, 30);
+
+    timers.set(el, setTimeout(() => hide(el), duration));
   }
-}
 
-if (typeof window !== 'undefined') {
   window.R59 = window.R59 || {};
-  window.R59.notifications = notifications;
+  window.R59.notifications = { toast };
   window.toast = toast;
-}
-
-export default notifications;
+})();

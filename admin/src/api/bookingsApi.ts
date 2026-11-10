@@ -1,139 +1,121 @@
+// @ts-nocheck
 /**
  * R59 Media Admin — Bookings API Service
- * 
- * Integration layer for booking retrieval, creation, updates, and cancellations.
- * Connected to Cloudflare Workers /admin/bookings backend route.
+ *
+ * Booking retrieval, creation, updates, cancellation and deletion against the Worker's
+ * /admin/bookings routes. Every function rejects on an HTTP or network failure
+ * (err.message = server message, err.status, err.isNetworkError) so callers can report it.
  */
 
-import { apiClient, ApiClient } from './apiClient';
+(function () {
+  'use strict';
 
-export interface Booking {
-  id: string | number;
-  client_name?: string;
-  clientName?: string;
-  client_email?: string;
-  clientEmail?: string;
-  client_phone?: string;
-  clientPhone?: string;
-  service_id?: string | number;
-  serviceId?: string | number;
-  package_name?: string;
-  packageName?: string;
-  date?: string;
-  start_time?: string;
-  startTime?: string;
-  end_time?: string;
-  endTime?: string;
-  status?: 'confirmed' | 'pending' | 'cancelled' | 'completed' | string;
-  total_amount?: number;
-  totalAmount?: number;
-  deposit_amount?: number;
-  depositAmount?: number;
-  notes?: string;
-  created_at?: string;
-  createdAt?: string;
-  updated_at?: string;
-  updatedAt?: string;
-  [key: string]: any;
-}
+  const PAGE_SIZE = 100; // the backend caps one page at 100 rows
+  const MAX_PAGES = 50;
 
-export interface GetBookingsParams {
-  limit?: number;
-  offset?: number;
-  status?: string;
-  [key: string]: any;
-}
+  const client = () => window.R59.apiClient;
 
-export interface BookingPayload {
-  client_name?: string;
-  clientName?: string;
-  client_email?: string;
-  clientEmail?: string;
-  client_phone?: string;
-  clientPhone?: string;
-  service_id?: string | number;
-  serviceId?: string | number;
-  date?: string;
-  start_time?: string;
-  startTime?: string;
-  end_time?: string;
-  endTime?: string;
-  status?: string;
-  notes?: string;
-  [key: string]: any;
-}
+  const bookingsApi = {
+    /**
+     * One page of bookings: GET /admin/bookings?limit=&offset=
+     * Resolves the raw response ({ bookings, limit, offset, data }).
+     */
+    async getBookings({ limit = PAGE_SIZE, offset = 0 } = {}) {
+      return client().get('/admin/bookings', { limit, offset });
+    },
 
-export interface BookingsResponse {
-  bookings?: Booking[];
-  total?: number;
-  limit?: number;
-  offset?: number;
-  [key: string]: any;
-}
+    /**
+     * Every booking, paging through GET /admin/bookings 100 at a time until a page comes back
+     * with fewer than 100 rows (at most 50 pages). Resolves an array of raw booking rows.
+     */
+    async getAllBookings() {
+      const all = [];
+      for (let page = 0; page < MAX_PAGES; page++) {
+        const res = await bookingsApi.getBookings({ limit: PAGE_SIZE, offset: page * PAGE_SIZE });
+        const rows = res && (Array.isArray(res.bookings) ? res.bookings : res.data);
+        if (!Array.isArray(rows)) throw new Error('The server sent an unexpected booking list.');
+        all.push(...rows);
+        if (rows.length < PAGE_SIZE) break;
+      }
+      return all;
+    },
 
-export interface BookingsApi {
-  getBookings(params?: GetBookingsParams): Promise<BookingsResponse | Booking[] | any>;
-  createBooking(bookingPayload: BookingPayload): Promise<any>;
-  updateBooking(id: string | number, bookingPayload: Partial<BookingPayload>): Promise<any>;
-  cancelBooking(id: string | number): Promise<any>;
-  deleteBooking(id: string | number): Promise<any>;
-}
+    /** Create a manual booking: POST /admin/bookings → { id, data: { id, slot_id } } */
+    async createBooking(bookingPayload) {
+      return client().post('/admin/bookings', bookingPayload);
+    },
 
-const getClient = (): ApiClient => {
-  if (typeof window !== 'undefined' && window.R59?.apiClient) {
-    return window.R59.apiClient as ApiClient;
-  }
-  return apiClient;
-};
+    /** Update a booking: PUT /admin/bookings/:id */
+    async updateBooking(id, bookingPayload) {
+      return client().put(`/admin/bookings/${encodeURIComponent(id)}`, bookingPayload);
+    },
 
-export const bookingsApi: BookingsApi = {
-  /**
-   * Retrieve list of bookings from backend.
-   * Established backend endpoint: GET /admin/bookings?limit=&offset=
-   */
-  async getBookings({ limit = 50, offset = 0 }: GetBookingsParams = {}) {
-    const data = await getClient().get('/admin/bookings', { limit, offset });
-    return data;
-  },
+    /** Cancel a booking and release its slot: PATCH /admin/bookings/:id/cancel */
+    async cancelBooking(id) {
+      return client().patch(`/admin/bookings/${encodeURIComponent(id)}/cancel`, {});
+    },
 
-  /**
-   * Create a new booking.
-   * Note: Pending backend endpoint agreement for manual admin booking creation.
-   */
-  async createBooking(bookingPayload: BookingPayload) {
-    return await getClient().post('/admin/bookings', bookingPayload);
-  },
+    /** Permanently delete a booking: DELETE /admin/bookings/:id */
+    async deleteBooking(id) {
+      return client().delete(`/admin/bookings/${encodeURIComponent(id)}`);
+    },
 
-  /**
-   * Update an existing booking.
-   * Note: Pending backend endpoint agreement.
-   */
-  async updateBooking(id: string | number, bookingPayload: Partial<BookingPayload>) {
-    return await getClient().put(`/admin/bookings/${id}`, bookingPayload);
-  },
+    /**
+     * Payments recorded on a booking: GET /admin/bookings/:id/payments
+     * Resolves { payments: [{ id, amount_cents, amount, method, paid_on, note, created_at }], totals }.
+     */
+    async getPayments(bookingId) {
+      return client().get(`/admin/bookings/${encodeURIComponent(bookingId)}/payments`);
+    },
 
-  /**
-   * Cancel an existing booking.
-   * Note: Pending backend endpoint agreement.
-   */
-  async cancelBooking(id: string | number) {
-    return await getClient().patch(`/admin/bookings/${id}/cancel`, {});
-  },
+    /**
+     * Record a payment: POST /admin/bookings/:id/payments
+     * `amount` is the dollar string the admin typed (already checked against /^\d{1,7}(\.\d{1,2})?$/).
+     * Resolves { payment, totals }. A cancelled booking answers 409.
+     */
+    async addPayment(bookingId, { amount, method, paid_on, note } = {}) {
+      return client().post(`/admin/bookings/${encodeURIComponent(bookingId)}/payments`, { amount, method, paid_on, note });
+    },
 
-  /**
-   * Permanently delete a cancelled booking record.
-   * Note: Pending backend endpoint agreement.
-   */
-  async deleteBooking(id: string | number) {
-    return await getClient().delete(`/admin/bookings/${id}`);
-  }
-};
+    /** Remove one recorded payment: DELETE /admin/bookings/:id/payments/:paymentId → { totals } */
+    async removePayment(bookingId, paymentId) {
+      return client().delete(`/admin/bookings/${encodeURIComponent(bookingId)}/payments/${encodeURIComponent(paymentId)}`);
+    },
 
-if (typeof window !== 'undefined') {
-  window.R59 = window.R59 || {} as any;
+    /** Charges, totals and invoice state for a booking (re-checks a sending/open invoice with Square): GET /admin/bookings/:id/billing */
+    async getBilling(bookingId) {
+      return client().get(`/admin/bookings/${encodeURIComponent(bookingId)}/billing`);
+    },
+
+    /**
+     * Add an extra charge: POST /admin/bookings/:id/charges
+     * `amount` is the dollar string the admin typed (already checked against /^\d{1,7}(\.\d{1,2})?$/).
+     */
+    async addCharge(bookingId, { description, amount } = {}) {
+      return client().post(`/admin/bookings/${encodeURIComponent(bookingId)}/charges`, { description, amount });
+    },
+
+    /** Remove one extra charge: DELETE /admin/bookings/:id/charges/:chargeId */
+    async removeCharge(bookingId, chargeId) {
+      return client().delete(`/admin/bookings/${encodeURIComponent(bookingId)}/charges/${encodeURIComponent(chargeId)}`);
+    },
+
+    /**
+     * Send the balance invoice through Square: POST /admin/bookings/:id/invoice
+     * `expectedCents` is the balance the admin saw; the server rejects the send if it no longer matches.
+     */
+    async sendInvoice(bookingId, expectedCents) {
+      return client().post(`/admin/bookings/${encodeURIComponent(bookingId)}/invoice`, { expected_amount_cents: expectedCents });
+    },
+
+    /** Cancel the open invoice: POST /admin/bookings/:id/invoice/cancel */
+    async cancelInvoice(bookingId) {
+      return client().post(`/admin/bookings/${encodeURIComponent(bookingId)}/invoice/cancel`, {});
+    }
+  };
+
+  window.R59 = window.R59 || {};
   window.R59.bookingsApi = bookingsApi;
   window.R59.api = window.R59.api || {};
   window.R59.api.bookings = bookingsApi;
-}
-
-export default bookingsApi;
+})();

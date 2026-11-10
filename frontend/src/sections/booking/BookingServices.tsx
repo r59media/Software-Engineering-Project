@@ -1,82 +1,272 @@
 import { useRef, useState } from 'react'
 import { previewBookingServices } from '../../config/booking'
 import type { BookingServicesProps, ServiceSelection } from '../../types/booking'
+import { BookingProgressBar } from './BookingProgressBar'
 import './BookingServices.css'
 
-const steps = ['Service', 'Date and Time', 'Your information', 'Summary', 'Deposit']
+export function BookingServices({
+  services = previewBookingServices,
+  status = 'ready',
+  onRetry,
+  onContinue,
+  onSelectionChange,
+  inquiryHref,
+  initialSelection,
+}: BookingServicesProps) {
+  const [selection, setSelection] = useState<ServiceSelection | null>(initialSelection ?? null)
+  const [prevInitial, setPrevInitial] = useState(initialSelection)
+  if (initialSelection !== prevInitial) {
+    setPrevInitial(initialSelection)
+    setSelection(initialSelection ?? null)
+  }
 
-export function BookingServices({ services = previewBookingServices, status = 'ready', onRetry, onContinue, onSelectionChange, inquiryHref }: BookingServicesProps) {
-  const [selection, setSelection] = useState<ServiceSelection | null>(null)
   const [visibleIndex, setVisibleIndex] = useState(0)
   const track = useRef<HTMLDivElement>(null)
-  const selected = status === 'ready' ? services.find(service => service.id === selection?.serviceId && service.bookingMode === 'direct') : undefined
-  const validSelection = selected && selection ? { ...selection, people: Math.max(selected.additionalPeople?.includedPeople ?? 1, Math.min(selection.people, (selected.additionalPeople ? selected.additionalPeople.maxPeople ?? Number.MAX_SAFE_INTEGER : 1))) } : null
+
+  const selected =
+    status === 'ready'
+      ? services.find(service => service.id === selection?.serviceId && service.bookingMode === 'direct')
+      : undefined
+
+  const validSelection =
+    selected && selection
+      ? {
+          ...selection,
+          people: Math.max(
+            selected.additionalPeople?.includedPeople ?? 1,
+            Math.min(
+              selection.people,
+              selected.additionalPeople ? selected.additionalPeople.maxPeople ?? Number.MAX_SAFE_INTEGER : 1
+            )
+          ),
+        }
+      : null
+
   const updateSelection = (next: ServiceSelection) => {
     setSelection(next)
     onSelectionChange?.(next)
   }
+
   const showCard = (index: number) => {
     const container = track.current
     const card = container?.children[index] as HTMLElement | undefined
-    if (container && card) container.scrollTo({ left: card.offsetLeft - container.offsetLeft - (container.clientWidth - card.clientWidth) / 2, behavior: 'auto' })
+    if (container && card) {
+      container.scrollTo({
+        left: card.offsetLeft - container.offsetLeft - (container.clientWidth - card.clientWidth) / 2,
+        behavior: 'auto',
+      })
+    }
   }
 
-  return <section id="booking" className="booking" aria-labelledby="booking-title">
-    <div className="booking__inner">
-      <header className="booking__header">
-        <h2 id="booking-title">BOOK YOUR SESSION</h2>
-        <p>Your next great photo starts here. Choose a session to get started.</p>
-      </header>
-      <ol className="booking__steps" aria-label="Booking progress">
-        {steps.map((step, index) => <li key={step} aria-current={index === 0 ? 'step' : undefined}><b>{index + 1}</b>{step}</li>)}
-      </ol>
-      <h3>Choose your session</h3>
-      <p className="booking__intro">Select one service. You’ll choose your date and time next.</p>
-      <div className="booking__panel" aria-busy={status === 'loading'}>
-        {status === 'loading' ? <div role="status" aria-label="Loading services" className="booking__skeletons">{Array.from({ length: 5 }, (_, i) => <div key={i} className="booking__skeleton" aria-hidden="true"><span /><span /><span /></div>)}</div>
-          : status === 'error' ? <div className="booking__message" role="alert"><p>We couldn’t load the services. Please try again.</p>{onRetry && <button className="booking__button" onClick={onRetry}>Try again</button>}</div>
-          : !services.length ? <div className="booking__message" role="status">No sessions are available right now. Please check back later.</div>
-          : <>
-            <div className="booking__services" ref={track} role="group" aria-label="Choose one service" onScroll={event => {
-              const container = event.currentTarget
-              const center = container.scrollLeft + container.clientWidth / 2
-              let nearest = 0
-              let distance = Infinity
-              Array.from(container.children).forEach((child, index) => {
-                const card = child as HTMLElement
-                const delta = Math.abs(card.offsetLeft - container.offsetLeft + card.clientWidth / 2 - center)
-                if (delta < distance) { nearest = index; distance = delta }
-              })
-              setVisibleIndex(nearest)
-            }}>
-              {services.map(service => {
-                const active = selected?.id === service.id
-                const people = active ? validSelection?.people ?? 1 : service.additionalPeople?.includedPeople ?? 1
-                const extra = service.additionalPeople
-                const price = service.priceMinor === null ? 'Custom pricing' : new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency, maximumFractionDigits: 2 }).format((service.priceMinor + (extra ? Math.max(0, people - extra.includedPeople) * (extra.extraPersonPriceMinor ?? 0) : 0)) / 100)
-                return <article key={service.id} className="booking__service" data-service-id={service.id} data-selected={active}>
-                  {service.image ? <img className="booking__image" src={service.image.url} alt={service.image.alt} loading="lazy" /> : <div className="booking__image booking__placeholder" aria-hidden="true" />}
-                  <div className="booking__description"><h4>{service.name}</h4><p>{service.description}</p></div>
-                  <p className="booking__best">Best for: {service.bestFor}</p>
-                  <div className="booking__details"><span>{service.durationMinutes === null ? 'Scope and timing tailored to you' : `${service.durationMinutes >= 180 ? `${service.durationMinutes / 60} hours` : `${service.durationMinutes} min`}${service.photoCount ? ` · ${service.photoCount} photos` : ''}${service.outfits ? ` · ${service.outfits} outfit${service.outfits === 1 ? '' : 's'}` : ''}`}</span>
-                    {active && extra && <div className="booking__people"><button aria-label={`Fewer people for ${service.name}`} disabled={people <= extra.includedPeople} onClick={() => updateSelection({ serviceId: service.id, people: people - 1 })}>−</button><output aria-label="Number of people">{people}</output><button aria-label={`More people for ${service.name}`} disabled={people >= (extra.maxPeople ?? Number.MAX_SAFE_INTEGER)} onClick={() => updateSelection({ serviceId: service.id, people: people + 1 })}>+</button><small>+1 person <strong>{extra.extraPersonPriceMinor === undefined ? 'TBD' : `+${new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(extra.extraPersonPriceMinor / 100)}`}</strong></small></div>}
-                  </div>
-                  <strong className="booking__price" data-custom={service.priceMinor === null}>{price}</strong>
-                  {service.bookingMode === 'inquiry' ? <div className="booking__inquiry">{inquiryHref ? <a className="booking__button" href={inquiryHref}>Request inquiry</a> : <button className="booking__button" disabled aria-describedby="booking-inquiry-note">Request inquiry</button>}</div>
-                    : <button className="booking__button booking__select" aria-pressed={active} aria-label={`${active ? 'Selected' : 'Select'} ${service.name}`} onClick={() => updateSelection({ serviceId: service.id, people })}>{active ? 'Selected' : 'Select session'}</button>}
-                </article>
-              })}
+  return (
+    <section id="booking" className="booking" aria-labelledby="booking-title">
+      <div className="booking__inner">
+        <header className="booking__header">
+          <h2 id="booking-title">BOOK YOUR SESSION</h2>
+          <p>Your next great photo starts here. Choose a session to get started.</p>
+        </header>
+
+        <BookingProgressBar currentStep="services" />
+
+        <h3>Choose your session</h3>
+        <p className="booking__intro">Select one service. You’ll choose your date and time next.</p>
+        <div className="booking__panel" aria-busy={status === 'loading'}>
+          {status === 'loading' ? (
+            <div role="status" aria-label="Loading services" className="booking__skeletons">
+              {Array.from({ length: 5 }, (_, i) => (
+                <div key={i} className="booking__skeleton" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              ))}
             </div>
-            <div className="booking__mobile-controls">
-              <div className="booking__dots" aria-label="Browse services">{services.map((service, index) => <button key={service.id} aria-label={`Show ${service.name}`} aria-current={index === Math.min(visibleIndex, services.length - 1) ? 'true' : undefined} onClick={() => showCard(index)}><span /></button>)}</div>
-              <div className="booking__browse"><button aria-label="Previous service" disabled={visibleIndex <= 0} onClick={() => showCard(visibleIndex - 1)}>←</button><span>Swipe to explore</span><button aria-label="Next service" disabled={visibleIndex >= services.length - 1} onClick={() => showCard(visibleIndex + 1)}>→</button></div>
+          ) : status === 'error' ? (
+            <div className="booking__message" role="alert">
+              <p>We couldn’t load the services. Please try again.</p>
+              {onRetry && (
+                <button className="booking__button" onClick={onRetry}>
+                  Try again
+                </button>
+              )}
             </div>
-          </>}
+          ) : !services.length ? (
+            <div className="booking__message" role="status">
+              No sessions are available right now. Please check back later.
+            </div>
+          ) : (
+            <>
+              <div
+                className="booking__services"
+                ref={track}
+                role="group"
+                aria-label="Choose one service"
+                onScroll={event => {
+                  const container = event.currentTarget
+                  const center = container.scrollLeft + container.clientWidth / 2
+                  let nearest = 0
+                  let distance = Infinity
+                  Array.from(container.children).forEach((child, index) => {
+                    const card = child as HTMLElement
+                    const delta = Math.abs(card.offsetLeft - container.offsetLeft + card.clientWidth / 2 - center)
+                    if (delta < distance) {
+                      nearest = index
+                      distance = delta
+                    }
+                  })
+                  setVisibleIndex(nearest)
+                }}
+              >
+                {services.map(service => {
+                  const active = selected?.id === service.id
+                  const people = active ? validSelection?.people ?? 1 : service.additionalPeople?.includedPeople ?? 1
+                  const extra = service.additionalPeople
+                  const price =
+                    service.priceMinor === null
+                      ? 'Custom pricing'
+                      : new Intl.NumberFormat('en-US', {
+                          style: 'currency',
+                          currency: service.currency,
+                          maximumFractionDigits: 2,
+                        }).format(
+                          (service.priceMinor +
+                            (extra ? Math.max(0, people - extra.includedPeople) * (extra.extraPersonPriceMinor ?? 0) : 0)) /
+                            100
+                        )
+                  return (
+                    <article
+                      key={service.id}
+                      className="booking__service"
+                      data-service-id={service.id}
+                      data-selected={active}
+                    >
+                      {service.image ? (
+                        <img className="booking__image" src={service.image.url} alt={service.image.alt} loading="lazy" />
+                      ) : (
+                        <div className="booking__image booking__placeholder" aria-hidden="true" />
+                      )}
+                      <div className="booking__description">
+                        <h4>{service.name}</h4>
+                        <p>{service.description}</p>
+                      </div>
+                      <p className="booking__best">Best for: {service.bestFor}</p>
+                      <div className="booking__details">
+                        <span>
+                          {service.durationMinutes === null
+                            ? 'Scope and timing tailored to you'
+                            : `${service.durationMinutes >= 180 ? `${service.durationMinutes / 60} hours` : `${service.durationMinutes} min`}${service.photoCount ? ` · ${service.photoCount} photos` : ''}${service.outfits ? ` · ${service.outfits} outfit${service.outfits === 1 ? '' : 's'}` : ''}`}
+                        </span>
+                        {active && extra && (
+                          <div className="booking__people">
+                            <button
+                              aria-label={`Fewer people for ${service.name}`}
+                              disabled={people <= extra.includedPeople}
+                              onClick={() => updateSelection({ serviceId: service.id, people: people - 1 })}
+                            >
+                              −
+                            </button>
+                            <output aria-label="Number of people">{people}</output>
+                            <button
+                              aria-label={`More people for ${service.name}`}
+                              disabled={people >= (extra.maxPeople ?? Number.MAX_SAFE_INTEGER)}
+                              onClick={() => updateSelection({ serviceId: service.id, people: people + 1 })}
+                            >
+                              +
+                            </button>
+                            <small>
+                              +1 person{' '}
+                              <strong>
+                                {extra.extraPersonPriceMinor === undefined
+                                  ? 'TBD'
+                                  : `+${new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(extra.extraPersonPriceMinor / 100)}`}
+                              </strong>
+                            </small>
+                          </div>
+                        )}
+                      </div>
+                      <strong className="booking__price" data-custom={service.priceMinor === null}>
+                        {price}
+                      </strong>
+                      {service.bookingMode === 'inquiry' ? (
+                        <div className="booking__inquiry">
+                          {inquiryHref ? (
+                            <a className="booking__button" href={inquiryHref}>
+                              Request inquiry
+                            </a>
+                          ) : (
+                            <button className="booking__button" disabled aria-describedby="booking-inquiry-note">
+                              Request inquiry
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <button
+                          className="booking__button booking__select"
+                          aria-pressed={active}
+                          aria-label={`${active ? 'Selected' : 'Select'} ${service.name}`}
+                          onClick={() => updateSelection({ serviceId: service.id, people })}
+                        >
+                          {active ? 'Selected' : 'Select session'}
+                        </button>
+                      )}
+                    </article>
+                  )
+                })}
+              </div>
+              <div className="booking__mobile-controls">
+                <div className="booking__dots" aria-label="Browse services">
+                  {services.map((service, index) => (
+                    <button
+                      key={service.id}
+                      aria-label={`Show ${service.name}`}
+                      aria-current={index === Math.min(visibleIndex, services.length - 1) ? 'true' : undefined}
+                      onClick={() => showCard(index)}
+                    >
+                      <span />
+                    </button>
+                  ))}
+                </div>
+                <div className="booking__browse">
+                  <button
+                    aria-label="Previous service"
+                    disabled={visibleIndex <= 0}
+                    onClick={() => showCard(visibleIndex - 1)}
+                  >
+                    ←
+                  </button>
+                  <span>Swipe to explore</span>
+                  <button
+                    aria-label="Next service"
+                    disabled={visibleIndex >= services.length - 1}
+                    onClick={() => showCard(visibleIndex + 1)}
+                  >
+                    →
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <footer className="booking__footer">
+          <div>
+            <p className="booking__selection" role="status">
+              {selected ? `${selected.name} selected` : 'Choose a session to continue'}
+            </p>
+            <p id="booking-inquiry-note">Business package? Request a quote first; scheduling follows your proposal.</p>
+          </div>
+          <div className="booking__next">
+            <button
+              className="booking__button"
+              disabled={!validSelection}
+              onClick={() => {
+                if (validSelection) onContinue?.(validSelection)
+              }}
+            >
+              Continue to date &amp; time →
+            </button>
+          </div>
+        </footer>
       </div>
-      <footer className="booking__footer">
-        <div><p className="booking__selection" role="status">{selected ? `${selected.name} selected` : 'Choose a session to continue'}</p><p id="booking-inquiry-note">Business package? Request a quote first; scheduling follows your proposal.</p></div>
-        <div className="booking__next"><button className="booking__button" disabled={!validSelection} onClick={() => { if (validSelection) onContinue?.(validSelection) }}>Continue to date &amp; time →</button></div>
-      </footer>
-    </div>
-  </section>
+    </section>
+  )
 }

@@ -1,80 +1,63 @@
+// @ts-nocheck
 /**
  * R59 Media Admin — Payments & Pricing API Service
  *
  * Integration layer for business pricing rules (base fee, per person, deposit %)
  * and promotional coupon codes.
  *
- * Note: Endpoints marked with [Pending Agreement] are proposed API contracts
- * for the backend developer to implement or map to Admin_Settings.
+ * Every call rejects on an HTTP or network failure (the apiClient error carries
+ * `message`, `status` and `isNetworkError`), so callers can mark an area failed
+ * or show the server's message. Nothing is swallowed here.
  */
-import { apiClient } from './apiClient';
-const getClient = () => {
-    if (typeof window !== 'undefined' && window.R59?.apiClient) {
-        return window.R59.apiClient;
+(function () {
+    'use strict';
+    /** The backend accepts only 'percent' | 'amount' (a legacy 'fixed' value maps to 'amount'). */
+    function normalizeCouponType(type) {
+        if (type === undefined || type === null || type === '')
+            return undefined;
+        return type === 'percent' ? 'percent' : 'amount';
     }
-    return apiClient;
-};
-export const paymentsApi = {
-    /**
-     * Get global pricing configuration.
-     * [Pending Agreement]: Proposed endpoint GET /admin/pricing
-     */
-    async getPricingSettings() {
-        try {
-            return await getClient().get('/admin/pricing');
-        }
-        catch {
-            console.info('[paymentsApi] Backend /admin/pricing not yet mounted, using local state.');
-            return null;
-        }
-    },
-    /**
-     * Save pricing configuration (baseFee, perPerson, depositPercent).
-     * [Pending Agreement]: Proposed endpoint PUT /admin/pricing
-     */
-    async updatePricingSettings(pricingData) {
-        return await getClient().put('/admin/pricing', pricingData);
-    },
-    /**
-     * List all coupons.
-     * [Pending Agreement]: Proposed endpoint GET /admin/coupons
-     */
-    async getCoupons() {
-        try {
-            const res = await getClient().get('/admin/coupons');
-            return res?.coupons || [];
-        }
-        catch {
-            console.info('[paymentsApi] Backend /admin/coupons not yet mounted, using local state.');
-            return [];
-        }
-    },
-    /**
-     * Create a new coupon.
-     * [Pending Agreement]: Proposed endpoint POST /admin/coupons
-     */
-    async createCoupon(couponPayload) {
-        return await getClient().post('/admin/coupons', couponPayload);
-    },
-    /**
-     * Update an existing coupon.
-     * [Pending Agreement]: Proposed endpoint PUT /admin/coupons/:id
-     */
-    async updateCoupon(id, couponPayload) {
-        return await getClient().put(`/admin/coupons/${id}`, couponPayload);
-    },
-    /**
-     * Delete a coupon.
-     * [Pending Agreement]: Proposed endpoint DELETE /admin/coupons/:id
-     */
-    async deleteCoupon(id) {
-        return await getClient().delete(`/admin/coupons/${id}`);
+    function couponBody(payload = {}) {
+        const body = { ...payload };
+        const type = normalizeCouponType(body.type);
+        if (type)
+            body.type = type;
+        else
+            delete body.type;
+        return body;
     }
-};
-if (typeof window !== 'undefined') {
+    const paymentsApi = {
+        /** GET /admin/pricing → { baseFee, perPerson, depositPercent } (top level or under `data`). */
+        async getPricingSettings() {
+            return await window.R59.apiClient.get('/admin/pricing');
+        },
+        /** PUT /admin/pricing with { baseFee ($), perPerson ($), depositPercent (%) }. */
+        async updatePricingSettings(pricingData) {
+            return await window.R59.apiClient.put('/admin/pricing', pricingData);
+        },
+        /** GET /admin/coupons → array of coupons. */
+        async getCoupons() {
+            const res = await window.R59.apiClient.get('/admin/coupons');
+            const list = res?.coupons ?? res?.data;
+            if (!Array.isArray(list))
+                throw new Error('The server sent an unexpected coupon list.');
+            return list;
+        },
+        /** POST /admin/coupons → { id, coupon }. `type` is 'percent' | 'amount'; amount in dollars or %. */
+        async createCoupon(couponPayload) {
+            return await window.R59.apiClient.post('/admin/coupons', couponBody(couponPayload));
+        },
+        /** PUT /admin/coupons/:id (fields left out keep their stored values). */
+        async updateCoupon(id, couponPayload) {
+            return await window.R59.apiClient.put(`/admin/coupons/${encodeURIComponent(id)}`, couponBody(couponPayload));
+        },
+        /** DELETE /admin/coupons/:id */
+        async deleteCoupon(id) {
+            return await window.R59.apiClient.delete(`/admin/coupons/${encodeURIComponent(id)}`);
+        }
+    };
     window.R59 = window.R59 || {};
     window.R59.paymentsApi = paymentsApi;
     window.R59.api = window.R59.api || {};
     window.R59.api.payments = paymentsApi;
-}
-export default paymentsApi;
+})();

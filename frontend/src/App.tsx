@@ -6,7 +6,7 @@ import { heroDestinations, heroSlides } from './config/hero'
 import { previewBookingServices } from './config/booking'
 import { AboutToRecent } from './sections/transition/AboutToRecent'
 import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
-import { BookingServices } from './sections/booking/BookingServices'
+import { BookingSection } from './sections/booking/BookingSection'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
@@ -153,7 +153,7 @@ function App() {
       </div>
       <AboutToRecent />
       <PortfolioGallery />
-      <BookingServices services={bookingServices} status={bookingStatus} onRetry={loadBookingServices} inquiryHref="#contact" />
+      <BookingSection services={bookingServices} status={bookingStatus} onRetry={loadBookingServices} inquiryHref="#contact" />
     </main>
     <SiteFooter />
   </div>

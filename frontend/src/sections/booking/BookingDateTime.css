@@ -1,0 +1,131 @@
+.booking-datetime {
+  width: 100%;
+}
+
+.booking-datetime__layout {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 2.5rem;
+  align-items: start;
+}
+
+.booking-datetime__main {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.booking-datetime__header {
+  margin-bottom: 0.5rem;
+}
+
+.booking-datetime__title {
+  margin: 0;
+  font-family: var(--font-title);
+  font-size: clamp(1.5rem, 2.5vw, 2.2rem);
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--color-brand-black);
+}
+
+.booking-datetime__desc {
+  margin: 0.5rem 0 0;
+  color: var(--color-gray);
+  font-size: 0.95rem;
+}
+
+.booking-datetime__pickers {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.booking-datetime__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 1rem;
+}
+
+.booking-datetime__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-control);
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.booking-datetime__btn--back {
+  background: var(--color-white);
+  color: var(--color-brand-black);
+  border: 1px solid rgba(17, 17, 17, 0.15);
+}
+
+.booking-datetime__btn--back:hover {
+  background: #f0f0f0;
+}
+
+.booking-datetime__btn--continue {
+  background: var(--color-brand-red);
+  color: var(--color-white);
+  border: 0;
+}
+
+.booking-datetime__btn--continue:hover:not(:disabled) {
+  background: #cc0000;
+}
+
+.booking-datetime__btn--continue:disabled {
+  background: var(--color-white);
+  color: var(--color-gray);
+  opacity: 0.6;
+  cursor: not-allowed;
+  border: 1px solid rgba(17, 17, 17, 0.1);
+}
+
+.booking-datetime__sidebar {
+  position: relative;
+}
+
+.booking-datetime__sticky-wrapper {
+  position: sticky;
+  top: 6rem;
+}
+
+@media (max-width: 1024px) {
+  .booking-datetime__layout {
+    grid-template-columns: 1fr;
+  }
+
+  .booking-datetime__sidebar {
+    order: -1;
+    margin-bottom: 1rem;
+  }
+
+  .booking-datetime__sticky-wrapper {
+    position: static;
+  }
+}
+
+@media (max-width: 767px) {
+  .booking-datetime__pickers {
+    grid-template-columns: 1fr;
+  }
+
+  .booking-datetime__actions {
+    flex-direction: column-reverse;
+  }
+
+  .booking-datetime__btn {
+    width: 100%;
+  }
+}

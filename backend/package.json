@@ -16,7 +16,8 @@
     "build": "pnpm run build:admin && pnpm run sync-frontend && pnpm run sync-defaults && pnpm run sync-admin",
     "db:init": "wrangler d1 create r59_db",
     "db:reset": "wrangler d1 execute r59_db --local --file=./schema.sql",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts"
   },
   "dependencies": {
     "hono": "4.13.13",
