@@ -1,16 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { previewBookingServices } from '../../config/booking'
 import { submitContactLead } from '../../api/client'
 import type {
   BookingCustomerInfo,
   BookingDateTimeSelection,
   BookingSectionProps,
-  BookingSectionSession,
   BookingStep,
   ServiceSelection,
 } from '../../types/booking'
 import { BookingServices } from './BookingServices'
 import { BookingDateTime } from './BookingDateTime'
+import { validateBookingInfo } from './bookingValidation'
 import { BookingYourInfo } from './BookingYourInfo'
 import { BookingProgressBar } from './BookingProgressBar'
 import { BookingSessionCard } from './BookingSessionCard'
@@ -18,35 +18,19 @@ import './BookingSection.css'
 
 const STORAGE_KEY = 'r59_booking_session'
 
-function getSavedSession(): Partial<BookingSectionSession> {
-  try {
-    const raw = sessionStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      return JSON.parse(raw) as Partial<BookingSectionSession>
-    }
-  } catch {
-    // sessionStorage unavailable
-  }
-  return {}
-}
-
 export function BookingSection({
   services = previewBookingServices,
   status = 'ready',
   onRetry,
   inquiryHref = '#contact',
 }: BookingSectionProps) {
-  const [step, setStep] = useState<BookingStep>(() => getSavedSession().step || 'services')
-  const [selectedServiceId, setSelectedServiceId] = useState<string | null>(
-    () => getSavedSession().serviceId || null
-  )
-  const [attendees, setAttendees] = useState<number>(() => getSavedSession().people || 1)
-  const [dateTime, setDateTime] = useState<BookingDateTimeSelection | null>(
-    () => getSavedSession().dateTime || null
-  )
-  const [customerInfo, setCustomerInfo] = useState<BookingCustomerInfo | null>(
-    () => getSavedSession().customerInfo || null
-  )
+  const [step, setStep] = useState<BookingStep>('services')
+  const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null)
+  const [attendees, setAttendees] = useState(1)
+  const [dateTime, setDateTime] = useState<BookingDateTimeSelection | null>(null)
+  const [customerInfo, setCustomerInfo] = useState<BookingCustomerInfo | null>(null)
+  const requestLock = useRef(false)
+  const retryAfter = useRef(0)
 
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -71,21 +55,9 @@ export function BookingSection({
     effectiveStep = 'services'
   }
 
-  // Persist session changes
   useEffect(() => {
-    try {
-      const sessionData: BookingSectionSession = {
-        step: effectiveStep,
-        serviceId: selectedServiceId || '',
-        people: attendees,
-        dateTime,
-        customerInfo,
-      }
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(sessionData))
-    } catch {
-      // ignore storage write errors
-    }
-  }, [effectiveStep, selectedServiceId, attendees, dateTime, customerInfo])
+    try { sessionStorage.removeItem(STORAGE_KEY) } catch { /* Storage may be unavailable. */ }
+  }, [])
 
   const handleServicesContinue = (selection: ServiceSelection) => {
     setSelectedServiceId(selection.serviceId)
@@ -102,7 +74,16 @@ export function BookingSection({
   }
 
   const handleInfoSubmit = async (info: BookingCustomerInfo) => {
-    if (!selectedService || !dateTime) return
+    if (requestLock.current || !selectedService || !dateTime) return
+    if (Date.now() < retryAfter.current) {
+      setSubmitError('Too many requests. Please wait a minute before trying again.')
+      return
+    }
+    if (Object.keys(validateBookingInfo(info)).length) {
+      setSubmitError('Please check your contact details before continuing.')
+      return
+    }
+    requestLock.current = true
     setIsSubmitting(true)
     setSubmitError(null)
     setCustomerInfo(info)
@@ -122,19 +103,21 @@ export function BookingSection({
         name: `${info.firstName} ${info.lastName}`.trim(),
         email: info.email,
         phone: info.phone,
-        session_type: selectedService.name,
+        session_type: ['Portrait', 'Brand', 'Creative', 'Event'].includes(selectedService.name) ? selectedService.name : 'Other',
         message: messageBody,
       })
 
-      if (result.status === 'success' || !result.code || result.code !== 'NETWORK_ERROR') {
+      if (result.status === 'success') {
         setStep('summary')
         document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
       } else {
-        setSubmitError(result.message || 'Unable to submit your booking. Please check your connection and try again.')
+        if (result.code === 'TOO_MANY_REQUESTS') retryAfter.current = Date.now() + (result.retryAfterSeconds ?? 60) * 1000
+        setSubmitError(result.message || 'Unable to send your request. Your details have been kept. Please try again.')
       }
     } catch {
       setSubmitError('An unexpected error occurred while submitting your booking. Please try again.')
     } finally {
+      requestLock.current = false
       setIsSubmitting(false)
     }
   }
@@ -197,6 +180,7 @@ export function BookingSection({
             people={attendees}
             dateTime={dateTime!}
             initialInfo={customerInfo}
+            onDraftChange={setCustomerInfo}
             onSubmit={handleInfoSubmit}
             onBack={() => setStep('datetime')}
             isSubmitting={isSubmitting}

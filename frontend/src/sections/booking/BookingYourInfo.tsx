@@ -1,16 +1,12 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { BookingCustomerInfo, BookingYourInfoProps } from '../../types/booking'
 import { BookingProgressBar } from './BookingProgressBar'
 import { BookingSessionCard } from './BookingSessionCard'
 import './BookingYourInfo.css'
 
-interface FormErrors {
-  firstName?: string
-  lastName?: string
-  email?: string
-  phone?: string
-}
+import { bookingFieldLimits, normalizeBookingInfo, validateBookingInfo } from './bookingValidation'
+import type { BookingFormErrors } from './bookingValidation'
 
 export function BookingYourInfo({
   service,
@@ -19,6 +15,7 @@ export function BookingYourInfo({
   initialInfo,
   onSubmit,
   onBack,
+  onDraftChange,
   isSubmitting = false,
   error = null,
 }: BookingYourInfoProps) {
@@ -30,45 +27,30 @@ export function BookingYourInfo({
     notes: initialInfo?.notes || '',
   })
 
-  const [errors, setErrors] = useState<FormErrors>({})
+  const [errors, setErrors] = useState<BookingFormErrors>({})
   const [touched, setTouched] = useState<Record<string, boolean>>({})
 
-  const validate = (data: BookingCustomerInfo): FormErrors => {
-    const errs: FormErrors = {}
-    if (!data.firstName.trim()) {
-      errs.firstName = 'First name is required.'
-    }
-    if (!data.lastName.trim()) {
-      errs.lastName = 'Last name is required.'
-    }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (!data.email.trim()) {
-      errs.email = 'Email address is required.'
-    } else if (!emailRegex.test(data.email.trim())) {
-      errs.email = 'Please enter a valid email address.'
-    }
-    const digitsOnly = data.phone.replace(/\D/g, '')
-    if (!data.phone.trim()) {
-      errs.phone = 'Phone number is required.'
-    } else if (digitsOnly.length < 7) {
-      errs.phone = 'Please enter a valid phone number.'
-    }
-    return errs
-  }
+  const validate = validateBookingInfo
+  const submitLock = useRef(false)
+  const [localSubmitting, setLocalSubmitting] = useState(false)
+  const [localError, setLocalError] = useState<string | null>(null)
+  const busy = isSubmitting || localSubmitting
 
   const handleChange = (field: keyof BookingCustomerInfo, value: string) => {
     const next = { ...formData, [field]: value }
     setFormData(next)
+    onDraftChange?.(next)
+    setLocalError(null)
     if (touched[field]) {
       const currentErrs = validate(next)
-      setErrors(prev => ({ ...prev, [field]: currentErrs[field as keyof FormErrors] }))
+      setErrors(prev => ({ ...prev, [field]: currentErrs[field as keyof BookingFormErrors] }))
     }
   }
 
   const handleBlur = (field: keyof BookingCustomerInfo) => {
     setTouched(prev => ({ ...prev, [field]: true }))
     const currentErrs = validate(formData)
-    setErrors(prev => ({ ...prev, [field]: currentErrs[field as keyof FormErrors] }))
+    setErrors(prev => ({ ...prev, [field]: currentErrs[field as keyof BookingFormErrors] }))
   }
 
   const isFormComplete = Boolean(
@@ -79,9 +61,10 @@ export function BookingYourInfo({
       Object.keys(validate(formData)).length === 0
   )
 
-  const handleSubmit = (e?: FormEvent) => {
+  const handleSubmit = async (e?: FormEvent) => {
     e?.preventDefault()
-    setTouched({ firstName: true, lastName: true, email: true, phone: true })
+    if (submitLock.current || busy) return
+    setTouched({ firstName: true, lastName: true, email: true, phone: true, notes: true })
     const errs = validate(formData)
     setErrors(errs)
 
@@ -92,7 +75,17 @@ export function BookingYourInfo({
       return
     }
 
-    void onSubmit(formData)
+    submitLock.current = true
+    setLocalSubmitting(true)
+    setLocalError(null)
+    try {
+      await onSubmit(normalizeBookingInfo(formData))
+    } catch {
+      setLocalError('We couldn’t send your details. Your entries are still here. Please try again.')
+    } finally {
+      submitLock.current = false
+      setLocalSubmitting(false)
+    }
   }
 
   return (
@@ -107,7 +100,7 @@ export function BookingYourInfo({
         currentStep="info"
         onStepClick={step => {
           if (step === 'services' || step === 'datetime') {
-            onBack()
+            if (!busy) onBack()
           }
         }}
       />
@@ -115,23 +108,22 @@ export function BookingYourInfo({
       {/* Sub Nav & Back Link */}
       <div className="booking-your-info__subnav">
         <div className="booking-your-info__subnav-text">
-          <h3 className="booking-your-info__subnav-title">Choose your date &amp; time</h3>
-          <p className="booking-your-info__subnav-desc">
-            Pick an available date, then choose a start time for your session.
-          </p>
+          <h3 className="booking-your-info__subnav-title">Enter your details</h3>
+          <p className="booking-your-info__subnav-desc">Fill in your personal details to complete your booking.</p>
         </div>
         <button
           type="button"
           className="booking-your-info__back-link"
-          onClick={onBack}
+          onClick={() => { if (!busy) onBack() }}
+          disabled={busy}
         >
           ← Back to date &amp; time
         </button>
       </div>
 
-      {error && (
+      {(error || localError) && (
         <div className="booking-your-info__error-banner" role="alert">
-          <p>{error}</p>
+          <p>{localError || error}</p>
         </div>
       )}
 
@@ -151,9 +143,10 @@ export function BookingYourInfo({
               className="booking-your-info__form"
               onSubmit={handleSubmit}
               noValidate
+              aria-busy={busy}
             >
               {/* Row 1: First and Last Name */}
-              <div className="booking-your-info__row">
+              <div className="booking-your-info__row booking-your-info__row--names">
                 <div className="booking-your-info__field">
                   <label htmlFor="field-firstName" className="booking-your-info__label">
                     First name <span className="booking-your-info__star">*</span>
@@ -161,6 +154,8 @@ export function BookingYourInfo({
                   <input
                     id="field-firstName"
                     name="firstName"
+                    required
+                    maxLength={bookingFieldLimits.firstName}
                     type="text"
                     autoComplete="given-name"
                     placeholder="Alex"
@@ -168,11 +163,13 @@ export function BookingYourInfo({
                     value={formData.firstName}
                     onChange={e => handleChange('firstName', e.target.value)}
                     onBlur={() => handleBlur('firstName')}
+                    aria-invalid={Boolean(errors.firstName)}
+                    aria-describedby={errors.firstName ? 'field-firstName-error' : undefined}
                     aria-required="true"
-                    disabled={isSubmitting}
+                    disabled={busy}
                   />
                   {errors.firstName && (
-                    <span className="booking-your-info__field-err">{errors.firstName}</span>
+                    <span id="field-firstName-error" className="booking-your-info__field-err" aria-live="polite">{errors.firstName}</span>
                   )}
                 </div>
 
@@ -183,6 +180,8 @@ export function BookingYourInfo({
                   <input
                     id="field-lastName"
                     name="lastName"
+                    required
+                    maxLength={bookingFieldLimits.lastName}
                     type="text"
                     autoComplete="family-name"
                     placeholder="Morgan"
@@ -190,11 +189,13 @@ export function BookingYourInfo({
                     value={formData.lastName}
                     onChange={e => handleChange('lastName', e.target.value)}
                     onBlur={() => handleBlur('lastName')}
+                    aria-invalid={Boolean(errors.lastName)}
+                    aria-describedby={errors.lastName ? 'field-lastName-error' : undefined}
                     aria-required="true"
-                    disabled={isSubmitting}
+                    disabled={busy}
                   />
                   {errors.lastName && (
-                    <span className="booking-your-info__field-err">{errors.lastName}</span>
+                    <span id="field-lastName-error" className="booking-your-info__field-err" aria-live="polite">{errors.lastName}</span>
                   )}
                 </div>
               </div>
@@ -208,18 +209,25 @@ export function BookingYourInfo({
                   <input
                     id="field-email"
                     name="email"
+                    required
+                    maxLength={bookingFieldLimits.email}
                     type="email"
                     autoComplete="email"
+                    inputMode="email"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    aria-invalid={Boolean(errors.email)}
+                    aria-describedby={errors.email ? 'field-email-error' : undefined}
                     placeholder="alex.morgan@example.com"
                     className={`booking-your-info__input ${errors.email ? 'booking-your-info__input--error' : ''}`}
                     value={formData.email}
                     onChange={e => handleChange('email', e.target.value)}
                     onBlur={() => handleBlur('email')}
                     aria-required="true"
-                    disabled={isSubmitting}
+                    disabled={busy}
                   />
                   {errors.email && (
-                    <span className="booking-your-info__field-err">{errors.email}</span>
+                    <span id="field-email-error" className="booking-your-info__field-err" aria-live="polite">{errors.email}</span>
                   )}
                 </div>
 
@@ -230,6 +238,8 @@ export function BookingYourInfo({
                   <input
                     id="field-phone"
                     name="phone"
+                    required
+                    maxLength={bookingFieldLimits.phone}
                     type="tel"
                     autoComplete="tel"
                     placeholder="+1 (212) 555-0148"
@@ -237,11 +247,13 @@ export function BookingYourInfo({
                     value={formData.phone}
                     onChange={e => handleChange('phone', e.target.value)}
                     onBlur={() => handleBlur('phone')}
+                    aria-invalid={Boolean(errors.phone)}
+                    aria-describedby={errors.phone ? 'field-phone-error' : undefined}
                     aria-required="true"
-                    disabled={isSubmitting}
+                    disabled={busy}
                   />
                   {errors.phone && (
-                    <span className="booking-your-info__field-err">{errors.phone}</span>
+                    <span id="field-phone-error" className="booking-your-info__field-err" aria-live="polite">{errors.phone}</span>
                   )}
                 </div>
               </div>
@@ -254,18 +266,25 @@ export function BookingYourInfo({
                 <textarea
                   id="field-notes"
                   name="notes"
+                  maxLength={bookingFieldLimits.notes}
+                  onBlur={() => handleBlur('notes')}
+                  aria-invalid={Boolean(errors.notes)}
+                  aria-describedby={errors.notes ? 'field-notes-error' : undefined}
                   rows={3}
                   className="booking-your-info__textarea"
                   placeholder="Share any ideas, preferences, or accessibility needs for your session."
                   value={formData.notes || ''}
                   onChange={e => handleChange('notes', e.target.value)}
-                  disabled={isSubmitting}
+                  disabled={busy}
                 />
+                {errors.notes && <span id="field-notes-error" className="booking-your-info__field-err" aria-live="polite">{errors.notes}</span>}
               </div>
 
               <div className="booking-your-info__note">
-                A little detail helps us make your session feel like you. Your details will only be used
-                to contact you about your booking.
+                A little detail helps us make your session feel like you.
+              </div>
+              <div className="booking-your-info__note booking-your-info__privacy">
+                Your details will only be used to contact you about your booking.
               </div>
             </form>
           </div>
@@ -280,10 +299,10 @@ export function BookingYourInfo({
             <button
               type="button"
               className="booking-your-info__mobile-btn"
-              disabled={!isFormComplete || isSubmitting}
+              disabled={!isFormComplete || busy}
               onClick={() => handleSubmit()}
             >
-              {isSubmitting ? 'Submitting...' : 'Continue to deposit →'}
+              {busy ? 'Submitting...' : 'Continue to summary →'}
             </button>
             {!isFormComplete && (
               <span className="booking-your-info__mobile-hint">
@@ -299,9 +318,9 @@ export function BookingYourInfo({
             service={service}
             people={people}
             dateTime={dateTime}
-            continueText={isSubmitting ? 'Submitting...' : 'Continue to summary'}
+            continueText={busy ? 'Submitting...' : 'Continue to summary'}
             onContinue={() => handleSubmit()}
-            isContinueDisabled={!isFormComplete || isSubmitting}
+            isContinueDisabled={!isFormComplete || busy}
           />
         </div>
       </div>
