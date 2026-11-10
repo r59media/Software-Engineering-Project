@@ -1,5 +1,5 @@
 import { Hono, Context } from 'hono'
-import { Bindings } from '../index'
+import type { Bindings } from '../index'
 import {
   adminAuth,
   timingSafeEqual,
@@ -12,7 +12,7 @@ import {
   getTrustedClientIp,
   hasForbiddenPaymentFields
 } from '../middleware/auth'
-import { listPortfolio, portfolioListQuery } from './portfolio'
+import { DEFAULT_PROFILE, ensurePortfolioDefaults, listPortfolio, portfolioListQuery } from './portfolio'
 import { isEmailConfigured, sendEmail } from '../email'
 import {
   addDaysISO,
@@ -44,6 +44,7 @@ function isValidId(id: string | undefined): boolean {
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export const adminRouter = new Hono<{ Bindings: Bindings }>()
+export { DEFAULT_PROFILE }
 
 // ── Live D1 Schema Auto-Migration (OPT-02: once per isolate) ─────
 let schemaInitialized = false
@@ -54,6 +55,80 @@ export async function ensureSchemaReady(db: D1Database): Promise<void> {
     await db.prepare(
       'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)'
     ).run()
+
+    // 1. Ensure Profile Defaults
+    try {
+      const profileRow = await db.prepare(
+        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'profile'"
+      ).first<{ setting_value: string }>()
+      let shouldSeedProfile = true
+      if (profileRow?.setting_value) {
+        try {
+          const parsed = JSON.parse(profileRow.setting_value)
+          if (
+            parsed &&
+            typeof parsed.bio === 'string' &&
+            parsed.bio.trim() &&
+            typeof parsed.email === 'string' &&
+            parsed.email.trim()
+          ) {
+            shouldSeedProfile = false
+          }
+        } catch {}
+      }
+      if (shouldSeedProfile) {
+        await db.prepare(
+          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('profile', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+        ).bind(JSON.stringify(DEFAULT_PROFILE)).run()
+      }
+    } catch (profileErr) {
+      console.warn('Could not initialize default profile:', profileErr)
+    }
+
+    // 2. Ensure Portfolio Defaults (hero, recent, gallery, about)
+    try {
+      await ensurePortfolioDefaults(db)
+    } catch (portfolioErr) {
+      console.warn('Could not initialize default portfolio images:', portfolioErr)
+    }
+
+    // 3. Ensure Schedule Slots
+    try {
+      await db.prepare(
+        'CREATE TABLE IF NOT EXISTS Schedule_Slots (' +
+        'id INTEGER PRIMARY KEY AUTOINCREMENT, ' +
+        'date TEXT NOT NULL, ' +
+        'start_time TEXT NOT NULL, ' +
+        'end_time TEXT NOT NULL, ' +
+        'is_booked BOOLEAN DEFAULT 0' +
+        ')'
+      ).run().catch(() => {})
+
+      const slotCountRow = await db.prepare('SELECT COUNT(*) AS cnt FROM Schedule_Slots').first<{ cnt: number }>()
+      if (!slotCountRow || Number(slotCountRow.cnt) === 0) {
+        const today = await studioTodayISO(db)
+        const times = [
+          { start: '10:00', end: '11:00' },
+          { start: '12:00', end: '13:00' },
+          { start: '15:00', end: '16:00' },
+          { start: '17:00', end: '18:00' }
+        ]
+        const slotStatements: any[] = []
+        for (let d = 1; d <= 14; d++) {
+          const slotDate = addDaysISO(today, d)
+          for (const t of times) {
+            slotStatements.push(
+              db.prepare('INSERT INTO Schedule_Slots (date, start_time, end_time, is_booked) VALUES (?, ?, ?, 0)').bind(slotDate, t.start, t.end)
+            )
+          }
+        }
+        if (slotStatements.length > 0) {
+          await db.batch(slotStatements)
+        }
+      }
+    } catch (slotErr) {
+      console.warn('Could not seed default schedule slots:', slotErr)
+    }
 
     const alterStatements = [
       "ALTER TABLE Coupons ADD COLUMN description TEXT DEFAULT ''",
@@ -2689,19 +2764,25 @@ adminRouter.get('/profile', async (c) => {
         }))
     }
 
-    // The admin edits real data only: a missing or null field is empty, never a placeholder default
     const text = (value: unknown): string =>
       value === undefined || value === null ? '' : String(value).trim()
 
+    const bio = text(parsed?.bio) || DEFAULT_PROFILE.bio
+    const email = text(parsed?.email) || DEFAULT_PROFILE.email
+    const phone = text(parsed?.phone) || DEFAULT_PROFILE.phone
+    const location = text(parsed?.location) || DEFAULT_PROFILE.location
+    const travel = parsed?.travel !== undefined && parsed?.travel !== null && String(parsed.travel).trim()
+      ? (typeof parsed.travel === 'string' ? parsed.travel : (parsed.travel ? 'Studio & On-Location (Worldwide)' : 'Studio only'))
+      : DEFAULT_PROFILE.travel
+    const social = socialList.length > 0 ? socialList : DEFAULT_PROFILE.social
+
     const profile = {
-      bio: text(parsed?.bio),
-      email: text(parsed?.email),
-      phone: text(parsed?.phone),
-      location: text(parsed?.location),
-      travel: parsed?.travel !== undefined && parsed?.travel !== null
-        ? (typeof parsed.travel === 'string' ? parsed.travel : (parsed.travel ? 'Studio & On-Location (Worldwide)' : 'Studio only'))
-        : '',
-      social: socialList
+      bio,
+      email,
+      phone,
+      location,
+      travel,
+      social
     }
     return c.json({ ...profile, status: 'success', data: profile })
   } catch (e: any) {

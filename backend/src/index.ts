@@ -9,7 +9,7 @@ import { uploadRouter } from './routes/upload'
 import { checkoutRouter } from './routes/checkout'
 import { portfolioRouter } from './routes/portfolio'
 import { servicesRouter } from './routes/services'
-import { adminRouter } from './routes/admin'
+import { adminRouter, DEFAULT_PROFILE } from './routes/admin'
 import { squareWebhookRouter } from './routes/squareWebhook'
 import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth } from './middleware/auth'
 
@@ -281,17 +281,28 @@ app.get('/api/profile', async (c) => {
     const text = (value: unknown): string =>
       value === undefined || value === null ? '' : String(value).trim()
 
+    const bio = text(parsed?.bio)
+    const email = text(parsed?.email)
+
+    if (!bio || !email) {
+      c.header('Cache-Control', 'no-store')
+      return c.json({
+        status: 'success',
+        profile: DEFAULT_PROFILE,
+        data: DEFAULT_PROFILE
+      })
+    }
+
     const profile = {
-      bio: text(parsed?.bio),
-      email: text(parsed?.email),
-      phone: text(parsed?.phone),
-      location: text(parsed?.location),
+      bio,
+      email,
+      phone: text(parsed?.phone) || DEFAULT_PROFILE.phone,
+      location: text(parsed?.location) || DEFAULT_PROFILE.location,
       // The admin saves travel as a label (e.g. "Studio only"); keep that text instead of coercing it to true
-      travel: parsed?.travel !== undefined && parsed?.travel !== null
+      travel: parsed?.travel !== undefined && parsed?.travel !== null && String(parsed.travel).trim()
         ? (typeof parsed.travel === 'string' ? parsed.travel : Boolean(parsed.travel))
-        : EMPTY_PROFILE.travel,
-      // No placeholder social links: an unsaved profile has none
-      social: parsed?.social ?? []
+        : DEFAULT_PROFILE.travel,
+      social: Array.isArray(parsed?.social) && parsed.social.length > 0 ? parsed.social : DEFAULT_PROFILE.social
     }
 
     c.header('Cache-Control', 'no-store')
@@ -301,13 +312,14 @@ app.get('/api/profile', async (c) => {
       data: profile
     })
   } catch {
-    const profile = { ...EMPTY_PROFILE, social: [] }
-    return c.json({ status: 'success', profile, data: profile })
+    c.header('Cache-Control', 'no-store')
+    return c.json({ status: 'success', profile: DEFAULT_PROFILE, data: DEFAULT_PROFILE })
   }
 })
 
 // Mount routes
 app.route('/api/contact', contactRouter)
+app.route('/api/leads', contactRouter)
 app.route('/api/schedule', scheduleRouter)
 app.route('/api/upload-url', uploadRouter)
 app.route('/api/checkout', checkoutRouter)

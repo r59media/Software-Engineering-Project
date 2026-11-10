@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { Bindings } from '../index'
+import type { Bindings } from '../index'
 import { ensureSchemaReady } from './admin'
 import { getTrustedClientIp, hasForbiddenPaymentFields } from '../middleware/auth'
 import { getSquare } from '../lib/squareBilling'
@@ -87,6 +87,12 @@ checkoutRouter.post('/', async (c) => {
     const rawEmail = body.clientEmail ?? body.customer_email
     const clientName = typeof rawName === 'string' ? rawName.trim() : ''
     const clientEmail = typeof rawEmail === 'string' ? rawEmail.trim() : ''
+    const rawPhone = body.customer_phone ?? body.customerPhone ?? body.phone
+    const customerPhone = typeof rawPhone === 'string' ? rawPhone.trim().slice(0, 50) : ''
+    const rawNotes = body.notes ?? body.message ?? body.clientNotes
+    const notes = typeof rawNotes === 'string' ? rawNotes.trim().slice(0, 1000) : ''
+    const rawAttendees = body.attendees ?? body.party_size ?? body.people
+    const attendees = Number.isInteger(Number(rawAttendees)) && Number(rawAttendees) > 0 ? Number(rawAttendees) : 1
     const idempotencyKey = body.idempotencyKey ?? body.idempotency_key
     slotId = body.slotId ?? body.slot_id
     const couponCode = typeof (body.coupon_code ?? body.couponCode) === 'string' ? (body.coupon_code ?? body.couponCode).trim().toUpperCase() : ''
@@ -290,8 +296,8 @@ checkoutRouter.post('/', async (c) => {
       const bookingInsert = await c.env.DB.prepare(
         // Online checkout charges only the deposit: price_at_booking is the total after coupon,
         // deposit_paid is the amount charged now, and deposit_percent is the percent that produced it
-        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, price_at_booking, square_payment_id, status, coupon_code, deposit_paid, deposit_percent) VALUES (?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)"
-      ).bind(service.id, slotId, clientName, clientEmail, finalPriceCents, paymentId, couponCode, deposit.cents, deposit.percent).run()
+        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, customer_phone, notes, attendees, price_at_booking, square_payment_id, status, coupon_code, deposit_paid, deposit_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)"
+      ).bind(service.id, slotId, clientName, clientEmail, customerPhone, notes, attendees, finalPriceCents, paymentId, couponCode, deposit.cents, deposit.percent).run()
       bookingId = bookingInsert.meta?.last_row_id
     } catch (bookingErr) {
       console.error('CRITICAL: Payment succeeded but booking insert failed:', {

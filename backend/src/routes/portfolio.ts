@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { Bindings } from '../index'
+import type { Bindings } from '../index'
 import { adminAuth, hasForbiddenPaymentFields } from '../middleware/auth'
 import defaultPortfolioSeed from '../defaultPortfolioSeed.json'
 
@@ -57,6 +57,21 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
       'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)'
     ).run().catch(() => {})
 
+    await db.prepare(
+      'CREATE TABLE IF NOT EXISTS Portfolio_Images (' +
+      'id INTEGER PRIMARY KEY AUTOINCREMENT, ' +
+      'media_key TEXT NOT NULL, ' +
+      "section TEXT NOT NULL DEFAULT 'gallery', " +
+      'category TEXT NOT NULL, ' +
+      'title TEXT, ' +
+      'alt_text TEXT, ' +
+      'display_order INTEGER NOT NULL, ' +
+      'is_featured INTEGER DEFAULT 0, ' +
+      'is_active INTEGER DEFAULT 1, ' +
+      'created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP' +
+      ')'
+    ).run().catch(() => {})
+
     const sections = ['hero', 'recent', 'gallery', 'about'] as const
     const statements: any[] = []
 
@@ -86,13 +101,14 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
 
     for (const sec of sections) {
       const flagKey = `portfolio_seeded_${sec}`
-      if (seededFlags.has(flagKey)) continue
+      const count = existingCounts.get(sec) ?? 0
+      if (count > 0 && seededFlags.has(flagKey)) continue
       statements.push(
         db.prepare(
           "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, 'true') ON CONFLICT(setting_key) DO NOTHING"
         ).bind(flagKey)
       )
-      if ((existingCounts.get(sec) ?? 0) > 0) continue
+      if (count > 0) continue
 
       const items = (defaultPortfolioSeed as any)[sec] || []
       for (const item of items) {
@@ -206,6 +222,19 @@ export const EMPTY_PROFILE = {
   social: [] as { platform: string; url: string }[]
 }
 
+export const DEFAULT_PROFILE = {
+  bio: "I'm the photographer behind R59—drawn to quiet frames, honest light, and the small gestures that make a portrait feel lived-in.\n\nMost of my work sits between editorial portraiture and documentary storytelling. Whether we're in a studio or chasing late-afternoon sun on location, the goal is always the same: images that still feel like you ten years from now.",
+  email: "hello@r59media.com",
+  phone: "(123) 456-7890",
+  location: "Studio & On-Location (Worldwide)",
+  travel: "Studio & On-Location (Worldwide)",
+  social: [
+    { platform: "Instagram", url: "https://www.instagram.com/r59media" },
+    { platform: "Facebook", url: "https://www.facebook.com/r59media" },
+    { platform: "Pinterest", url: "https://www.pinterest.com/r59media" }
+  ]
+}
+
 export const portfolioRouter = new Hono<{ Bindings: Bindings }>()
 
 // GET: Public studio profile information
@@ -227,17 +256,28 @@ portfolioRouter.get('/profile', async (c) => {
     const text = (value: unknown): string =>
       value === undefined || value === null ? '' : String(value).trim()
 
+    const bio = text(parsed?.bio)
+    const email = text(parsed?.email)
+
+    if (!bio || !email) {
+      c.header('Cache-Control', 'no-store')
+      return c.json({
+        status: 'success',
+        profile: DEFAULT_PROFILE,
+        data: DEFAULT_PROFILE
+      })
+    }
+
     const profile = {
-      bio: text(parsed?.bio),
-      email: text(parsed?.email),
-      phone: text(parsed?.phone),
-      location: text(parsed?.location),
+      bio,
+      email,
+      phone: text(parsed?.phone) || DEFAULT_PROFILE.phone,
+      location: text(parsed?.location) || DEFAULT_PROFILE.location,
       // The admin saves travel as a label (e.g. "Studio only"); keep that text instead of coercing it to true
-      travel: parsed?.travel !== undefined && parsed?.travel !== null
+      travel: parsed?.travel !== undefined && parsed?.travel !== null && String(parsed.travel).trim()
         ? (typeof parsed.travel === 'string' ? parsed.travel : Boolean(parsed.travel))
-        : EMPTY_PROFILE.travel,
-      // No placeholder social links: an unsaved profile has none
-      social: parsed?.social ?? []
+        : DEFAULT_PROFILE.travel,
+      social: Array.isArray(parsed?.social) && parsed.social.length > 0 ? parsed.social : DEFAULT_PROFILE.social
     }
 
     c.header('Cache-Control', 'no-store')
@@ -247,8 +287,8 @@ portfolioRouter.get('/profile', async (c) => {
       data: profile
     })
   } catch {
-    const profile = { ...EMPTY_PROFILE, social: [] }
-    return c.json({ status: 'success', profile, data: profile })
+    c.header('Cache-Control', 'no-store')
+    return c.json({ status: 'success', profile: DEFAULT_PROFILE, data: DEFAULT_PROFILE })
   }
 })
 
@@ -273,6 +313,7 @@ export async function listPortfolio(
   query: PortfolioListQuery,
   { includeInactive = false }: { includeInactive?: boolean } = {}
 ): Promise<PortfolioListResult> {
+  await ensurePortfolioDefaults(db)
   await ensurePortfolioSchema(db)
 
   const limit = Math.max(1, Math.min(parseInt(query.limit || '50', 10) || 50, 100))
