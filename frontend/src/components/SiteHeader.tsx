@@ -83,17 +83,15 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
   useLayoutEffect(() => {
     if (!open || !dialog.current) return
     const node = dialog.current
-    const y = window.scrollY
     const body = document.body
-    const saved = { position: body.style.position, top: body.style.top, width: body.style.width, overflow: body.style.overflow }
+    const previousOverflow = body.style.overflow
     let restored = false
     unlock.current = () => {
       if (restored) return
       restored = true
-      Object.assign(body.style, saved)
-      window.scrollTo({ top: y, behavior: 'instant' })
+      body.style.overflow = previousOverflow
     }
-    Object.assign(body.style, { position: 'fixed', top: `-${y}px`, width: '100%', overflow: 'hidden' })
+    body.style.overflow = 'hidden'
     node.showModal()
     closeButton.current?.focus({ preventScroll: true })
     const desktop = matchMedia('(min-width: 851px)')
