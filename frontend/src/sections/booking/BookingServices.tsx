@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { motion, useReducedMotion } from 'motion/react'
 import { previewBookingServices } from '../../config/booking'
 import type { BookingServicesProps, ServiceSelection } from '../../types/booking'
 import { BookingProgressBar } from './BookingProgressBar'
@@ -21,7 +22,41 @@ export function BookingServices({
   }
 
   const [visibleIndex, setVisibleIndex] = useState(0)
+  const indicatorId = useId().replace(/:/g, '')
+  const reducedMotion = useReducedMotion()
   const track = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const container = track.current
+    if (!container) return
+    let frame = 0
+    const updateDepth = () => {
+      const mobile = window.matchMedia('(max-width: 767px)').matches
+      const center = container.scrollLeft + container.clientWidth / 2
+      Array.from(container.children).forEach(child => {
+        const card = child as HTMLElement
+        const offset = (card.offsetLeft - container.offsetLeft + card.offsetWidth / 2 - center) / (card.offsetWidth + 16)
+        const progress = mobile && !reducedMotion ? Math.max(-1, Math.min(1, offset)) : 0
+        card.style.setProperty('--card-tilt', `${progress * 2.5}deg`)
+        card.style.setProperty('--card-scale', `${1 - Math.abs(progress) * .035}`)
+        card.style.setProperty('--card-depth', `${Math.abs(progress) * 3}px`)
+      })
+    }
+    const schedule = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(updateDepth)
+    }
+    container.addEventListener('scroll', schedule, { passive: true })
+    const observer = new ResizeObserver(schedule)
+    observer.observe(container)
+    schedule()
+    return () => {
+      cancelAnimationFrame(frame)
+      container.removeEventListener('scroll', schedule)
+      observer.disconnect()
+    }
+  }, [services, status, reducedMotion])
+
 
   const selected =
     status === 'ready'
@@ -214,7 +249,14 @@ export function BookingServices({
                 })}
               </div>
               <div className="booking__mobile-controls">
+                <svg className="booking__gooey-filter" aria-hidden="true" focusable="false"><defs><filter id={indicatorId} x="-30%" y="-50%" width="160%" height="200%"><feGaussianBlur in="SourceGraphic" stdDeviation="3.5" result="blur" /><feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 19 -8" /></filter></defs></svg>
                 <div className="booking__dots" aria-label="Browse services">
+                  <div className="booking__dots-liquid" aria-hidden="true" style={{ filter: reducedMotion ? 'none' : `url(#${indicatorId})` }}>
+                    {services.map((service, index) => <span className="booking__dot-slot" key={service.id}>
+                      <span className="booking__dot-base" />
+                      {index === Math.min(visibleIndex, services.length - 1) && <motion.span className="booking__dot-pill" layoutId={`${indicatorId}-pill`} transition={reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 380, damping: 25 }} initial={false} animate={{ scaleX: reducedMotion ? 1 : [1, 1.45, 1], scaleY: reducedMotion ? 1 : [1, .82, 1] }} />}
+                    </span>)}
+                  </div>
                   {services.map((service, index) => (
                     <button
                       key={service.id}
@@ -222,7 +264,6 @@ export function BookingServices({
                       aria-current={index === Math.min(visibleIndex, services.length - 1) ? 'true' : undefined}
                       onClick={() => showCard(index)}
                     >
-                      <span />
                     </button>
                   ))}
                 </div>

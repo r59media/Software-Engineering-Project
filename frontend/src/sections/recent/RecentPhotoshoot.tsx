@@ -25,21 +25,21 @@ const getSlotStyles = (isMobile: boolean): Record<number, SlotConfig> => ({
     x: '-50%',
   },
   '-1': {
-    left: isMobile ? '2%' : '22.9%',
+    left: isMobile ? '-5%' : '22.9%',
     top: isMobile ? 'min(8cqw, 12svh)' : 'min(7.5cqw, 12svh)',
     rotate: -8.66,
     scale: 0.95,
     zIndex: 3,
-    opacity: 0.88,
+    opacity: 0.55,
     x: '-50%',
   },
   1: {
-    left: isMobile ? '98%' : '77.1%',
+    left: isMobile ? '105%' : '77.1%',
     top: isMobile ? 'min(8cqw, 12svh)' : 'min(7.5cqw, 12svh)',
     rotate: 8.66,
     scale: 0.95,
     zIndex: 3,
-    opacity: 0.88,
+    opacity: 0.55,
     x: '-50%',
   },
   '-2': {
@@ -48,7 +48,7 @@ const getSlotStyles = (isMobile: boolean): Record<number, SlotConfig> => ({
     rotate: -17.32,
     scale: 0.85,
     zIndex: 1,
-    opacity: isMobile ? 0 : 0.6,
+    opacity: isMobile ? 0 : 0.35,
     x: '-50%',
   },
   2: {
@@ -57,7 +57,7 @@ const getSlotStyles = (isMobile: boolean): Record<number, SlotConfig> => ({
     rotate: 17.32,
     scale: 0.85,
     zIndex: 1,
-    opacity: isMobile ? 0 : 0.6,
+    opacity: isMobile ? 0 : 0.35,
     x: '-50%',
   },
 })
