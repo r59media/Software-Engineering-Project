@@ -1,6 +1,6 @@
 # R59 Media — Photography Portfolio & Studio Management Platform
 
-A high-performance, full-stack photography portfolio and studio management platform built for **R59 Media**. Features an interactive 3D camera lens aperture scroll transition, Pinterest-style anti-scraping and canvas image protection, a complete responsive client experience, and a modular administration dashboard powered by serverless Cloudflare Workers and Cloudflare D1.
+A high-performance, full-stack photography portfolio and studio management platform built for **R59 Media**. Features an interactive 3D camera lens aperture scroll transition, canvas image protection to deter casual downloading, a complete responsive client experience, and a modular administration dashboard powered by serverless Cloudflare Workers and Cloudflare D1.
 
 🌐 **Live Deployment:** [https://software-engineering-project.r59mediatesting.workers.dev](https://software-engineering-project.r59mediatesting.workers.dev)
 
@@ -39,10 +39,10 @@ A high-performance, full-stack photography portfolio and studio management platf
 
 ### 1. Public Portfolio Frontend (`/frontend`)
 * **3D Lens Aperture Transition:** Interactive WebGL 3D camera lens rendered with Three.js and React Three Fiber (`@react-three/fiber`), dynamically opening its mechanical iris aperture as visitors scroll from the About section into the Most Recent Photoshoot.
-* **Pinterest-Style Anti-Scraping Protection:** Images are protected from casual downloads, scraping bots, and right-click inspectors via `<ProtectedCanvasImage>`:
+* **Canvas Image Protection:** Images are protected from casual downloads and context-menu saves via `<ProtectedCanvasImage>`:
   * Rendered directly into HTML5 canvas contexts behind invisible DOM interaction shields (`.media-shield`).
-  * Right-click context menus, image dragging, and hotlinking are prevented.
-  * Media endpoints are protected with strict `X-R59-Client: media-viewer` headers and origin validation.
+  * Right-click context menus, image dragging, and casual direct hotlinking are deterred.
+  * Media endpoints require legitimate application headers (`X-R59-Client: media-viewer`) or an active authenticated session to prevent casual downloading (while recognizing that no client-rendered web asset can offer a 100% bulletproof anti-scraping guarantee against automated headless browsers).
 * **Dynamic Hero Showcase:** Responsive hero slider displaying curated automotive and portrait photography with support for remote updates.
 * **Photographer Story & About Me:** Live biography paragraphs and dynamic photographer portrait synchronized with admin profile settings.
 * **Most Recent Photoshoot Strip:** Carousel highlighting recent lookbook frames with animated aperture transitions.
@@ -140,6 +140,8 @@ The application uses Cloudflare D1 SQLite database (`r59_db`). The primary table
 | `Schedule_Slots` | Individual booking slots by date and start/end time. |
 | `Blocked_Dates` | Calendar dates blocked from bookings with custom reasons. |
 | `Leads` | Customer contact inquiries and consultation requests. |
+| `Login_Attempts` | Rate-limiting bucket, attempt count, and sliding window timestamps for failed admin logins. |
+| `Revoked_Sessions` | Cryptographic signature blacklist of explicitly logged-out admin sessions with expiry timestamps. |
 
 ---
 
@@ -174,11 +176,33 @@ SQUARE_LOCATION_ID="your_square_location_id"
 ADMIN_EMAIL="r59mediatesting@gmail.com"
 ADMIN_SECRET="your_secure_admin_password_or_token"
 
+# Session HMAC Signing Secret
+# MUST be cryptographically strong, min 32 chars, and strictly distinct from ADMIN_SECRET.
+# Generate via: openssl rand -base64 48
+SESSION_SECRET="generate_a_cryptographically_random_secret_minimum_32_chars"
+
 # CORS configuration
 ALLOWED_ORIGINS="http://localhost:5173,http://localhost:8787"
 ```
 
-### 3. Start Local Development Servers
+> [!IMPORTANT]
+> **Secret Separation:** `SESSION_SECRET` signs admin session authentication cookies and must be generated using high-entropy randomness (e.g. `openssl rand -base64 48`). It must never reuse or derive from `ADMIN_SECRET` (the bootstrap administrative password).
+
+### 3. Database Initialization & Local Reset
+
+To create or reset your local Cloudflare D1 SQLite database:
+```bash
+cd backend
+pnpm run db:reset
+```
+
+> [!WARNING]
+> **Data Loss & Password Reset Notice:**
+> `pnpm run db:reset` drops and recreates all tables using `backend/schema.sql`. This completely wipes local development data, bookings, payments, and any updated admin password hash stored in `Admin_Settings`, restoring the initial bootstrap password (`ADMIN_SECRET`).
+>
+> **NEVER run `schema.sql` or `pnpm run db:reset` against a production database.**
+
+### 4. Start Local Development Servers
 
 In one terminal, start the **backend Cloudflare Worker** (includes local D1 SQLite database):
 ```bash
@@ -234,7 +258,7 @@ pnpm exec wrangler deploy
 
 ## 🛡️ Security & Privacy Architecture
 
-* **No Direct File Exposure:** Media assets in D1 `Media_Storage` cannot be accessed via directory browsing or scraped without legitimate application headers (`X-R59-Client: media-viewer`) or an authenticated admin session (`r59_session` cookie).
+* **Controlled Media Delivery:** Media assets in D1 `Media_Storage` cannot be accessed via direct directory browsing. Image endpoints require legitimate application headers (`X-R59-Client: media-viewer`) or an authenticated admin session (`r59_session` cookie) to deter casual downloading and automated scraping (without claiming bulletproof guarantees against full headless browser scrapers).
 * **Zero Visual Loss Image Optimization:** Uploaded images are re-encoded client-side into WebP with `quality = 0.92`, stripping GPS coordinates and private EXIF metadata while maintaining studio fidelity.
 * **PCI-DSS Square Tokenization:** Credit card details are tokenized securely on the client through Square Web Payments SDK. The backend only handles single-use payment nonces.
 * **Secure Cookie Authentication:** Admin sessions utilize `HttpOnly`, `Secure`, `SameSite=Strict` cookies with cryptographic signature verification and database-backed session revocation.

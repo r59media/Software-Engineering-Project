@@ -5,12 +5,17 @@ import {
   timingSafeEqual,
   createSessionToken,
   extractSessionToken,
+  getSigningSecret,
+  verifySessionToken,
   revokeSessionToken,
   revokeTokenInDb,
   hashPassword,
   verifyPassword,
   getTrustedClientIp,
-  hasForbiddenPaymentFields
+  hasForbiddenPaymentFields,
+  normalizeIpBucket,
+  checkAndRecordLoginAttempt,
+  clearLoginAttempts
 } from '../middleware/auth'
 import { DEFAULT_PROFILE, ensurePortfolioDefaults, listPortfolio, portfolioListQuery } from './portfolio'
 import { isEmailConfigured, sendEmail } from '../email'
@@ -55,6 +60,19 @@ export async function ensureSchemaReady(db: D1Database): Promise<void> {
     await db.prepare(
       'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)'
     ).run()
+
+    // Ensure Login_Attempts and Revoked_Sessions security tables exist (Findings 2 & 3)
+    await db.prepare(
+      'CREATE TABLE IF NOT EXISTS Login_Attempts (bucket TEXT PRIMARY KEY, attempts INTEGER NOT NULL, window_start INTEGER NOT NULL)'
+    ).run().catch(() => {})
+
+    await db.prepare(
+      'CREATE TABLE IF NOT EXISTS Revoked_Sessions (signature TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)'
+    ).run().catch(() => {})
+
+    await db.prepare(
+      'CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON Revoked_Sessions(expires_at)'
+    ).run().catch(() => {})
 
     // 1. Ensure Profile Defaults
     try {
@@ -319,44 +337,8 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
   ])
 }
 
-// ── Bounded Rate Limiter for Admin Login ─────────────────────────
-const MAX_LOGIN_ATTEMPT_ENTRIES = 1000
-const LOGIN_WINDOW_MS = 60 * 1000
-const MAX_LOGIN_ATTEMPTS = 5
-const loginAttempts = new Map<string, { attempts: number; resetAt: number }>()
-
-function pruneLoginAttempts(now: number): void {
-  for (const [key, entry] of loginAttempts.entries()) {
-    if (now > entry.resetAt) {
-      loginAttempts.delete(key)
-    }
-  }
-}
-
-function isLoginRateLimited(ip: string): boolean {
-  const now = Date.now()
-  pruneLoginAttempts(now)
-  const entry = loginAttempts.get(ip)
-  if (!entry || now > entry.resetAt) {
-    return false
-  }
-  return entry.attempts >= MAX_LOGIN_ATTEMPTS
-}
-
-function recordFailedLoginAttempt(ip: string): void {
-  const now = Date.now()
-  pruneLoginAttempts(now)
-  const entry = loginAttempts.get(ip)
-  if (!entry || now > entry.resetAt) {
-    if (loginAttempts.size >= MAX_LOGIN_ATTEMPT_ENTRIES) {
-      const oldestKey = loginAttempts.keys().next().value
-      if (oldestKey) loginAttempts.delete(oldestKey)
-    }
-    loginAttempts.set(ip, { attempts: 1, resetAt: now + LOGIN_WINDOW_MS })
-  } else {
-    entry.attempts++
-  }
-}
+// Re-export rate limiting helpers from middleware/auth
+export { normalizeIpBucket, checkAndRecordLoginAttempt, clearLoginAttempts }
 
 // ── Admin_Settings helpers (account keys) ────────────────────────
 async function readSetting(db: D1Database | undefined, key: string): Promise<string | null> {
@@ -470,11 +452,19 @@ adminRouter.get('/password-reset/available', async (c) => {
 // POST: request a reset link. Always the same answer, so it never reveals the recovery address.
 adminRouter.post('/forgot-password', async (c) => {
   noStore(c)
+  if (c.env.DB) await ensureSchemaReady(c.env.DB)
   const clientIp = getTrustedClientIp(c)
-  if (isLoginRateLimited(clientIp)) {
-    return tooManyRequests(c, 'Too many requests. Please wait 1 minute before trying again.')
+  const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfterSeconds))
+    return c.json({
+      error: {
+        code: 'TOO_MANY_REQUESTS',
+        message: 'Too many requests. Please wait before trying again.',
+        details: []
+      }
+    }, 429)
   }
-  recordFailedLoginAttempt(clientIp) // every request counts
 
   const generic = { success: true, status: 'success', message: FORGOT_PASSWORD_MESSAGE }
   try {
@@ -485,7 +475,6 @@ adminRouter.post('/forgot-password', async (c) => {
       return c.json(generic)
     }
 
-    await ensureSchemaReady(c.env.DB)
     const recovery = await readRecoveryEmail(c.env.DB)
     if (!recovery || !timingSafeEqual(email, recovery)) return c.json(generic)
 
@@ -522,9 +511,18 @@ adminRouter.post('/forgot-password', async (c) => {
 // POST: set a new password with a reset token (single use, 30 minutes)
 adminRouter.post('/reset-password', async (c) => {
   noStore(c)
+  if (c.env.DB) await ensureSchemaReady(c.env.DB)
   const clientIp = getTrustedClientIp(c)
-  if (isLoginRateLimited(clientIp)) {
-    return tooManyRequests(c, 'Too many attempts. Please wait 1 minute before trying again.')
+  const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfterSeconds))
+    return c.json({
+      error: {
+        code: 'TOO_MANY_REQUESTS',
+        message: 'Too many attempts. Please wait before trying again.',
+        details: []
+      }
+    }, 429)
   }
 
   const invalidToken = () => c.json({
@@ -546,11 +544,9 @@ adminRouter.post('/reset-password', async (c) => {
     if (lengthError) return lengthError
 
     if (!c.env.DB || !/^[0-9a-f]{64}$/.test(token)) {
-      recordFailedLoginAttempt(clientIp)
       return invalidToken()
     }
 
-    await ensureSchemaReady(c.env.DB)
     const raw = await readSetting(c.env.DB, PASSWORD_RESET_KEY)
     let record: { token_hash?: unknown; expires_at?: unknown; used?: unknown } | null = null
     try { record = raw ? JSON.parse(raw) : null } catch { record = null }
@@ -561,20 +557,23 @@ adminRouter.post('/reset-password', async (c) => {
     const expiresAt = record && typeof record.expires_at === 'number' ? record.expires_at : 0
     const usable = Boolean(record) && record!.used !== true && Date.now() <= expiresAt
     if (!hashMatches || !usable) {
-      recordFailedLoginAttempt(clientIp)
       if (record && Date.now() > expiresAt) await deleteSetting(c.env.DB, PASSWORD_RESET_KEY).catch(() => {})
       return invalidToken()
     }
 
     // Single use: the reset record goes away in the same batch as the password write
     const saltedHash = await hashPassword(newPassword)
+    const revocationTime = Date.now()
     await c.env.DB.batch([
       c.env.DB.prepare(
         'INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value'
       ).bind('admin_password_hash', saltedHash),
+      c.env.DB.prepare(
+        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('sessions_valid_after', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+      ).bind(String(revocationTime)),
       c.env.DB.prepare('DELETE FROM Admin_Settings WHERE setting_key = ?').bind(PASSWORD_RESET_KEY)
     ])
-    loginAttempts.delete(clientIp)
+    await clearLoginAttempts(c.env.DB, clientIp)
 
     return c.json({ success: true, status: 'success', message: 'Password updated.' })
   } catch {
@@ -587,8 +586,10 @@ adminRouter.post('/reset-password', async (c) => {
 // Public login endpoint for admin credentials
 adminRouter.post('/login', async (c) => {
   try {
+    const signingSecret = getSigningSecret(c.env)
     const expectedSecret = c.env.ADMIN_SECRET
-    if (!expectedSecret) {
+    const expectedEmail = c.env.ADMIN_EMAIL ? c.env.ADMIN_EMAIL.trim().toLowerCase() : ''
+    if (!signingSecret || !expectedSecret || !expectedEmail) {
       return c.json({
         error: {
           code: 'INTERNAL_SERVER_ERROR',
@@ -602,11 +603,10 @@ adminRouter.post('/login', async (c) => {
       await ensureSchemaReady(c.env.DB)
     }
 
-    const expectedEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
-
     const clientIp = getTrustedClientIp(c)
-    if (isLoginRateLimited(clientIp)) {
-      c.header('Retry-After', '60')
+    const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
+    if (!rateLimit.allowed) {
+      c.header('Retry-After', String(rateLimit.retryAfterSeconds))
       return c.json({
         error: {
           code: 'TOO_MANY_REQUESTS',
@@ -622,7 +622,6 @@ adminRouter.post('/login', async (c) => {
 
     // Both email and password must be non-empty
     if (!email || !password) {
-      recordFailedLoginAttempt(clientIp)
       return c.json({
         error: {
           code: 'UNAUTHORIZED',
@@ -649,7 +648,6 @@ adminRouter.post('/login', async (c) => {
     const { matches: passwordMatches, needsHashUpgrade } = await verifyPassword(password, storedPasswordSource)
 
     if (!emailMatches || !passwordMatches) {
-      recordFailedLoginAttempt(clientIp)
       // Intentional short delay to mitigate rapid automated brute-force attacks
       await new Promise(r => setTimeout(r, 300))
       return c.json({
@@ -672,30 +670,36 @@ adminRouter.post('/login', async (c) => {
     }
 
     // Clear failed attempts on successful login
-    loginAttempts.delete(clientIp)
+    await clearLoginAttempts(c.env.DB, clientIp)
+
+    // Opportunistically prune expired revoked sessions
+    if (c.env.DB) {
+      c.env.DB.prepare('DELETE FROM Revoked_Sessions WHERE expires_at <= ?').bind(Date.now()).run().catch(() => {})
+    }
 
     // Generate secure HMAC-signed session token with decoupled SESSION_SECRET
-    const signingSecret = c.env.SESSION_SECRET || expectedSecret
     const token = await createSessionToken(signingSecret, expectedEmail)
 
-    // Set the HttpOnly session cookie r59_session
+    // Set cookie __Host-r59_session and clear old r59_session
     const isHttps = c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https'
     c.header(
       'Set-Cookie',
-      `r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}`
+      `__Host-r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${isHttps ? '; Secure' : ''}`
+    )
+    c.header(
+      'Set-Cookie',
+      `r59_session=; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}; Max-Age=0`,
+      { append: true }
     )
 
-    const returnToken = c.req.header('X-Return-Token') === 'true'
     return c.json({
       success: true,
       status: 'success',
       authenticated: true,
       email: expectedEmail,
-      ...(returnToken ? { token } : {}),
       data: {
         authenticated: true,
-        email: expectedEmail,
-        ...(returnToken ? { token } : {})
+        email: expectedEmail
       }
     })
   } catch (e: any) {
@@ -711,15 +715,24 @@ adminRouter.post('/login', async (c) => {
 
 // Public logout endpoint (registered before adminAuth so cookie is always cleared)
 adminRouter.post('/logout', async (c) => {
-  const token = extractSessionToken(c)
-  if (token) {
-    revokeSessionToken(token)
-    await revokeTokenInDb(c.env.DB, token)
+  const { token } = extractSessionToken(c)
+  const signingSecret = getSigningSecret(c.env)
+  if (token && signingSecret) {
+    const verified = await verifySessionToken(token, signingSecret)
+    if (verified.valid) {
+      revokeSessionToken(token)
+      await revokeTokenInDb(c.env.DB, token)
+    }
   }
   const isHttps = c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https'
   c.header(
     'Set-Cookie',
-    `r59_session=; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}; Max-Age=0`
+    `__Host-r59_session=; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}; Max-Age=0`
+  )
+  c.header(
+    'Set-Cookie',
+    `r59_session=; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}; Max-Age=0`,
+    { append: true }
   )
   return c.json({
     success: true,
@@ -740,7 +753,7 @@ adminRouter.use('*', async (c, next) => {
 
 // Session verification endpoint for frontend startup and route guards
 adminRouter.get('/verify', async (c) => {
-  const expectedEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
+  const expectedEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
   return c.json({
     authenticated: true,
     status: 'success',
@@ -756,8 +769,9 @@ adminRouter.get('/verify', async (c) => {
 adminRouter.put('/password', async (c) => {
   try {
     const clientIp = getTrustedClientIp(c)
-    if (isLoginRateLimited(clientIp)) {
-      c.header('Retry-After', '60')
+    const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
+    if (!rateLimit.allowed) {
+      c.header('Retry-After', String(rateLimit.retryAfterSeconds))
       return c.json({
         error: {
           code: 'TOO_MANY_REQUESTS',
@@ -772,7 +786,6 @@ adminRouter.put('/password', async (c) => {
     const newPassword = typeof body.newPassword === 'string' ? body.newPassword : (typeof body.new_password === 'string' ? body.new_password : '')
 
     if (!currentPassword) {
-      recordFailedLoginAttempt(clientIp)
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
@@ -782,23 +795,12 @@ adminRouter.put('/password', async (c) => {
       }, 400)
     }
 
-    if (!newPassword || newPassword.length < 8) {
+    if (!newPassword || newPassword.length < 12 || newPassword.length > 256) {
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
-          message: 'New password must be at least 8 characters long.',
-          details: [{ field: 'newPassword', message: 'New password must be at least 8 characters long.', code: 'TOO_SHORT' }]
-        }
-      }, 400)
-    }
-
-    // Checked before any hashing so an oversized value never reaches PBKDF2
-    if (newPassword.length > 128) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'New password must be at most 128 characters.',
-          details: [{ field: 'newPassword', message: 'New password must be at most 128 characters.', code: 'TOO_LONG' }]
+          message: 'Password must be between 12 and 256 characters.',
+          details: [{ field: 'newPassword', message: 'Password must be between 12 and 256 characters.', code: 'INVALID_LENGTH' }]
         }
       }, 400)
     }
@@ -807,7 +809,6 @@ adminRouter.put('/password', async (c) => {
 
     const { matches: currentMatches } = await verifyPassword(currentPassword, storedPasswordSource)
     if (!currentMatches) {
-      recordFailedLoginAttempt(clientIp)
       return c.json({
         error: {
           code: 'UNAUTHORIZED',
@@ -817,13 +818,30 @@ adminRouter.put('/password', async (c) => {
       }, 401)
     }
 
-    loginAttempts.delete(clientIp)
+    await clearLoginAttempts(c.env.DB, clientIp)
 
     const saltedHash = await hashPassword(newPassword)
+    const revocationTime = Date.now()
     if (c.env.DB) {
-      await c.env.DB.prepare(
-        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('admin_password_hash', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-      ).bind(saltedHash).run()
+      await c.env.DB.batch([
+        c.env.DB.prepare(
+          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('admin_password_hash', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+        ).bind(saltedHash),
+        c.env.DB.prepare(
+          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('sessions_valid_after', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+        ).bind(String(revocationTime))
+      ])
+    }
+
+    const signingSecret = getSigningSecret(c.env)
+    const expectedEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
+    if (signingSecret && expectedEmail) {
+      const token = await createSessionToken(signingSecret, expectedEmail)
+      const isHttps = c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https'
+      c.header(
+        'Set-Cookie',
+        `__Host-r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${isHttps ? '; Secure' : ''}`
+      )
     }
 
     return c.json({
@@ -859,8 +877,16 @@ adminRouter.put('/recovery-email', async (c) => {
   noStore(c)
   try {
     const clientIp = getTrustedClientIp(c)
-    if (isLoginRateLimited(clientIp)) {
-      return tooManyRequests(c, 'Too many attempts. Please wait 1 minute before trying again.')
+    const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
+    if (!rateLimit.allowed) {
+      c.header('Retry-After', String(rateLimit.retryAfterSeconds))
+      return c.json({
+        error: {
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Too many attempts. Please wait before trying again.',
+          details: []
+        }
+      }, 429)
     }
 
     const body = await c.req.json().catch(() => ({}))
@@ -887,7 +913,6 @@ adminRouter.put('/recovery-email', async (c) => {
       }, 400)
     }
     if (!currentPassword) {
-      recordFailedLoginAttempt(clientIp)
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
@@ -898,7 +923,6 @@ adminRouter.put('/recovery-email', async (c) => {
     }
     // Checked before hashing so an oversized value never reaches PBKDF2
     if (currentPassword.length > PASSWORD_MAX) {
-      recordFailedLoginAttempt(clientIp)
       return c.json({
         error: {
           code: 'UNAUTHORIZED',
@@ -910,7 +934,6 @@ adminRouter.put('/recovery-email', async (c) => {
 
     const { matches } = await verifyPassword(currentPassword, await readStoredPasswordSource(c.env))
     if (!matches) {
-      recordFailedLoginAttempt(clientIp)
       return c.json({
         error: {
           code: 'UNAUTHORIZED',
@@ -919,7 +942,7 @@ adminRouter.put('/recovery-email', async (c) => {
         }
       }, 401)
     }
-    loginAttempts.delete(clientIp)
+    await clearLoginAttempts(c.env.DB, clientIp)
 
     if (email === '') {
       // Removing the address also invalidates any reset link sent to it

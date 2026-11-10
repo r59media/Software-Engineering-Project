@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { Bindings } from '../index'
-import { adminAuth, verifySessionToken, extractSessionToken, isTokenRevoked, isTokenRevokedInDb, hasForbiddenPaymentFields } from '../middleware/auth'
+import { adminAuth, verifySessionToken, extractSessionToken, getSigningSecret, isTokenRevoked, isTokenRevokedInDb, hasForbiddenPaymentFields } from '../middleware/auth'
 import defaultPortfolioSeed from '../defaultPortfolioSeed.json'
 
 function isValidId(id: string | undefined): boolean {
@@ -194,10 +194,9 @@ servicesRouter.get('/', async (c) => {
     let includeAll = false
 
     if (includeAllRequested) {
-      const token = extractSessionToken(c)
-      const secret = c.env.ADMIN_SECRET
-      if (token && secret && !isTokenRevoked(token) && !(await isTokenRevokedInDb(c.env.DB, token))) {
-        const signingSecret = c.env.SESSION_SECRET || secret
+      const { token } = extractSessionToken(c)
+      const signingSecret = getSigningSecret(c.env)
+      if (token && signingSecret && !isTokenRevoked(token) && !(await isTokenRevokedInDb(c.env.DB, token))) {
         const session = await verifySessionToken(token, signingSecret)
         if (session.valid) {
           includeAll = true

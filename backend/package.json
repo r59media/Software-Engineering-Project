@@ -27,5 +27,13 @@
     "@cloudflare/workers-types": "4.20260702.1",
     "typescript": "5.9.3",
     "wrangler": "4.151.1"
+  },
+  "pnpm": {
+    "overrides": {
+      "follow-redirects": ">=1.16.2"
+    }
+  },
+  "overrides": {
+    "follow-redirects": ">=1.16.2"
   }
 }

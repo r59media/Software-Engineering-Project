@@ -6,6 +6,16 @@ DROP TABLE IF EXISTS Booking_Payments; -- child of Bookings (link enforced in co
 DROP TABLE IF EXISTS Bookings;
 DROP TABLE IF EXISTS Leads;
 DROP TABLE IF EXISTS Schedule_Slots;
+DROP TABLE IF EXISTS Login_Attempts;
+DROP TABLE IF EXISTS Revoked_Sessions;
+
+-- =============================================================================
+-- CRITICAL SECURITY WARNING:
+-- This file (schema.sql) is intended strictly for local development and test resets.
+-- NEVER run schema.sql on production databases as it irreversibly wipes all data!
+-- Resetting Admin_Settings drops the stored admin password hash and restores the
+-- bootstrap password configured in the environment (ADMIN_SECRET).
+-- =============================================================================
 DROP TABLE IF EXISTS Admin_Settings;
 DROP TABLE IF EXISTS Portfolio_Images;
 DROP TABLE IF EXISTS Services;
@@ -156,6 +166,18 @@ CREATE TABLE Media_Storage (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (file_key, chunk_index)
 );
+
+CREATE TABLE IF NOT EXISTS Login_Attempts (
+  bucket TEXT PRIMARY KEY,
+  attempts INTEGER NOT NULL,
+  window_start INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS Revoked_Sessions (
+  signature TEXT PRIMARY KEY,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON Revoked_Sessions(expires_at);
 
 -- Performance Indexes
 CREATE INDEX IF NOT EXISTS idx_slots_availability ON Schedule_Slots(is_booked, date, start_time);

@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 
@@ -11,11 +11,12 @@ import { portfolioRouter } from './routes/portfolio'
 import { servicesRouter } from './routes/services'
 import { adminRouter, DEFAULT_PROFILE } from './routes/admin'
 import { squareWebhookRouter } from './routes/squareWebhook'
-import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth } from './middleware/auth'
+import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret } from './middleware/auth'
 
 export type Bindings = {
   DB: D1Database
   ASSETS?: Fetcher
+  ENVIRONMENT?: string
   SQUARE_ACCESS_TOKEN?: string
   SQUARE_ENVIRONMENT?: string
   SQUARE_LOCATION_ID?: string
@@ -38,7 +39,7 @@ app.use('*', async (c, next) => {
   await next()
   c.header(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob: https:; connect-src 'self' https://*.workers.dev; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
   )
   c.header('X-Frame-Options', 'DENY')
   c.header('X-Content-Type-Options', 'nosniff')
@@ -48,13 +49,27 @@ app.use('*', async (c, next) => {
   c.header('Cross-Origin-Opener-Policy', 'same-origin')
 })
 
-// CORS — restrict to known frontend origins and same-origin requests
+// CORS — restrict to known frontend origins and same-origin requests (Finding 6)
 app.use('*', async (c, next) => {
   c.header('Vary', 'Origin')
 
-  const defaultOrigins = 'http://localhost:5173,http://localhost:8787,http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000,http://127.0.0.1:5500'
-  const allowedRaw = c.env.ALLOWED_ORIGINS || defaultOrigins
-  const allowedOrigins = allowedRaw.split(',').map(o => o.trim()).filter(Boolean)
+  const configuredOrigins = (c.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(o => o.trim())
+    .filter(Boolean)
+
+  const isDev = c.env.ENVIRONMENT === 'development'
+  const devOrigins = [
+    'http://localhost:5173',
+    'http://localhost:8787',
+    'http://localhost:8000',
+    'http://localhost:3000',
+    'http://127.0.0.1:8000',
+    'http://127.0.0.1:5500'
+  ]
+  const allowedOrigins = isDev
+    ? [...new Set([...configuredOrigins, ...devOrigins])]
+    : configuredOrigins
 
   const requestOrigin = c.req.header('Origin') || ''
   const currentUrl = new URL(c.req.url)
@@ -80,6 +95,24 @@ app.use('*', async (c, next) => {
   })
   return corsMiddleware(c, next)
 })
+
+/**
+ * Validates whether a media request is authorized (Finding 8).
+ * Accepts requests with 'X-R59-Client: media-viewer' or a cryptographically valid,
+ * non-revoked session token.
+ */
+async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>): Promise<boolean> {
+  const clientHeader = c.req.header('X-R59-Client')
+  if (clientHeader === 'media-viewer') return true
+
+  const { token } = extractSessionToken(c)
+  if (!token) return false
+  const secret = getSigningSecret(c.env)
+  if (!secret) return false
+  if (await isTokenRevokedInDb(c.env.DB, token)) return false
+  const session = await verifySessionToken(token, secret)
+  return session.valid
+}
 
 // Block sourcemap files everywhere & protect media/model assets from standalone scraping & hotlinking
 app.use('*', async (c, next) => {
@@ -119,9 +152,7 @@ app.use('*', async (c, next) => {
     // For images: enforce authorized in-memory fetch carrying 'X-R59-Client: media-viewer'
     // OR authenticated admin session (allows Admin dashboard to display, preview, and replace photos)
     if (isProtectedImage) {
-      const clientHeader = c.req.header('X-R59-Client')
-      const token = extractSessionToken(c)
-      const isAuthorizedClient = clientHeader === 'media-viewer' || Boolean(token)
+      const isAuthorizedClient = await isAuthorizedMediaRequest(c)
       if (!isAuthorizedClient) {
         return c.redirect('/', 302)
       }
@@ -164,9 +195,8 @@ app.get('/admin/*', async (c) => {
 
   // Gate sensitive admin scripts behind valid authentication
   if (GATED_ADMIN_SCRIPT_REGEX.test(url.pathname)) {
-    const token = extractSessionToken(c)
-    const secret = c.env.ADMIN_SECRET
-    const signingSecret = c.env.SESSION_SECRET || secret || ''
+    const { token } = extractSessionToken(c)
+    const signingSecret = getSigningSecret(c.env)
     const isAuthed = Boolean(
       token &&
       signingSecret &&
@@ -413,9 +443,7 @@ app.get('/api/media/*', async (c) => {
     return c.text('Forbidden', 403)
   }
 
-  const clientHeader = c.req.header('X-R59-Client')
-  const token = extractSessionToken(c)
-  const isAuthorizedClient = clientHeader === 'media-viewer' || Boolean(token)
+  const isAuthorizedClient = await isAuthorizedMediaRequest(c)
   if (!isAuthorizedClient) {
     return c.redirect('/', 302)
   }
@@ -502,9 +530,7 @@ app.get('*', async (c) => {
   const isProtectedAsset = isProtectedImage || is3DModel
 
   if (isProtectedImage) {
-    const clientHeader = c.req.header('X-R59-Client')
-    const token = extractSessionToken(c)
-    const isAuthorizedClient = clientHeader === 'media-viewer' || Boolean(token)
+    const isAuthorizedClient = await isAuthorizedMediaRequest(c)
     if (!isAuthorizedClient) {
       return c.redirect('/', 302)
     }

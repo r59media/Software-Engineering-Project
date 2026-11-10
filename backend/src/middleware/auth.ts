@@ -106,11 +106,20 @@ export async function verifyPassword(
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
 
 /**
- * Creates an HMAC-SHA256 signed session token containing the authenticated email and expiration.
+ * Retrieves the session signing secret from the environment.
+ * Requires at least 32 characters and never falls back to password or ADMIN_SECRET.
+ */
+export function getSigningSecret(env?: Bindings): string | null {
+  return env?.SESSION_SECRET && env.SESSION_SECRET.length >= 32 ? env.SESSION_SECRET : null
+}
+
+/**
+ * Creates an HMAC-SHA256 signed session token containing the authenticated email, issuedAt timestamp, and expiration.
  */
 export async function createSessionToken(secret: string, email: string): Promise<string> {
-  const expiry = Date.now() + SESSION_TTL_MS
-  const payload = `${email}:${expiry}`
+  const now = Date.now()
+  const expiry = now + SESSION_TTL_MS
+  const payload = `${email}:${now}:${expiry}`
   const encoder = new TextEncoder()
   const key = await crypto.subtle.importKey(
     'raw',
@@ -130,17 +139,28 @@ export async function createSessionToken(secret: string, email: string): Promise
 /**
  * Verifies an HMAC-SHA256 signed session token.
  */
-export async function verifySessionToken(token: string, secret: string): Promise<{ valid: boolean; email?: string }> {
+export async function verifySessionToken(
+  token: string,
+  secret: string
+): Promise<{ valid: boolean; email?: string; issuedAt?: number }> {
   try {
     const parts = token.split('.')
     if (parts.length !== 2) return { valid: false }
     const [payloadB64, providedSigHex] = parts
     const payload = atob(payloadB64)
-    const colonIdx = payload.lastIndexOf(':')
-    if (colonIdx === -1) return { valid: false }
-    const email = payload.substring(0, colonIdx)
-    const expiry = Number(payload.substring(colonIdx + 1))
-    if (!email || !expiry || isNaN(expiry) || Date.now() > expiry) {
+    const colonLast = payload.lastIndexOf(':')
+    if (colonLast === -1) return { valid: false }
+    const expiryStr = payload.substring(colonLast + 1)
+    const rem = payload.substring(0, colonLast)
+    const colonSecondLast = rem.lastIndexOf(':')
+    if (colonSecondLast === -1) return { valid: false }
+    const issuedAtStr = rem.substring(colonSecondLast + 1)
+    const email = rem.substring(0, colonSecondLast)
+
+    const issuedAt = Number(issuedAtStr)
+    const expiry = Number(expiryStr)
+
+    if (!email || !issuedAt || !expiry || isNaN(issuedAt) || isNaN(expiry) || Date.now() > expiry) {
       return { valid: false }
     }
     const encoder = new TextEncoder()
@@ -158,7 +178,7 @@ export async function verifySessionToken(token: string, secret: string): Promise
     if (!timingSafeEqual(providedSigHex, expectedSigHex)) {
       return { valid: false }
     }
-    return { valid: true, email }
+    return { valid: true, email, issuedAt }
   } catch {
     return { valid: false }
   }
@@ -229,18 +249,27 @@ export function getCookieValue(cookieHeader: string | undefined, name: string): 
 
 /**
  * Extracts the session token from:
- * 1. Authorization: Bearer <token> (for API clients/tests), OR
- * 2. HttpOnly cookie `r59_session` (for browser Admin SPA).
+ * 1. Authorization: Bearer <token> (source: 'header'), OR
+ * 2. Cookie __Host-r59_session, fallback to r59_session (source: 'cookie').
  */
-export function extractSessionToken(c: Context): string | null {
+export function extractSessionToken(c: Context): { token: string | null; source: 'header' | 'cookie' | null } {
   const auth = c.req.header('Authorization')
   if (auth && auth.startsWith('Bearer ')) {
     const token = auth.substring(7).trim()
-    if (token && token !== 'cookie') return token
+    if (token && token !== 'cookie') {
+      return { token, source: 'header' }
+    }
   }
-  const cookieToken = getCookieValue(c.req.header('Cookie'), 'r59_session')
-  if (cookieToken) return cookieToken
-  return null
+  const cookieHeader = c.req.header('Cookie')
+  const hostCookie = getCookieValue(cookieHeader, '__Host-r59_session')
+  if (hostCookie) {
+    return { token: hostCookie, source: 'cookie' }
+  }
+  const legacyCookie = getCookieValue(cookieHeader, 'r59_session')
+  if (legacyCookie) {
+    return { token: legacyCookie, source: 'cookie' }
+  }
+  return { token: null, source: null }
 }
 
 /**
@@ -280,11 +309,84 @@ export function hasForbiddenPaymentFields(obj: unknown): boolean {
   return false
 }
 
+// ── Atomic D1 Distributed Rate Limiter for Admin Authentication (Finding 2) ──
+export function normalizeIpBucket(ip: string): string {
+  const cleanIp = (ip || 'unknown').trim()
+  if (cleanIp.includes(':')) {
+    // Group IPv6 addresses by /64 prefix to prevent prefix cycling
+    const parts = cleanIp.split(':')
+    return `ip:${parts.slice(0, 4).join(':')}::/64`
+  }
+  return `ip:${cleanIp}`
+}
+
+export async function checkAndRecordLoginAttempt(
+  db: D1Database | undefined,
+  ip: string
+): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+  const now = Date.now()
+  const ipBucket = normalizeIpBucket(ip)
+  const accountBucket = 'account'
+
+  const IP_WINDOW_MS = 60 * 1000
+  const MAX_IP_ATTEMPTS = 5
+
+  const ACCOUNT_WINDOW_MS = 15 * 60 * 1000
+  const MAX_ACCOUNT_ATTEMPTS = 20
+
+  if (!db) {
+    return { allowed: true, retryAfterSeconds: 0 }
+  }
+
+  try {
+    // 1. IP bucket atomic increment BEFORE password evaluation (Finding 2)
+    const ipRow = await db.prepare(
+      `INSERT INTO Login_Attempts (bucket, attempts, window_start) VALUES (?1, 1, ?2)
+       ON CONFLICT(bucket) DO UPDATE SET
+         attempts = CASE WHEN ?2 - window_start > ?3 THEN 1 ELSE attempts + 1 END,
+         window_start = CASE WHEN ?2 - window_start > ?3 THEN ?2 ELSE window_start END
+       RETURNING attempts, window_start`
+    ).bind(ipBucket, now, IP_WINDOW_MS).first<{ attempts: number; window_start: number }>()
+
+    if (ipRow && ipRow.attempts > MAX_IP_ATTEMPTS) {
+      const remainingMs = Math.max(1000, IP_WINDOW_MS - (now - ipRow.window_start))
+      return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
+    }
+
+    // 2. Account-wide bucket atomic increment (Finding 2)
+    const accRow = await db.prepare(
+      `INSERT INTO Login_Attempts (bucket, attempts, window_start) VALUES (?1, 1, ?2)
+       ON CONFLICT(bucket) DO UPDATE SET
+         attempts = CASE WHEN ?2 - window_start > ?3 THEN 1 ELSE attempts + 1 END,
+         window_start = CASE WHEN ?2 - window_start > ?3 THEN ?2 ELSE window_start END
+       RETURNING attempts, window_start`
+    ).bind(accountBucket, now, ACCOUNT_WINDOW_MS).first<{ attempts: number; window_start: number }>()
+
+    if (accRow && accRow.attempts > MAX_ACCOUNT_ATTEMPTS) {
+      const remainingMs = Math.max(1000, ACCOUNT_WINDOW_MS - (now - accRow.window_start))
+      return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
+    }
+
+    return { allowed: true, retryAfterSeconds: 0 }
+  } catch (err) {
+    console.warn('[rate-limit] D1 rate limiter error:', err)
+    return { allowed: true, retryAfterSeconds: 0 }
+  }
+}
+
+export async function clearLoginAttempts(db: D1Database | undefined, ip: string): Promise<void> {
+  if (!db) return
+  const ipBucket = normalizeIpBucket(ip)
+  try {
+    await db.prepare('DELETE FROM Login_Attempts WHERE bucket IN (?, ?)').bind(ipBucket, 'account').run()
+  } catch {}
+}
+
 let lastDbCheckMs = 0
 const DB_CACHE_TTL_MS = 30_000
 
 /**
- * Revokes a session token in D1 database and in-memory cache across Cloudflare Worker isolates.
+ * Revokes a session token in D1 database (Revoked_Sessions table) and in-memory cache across Cloudflare Worker isolates.
  */
 export async function revokeTokenInDb(db: D1Database | undefined, token: string): Promise<void> {
   if (!token) return
@@ -298,45 +400,23 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
     const now = Date.now()
     const expiry = now + SESSION_TTL_MS
 
-    let revokedMap: Record<string, number> = {}
-
-    // Read existing revoked tokens using setting_key / setting_value
-    try {
-      const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
-      if (row && typeof row.setting_value === 'string') {
-        const parsed = JSON.parse(row.setting_value)
-        if (parsed && typeof parsed === 'object') {
-          revokedMap = parsed
-        }
-      }
-    } catch {}
-
-    // Prune entries where expiry <= Date.now()
-    const cleanedMap: Record<string, number> = {}
-    for (const [s, exp] of Object.entries(revokedMap)) {
-      if (typeof exp === 'number' && exp > now) {
-        cleanedMap[s] = exp
-      }
-    }
-
-    // Add current token's signature with Date.now() + 24 * 60 * 60 * 1000
-    cleanedMap[sig] = expiry
-
-    // Cap at 200 entries
-    const entries = Object.entries(cleanedMap)
-    if (entries.length > 200) {
-      entries.sort((a, b) => a[1] - b[1]) // oldest first
-      const excess = entries.length - 200
-      for (let i = 0; i < excess; i++) {
-        delete cleanedMap[entries[i][0]]
-      }
-    }
-
-    const jsonStr = JSON.stringify(cleanedMap)
-
+    // Insert into dedicated Revoked_Sessions table (Finding 3)
     await db.prepare(
-      "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('revoked_tokens', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-    ).bind(jsonStr).run()
+      'INSERT OR IGNORE INTO Revoked_Sessions (signature, expires_at) VALUES (?, ?)'
+    ).bind(sig, expiry).run().catch(async () => {
+      // Fallback if table not yet initialized
+      await db.prepare(
+        'CREATE TABLE IF NOT EXISTS Revoked_Sessions (signature TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)'
+      ).run().catch(() => {})
+      await db.prepare(
+        'INSERT OR IGNORE INTO Revoked_Sessions (signature, expires_at) VALUES (?, ?)'
+      ).bind(sig, expiry).run()
+    })
+
+    // Periodically prune expired revoked sessions (1 in 10 chance)
+    if (Math.random() < 0.1) {
+      await db.prepare('DELETE FROM Revoked_Sessions WHERE expires_at < ?').bind(now).run().catch(() => {})
+    }
   } catch (err) {
     // DB errors should never crash logout
     console.warn('[auth] DB token revocation warning:', err)
@@ -362,38 +442,29 @@ export async function isTokenRevokedInDb(db: D1Database | undefined, token: stri
   if (!db) return false
 
   try {
-    const row = await db.prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'revoked_tokens'").first<{ setting_value: string }>()
+    const row = await db.prepare(
+      'SELECT 1 FROM Revoked_Sessions WHERE signature = ? AND expires_at > ? LIMIT 1'
+    ).bind(sig, now).first()
     lastDbCheckMs = now
 
-    if (row && typeof row.setting_value === 'string') {
-      const parsed = JSON.parse(row.setting_value) as Record<string, number>
-      if (parsed && typeof parsed === 'object') {
-        for (const [key, exp] of Object.entries(parsed)) {
-          if (typeof exp === 'number' && exp > now) {
-            revokedTokens.set(key, exp)
-          }
-        }
-        if (isTokenRevoked(token) || isTokenRevoked(sig)) {
-          return true
-        }
-      }
+    if (row) {
+      revokedTokens.set(sig, now + SESSION_TTL_MS)
+      return true
     }
   } catch (err) {
-    console.warn('[auth] DB token check warning:', err)
+    // Graceful fallback if table query fails
   }
 
   return false
 }
 
 /**
- * Middleware that strictly checks for a valid HMAC-signed session token
- * via Authorization Bearer header.
- * Fails closed if ADMIN_SECRET is not configured.
- * Decouples session signing secret (SESSION_SECRET) from ADMIN_SECRET.
+ * Middleware that strictly checks for a valid HMAC-signed session token.
+ * Fails closed if session signing secret is not configured or < 32 characters.
  */
 export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) => {
-  const secret = c.env.ADMIN_SECRET
-  if (!secret) {
+  const signingSecret = getSigningSecret(c.env)
+  if (!signingSecret) {
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
@@ -403,9 +474,7 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }, 500)
   }
 
-  const signingSecret = c.env.SESSION_SECRET || secret
-
-  const token = extractSessionToken(c)
+  const { token, source } = extractSessionToken(c)
   if (!token) {
     return c.json({
       error: {
@@ -427,38 +496,72 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
   }
 
   const session = await verifySessionToken(token, signingSecret)
-  if (session.valid) {
-    const method = c.req.method.toUpperCase()
-    const hasBearer = Boolean(c.req.header('Authorization')?.startsWith('Bearer '))
-    if (!hasBearer && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
-      const xrw = c.req.header('X-Requested-With')
-      const secFetchSite = c.req.header('Sec-Fetch-Site')
-      const origin = c.req.header('Origin')
-      const reqOrigin = new URL(c.req.url).origin
-      const csrfSafe =
-        xrw === 'XMLHttpRequest' ||
-        secFetchSite === 'same-origin' ||
-        (origin && origin === reqOrigin)
-      if (!csrfSafe) {
-        return c.json({
-          error: {
-            code: 'FORBIDDEN',
-            message: 'CSRF validation failed for cookie-authenticated request.',
-            details: []
-          }
-        }, 403)
+  if (!session.valid) {
+    return c.json({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid or expired session token.',
+        details: []
       }
-    }
-    return await next()
+    }, 401)
   }
 
-  return c.json({
-    error: {
-      code: 'UNAUTHORIZED',
-      message: 'Invalid or expired session token.',
-      details: []
+  const adminEmail = c.env.ADMIN_EMAIL ? c.env.ADMIN_EMAIL.trim().toLowerCase() : ''
+  const sessionEmail = session.email ? session.email.trim().toLowerCase() : ''
+  if (!adminEmail || !sessionEmail || !timingSafeEqual(sessionEmail, adminEmail)) {
+    return c.json({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid or expired session token.',
+        details: []
+      }
+    }, 401)
+  }
+
+  if (c.env.DB) {
+    try {
+      const row = await c.env.DB.prepare(
+        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'sessions_valid_after'"
+      ).first<{ setting_value: string }>()
+      if (row?.setting_value) {
+        const validAfter = Number(row.setting_value)
+        if (!isNaN(validAfter) && session.issuedAt !== undefined && session.issuedAt < validAfter) {
+          return c.json({
+            error: {
+              code: 'UNAUTHORIZED',
+              message: 'Session has been revoked due to password change or logout everywhere.',
+              details: []
+            }
+          }, 401)
+        }
+      }
+    } catch (err) {
+      console.warn('[auth] DB sessions_valid_after check warning:', err)
     }
-  }, 401)
+  }
+
+  const method = c.req.method.toUpperCase()
+  if (source === 'cookie' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    const xrw = c.req.header('X-Requested-With')
+    const secFetchSite = c.req.header('Sec-Fetch-Site')
+    const origin = c.req.header('Origin')
+    const reqOrigin = new URL(c.req.url).origin
+    const csrfSafe =
+      xrw === 'XMLHttpRequest' ||
+      secFetchSite === 'same-origin' ||
+      (origin && origin === reqOrigin)
+    if (!csrfSafe) {
+      return c.json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'CSRF validation failed for cookie-authenticated request.',
+          details: []
+        }
+      }, 403)
+    }
+  }
+
+  return await next()
 }
 
 export const authMiddleware = adminAuth
