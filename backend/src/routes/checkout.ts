@@ -90,7 +90,7 @@ checkoutRouter.post('/', async (c) => {
     const rawPhone = body.customer_phone ?? body.customerPhone ?? body.phone
     const customerPhone = typeof rawPhone === 'string' ? rawPhone.trim().slice(0, 50) : ''
     const rawNotes = body.notes ?? body.message ?? body.clientNotes
-    const notes = typeof rawNotes === 'string' ? rawNotes.trim().slice(0, 1000) : ''
+    const notes = typeof rawNotes === 'string' ? rawNotes.trim().slice(0, 2000) : ''
     const rawAttendees = body.attendees ?? body.party_size ?? body.people
     const attendees = Number.isInteger(Number(rawAttendees)) && Number(rawAttendees) > 0 ? Number(rawAttendees) : 1
     const idempotencyKey = body.idempotencyKey ?? body.idempotency_key

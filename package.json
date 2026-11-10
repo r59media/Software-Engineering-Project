@@ -1,0 +1,13 @@
+{
+  "name": "r59-portfolio-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monorepo for Photographer Portfolio (Frontend, Admin, and Cloudflare Workers Backend)",
+  "scripts": {
+    "build:frontend": "pnpm --dir frontend run build",
+    "build:backend": "pnpm --dir backend run build",
+    "build": "pnpm run build:frontend && pnpm run build:backend",
+    "typecheck": "pnpm --dir frontend run typecheck && pnpm --dir backend run typecheck",
+    "test": "pnpm --dir backend run test"
+  }
+}
