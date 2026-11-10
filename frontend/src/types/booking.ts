@@ -74,6 +74,7 @@ export interface BookingYourInfoProps {
   people: number
   dateTime: BookingDateTimeSelection
   initialInfo?: BookingCustomerInfo | null
+  onDraftChange?: (info: BookingCustomerInfo) => void
   onSubmit: (info: BookingCustomerInfo) => void | Promise<void>
   onBack: () => void
   isSubmitting?: boolean

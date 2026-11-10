@@ -61,6 +61,7 @@ export interface CheckoutPayload {
 
 export interface ApiResponse<T = unknown> {
   status: 'success' | 'error'
+  retryAfterSeconds?: number
   data?: T
   message?: string
   code?: string
@@ -303,19 +304,29 @@ export async function fetchAvailableSlots(signal?: AbortSignal): Promise<Schedul
 }
 
 export async function submitContactLead(payload: ContactLeadPayload): Promise<ApiResponse<{ id?: number }>> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 15000)
   try {
     const res = await fetch(`${API_BASE}/contact`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(payload),
+      signal: controller.signal,
+      cache: 'no-store',
     })
-    return (await res.json()) as ApiResponse<{ id?: number }>
-  } catch {
-    return {
+    const retry = Number(res.headers.get('Retry-After'))
+    if (res.status === 429) return { status: 'error', code: 'TOO_MANY_REQUESTS', retryAfterSeconds: Number.isFinite(retry) && retry > 0 ? Math.min(retry, 3600) : 60, message: 'Too many requests. Please wait before trying again. Your details are still here.' }
+    const body = await res.json() as Record<string, unknown>
+    if (!res.ok || body.status !== 'success') return {
       status: 'error',
-      code: 'NETWORK_ERROR',
-      message: 'Unable to complete request. Please try again.',
+      code: res.status === 400 || res.status === 422 ? 'VALIDATION_FAILED' : 'REQUEST_FAILED',
+      message: res.status === 400 || res.status === 422 ? 'Your details could not be accepted. Please check the fields and try again.' : 'We couldn’t send your request. Your details are still here. Please try again.',
     }
+    return { status: 'success', id: typeof body.id === 'number' ? body.id : undefined }
+  } catch {
+    return { status: 'error', code: 'NETWORK_ERROR', message: 'The request could not be confirmed. Your details are still here. Please check your connection before retrying.' }
+  } finally {
+    clearTimeout(timeout)
   }
 }
 

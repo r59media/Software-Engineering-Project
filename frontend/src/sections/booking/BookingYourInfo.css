@@ -275,3 +275,60 @@
     color: #888888;
   }
 }
+
+.booking-your-info__main-title, .booking-your-info__card-title { font-family: var(--font-title); font-weight: 700; }
+.booking-your-info__input, .booking-your-info__textarea { border: 0; background: var(--color-black-10); border-radius: var(--radius-control); font-size: 16px; min-width: 0; width: 100%; color: var(--color-brand-black); box-shadow: none; }
+.booking-your-info__input { min-height: 44px; }
+.booking-your-info__input:focus, .booking-your-info__textarea:focus { background: var(--color-black-10); outline: 2px solid var(--color-brand-red); outline-offset: 2px; }
+.booking-your-info__input--error { border: 0; background: var(--color-black-10); }
+.booking-your-info__label { font-size: 16px; font-weight: 700; }
+.booking-your-info__field { min-width: 0; }
+.booking-your-info__note { color: var(--color-gray); font-weight: 300; margin-top: 4px; }
+.booking-your-info__privacy { margin-top: 16px; }
+.booking-your-info__subnav { justify-content: flex-end; }
+@media (max-width: 767px) {
+  .booking-your-info__subnav { align-items: flex-start; }
+  .booking-your-info__row--names { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .booking-your-info__card { padding: 12px; border-radius: 7px; box-shadow: none; }
+  .booking-your-info__card-header { gap: 8px; margin-bottom: 12px; }
+  .booking-your-info__card-title { font-size: 18px; line-height: 24px; }
+  .booking-your-info__required-notice { white-space: nowrap; }
+  .booking-your-info__textarea { min-height: 72px; font-size: 12px; }
+  .booking-your-info__field--full { margin-bottom: 0; }
+}
+
+.booking-your-info { --booking-column-gap: clamp(16px, 3.32vw, 48px); }
+.booking-your-info__grid { grid-template-columns: minmax(0, 1fr) minmax(0, calc((100% - var(--booking-column-gap) * 2) * 365 / 1189)); gap: var(--booking-column-gap); }
+.booking-your-info__form-col, .booking-your-info__ticket-col { min-width: 0; }
+.booking-your-info__subnav { align-items: center; gap: 1rem; margin-bottom: 8px; }
+.booking-your-info__subnav-text { margin-right: auto; }
+.booking-your-info__subnav-title { font-family: var(--font-title); font-size: 24px; line-height: 32px; }
+.booking-your-info__subnav-desc { font-size: 16px; line-height: 24px; color: var(--color-gray); }
+@media (min-width: 768px) {
+  .booking-your-info .booking-progress { margin: 16px 0; }
+  .booking-your-info__ticket-col .booking-session-card__continue-btn--mobile { display: flex; align-items: center; justify-content: center; width: min(300px, 100%); min-height: 42px; margin: 24px auto 0; padding: 8px 16px; border: 0; border-radius: var(--radius-control); background: var(--color-brand-red); color: var(--color-brand-white); cursor: pointer; }
+  .booking-your-info__ticket-col .booking-session-card__continue-btn--mobile:disabled { background: var(--color-black-10); color: var(--color-gray); cursor: not-allowed; }
+}
+@media (min-width: 768px) and (max-width: 1100px) {
+  .booking-your-info__grid { grid-template-columns: minmax(0, 1fr) 365px; gap: 24px; }
+  .booking-your-info__row { grid-template-columns: minmax(0, 1fr); }
+  .booking-your-info__row--names { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+@media (max-width: 767px) {
+  .booking-your-info__grid { display: block; }
+  .booking-your-info__subnav-text { display: none; }
+  .booking-your-info__subnav { align-items: flex-start; margin-bottom: 1rem; }
+}
+@media (hover: hover) and (pointer: fine) {
+  .booking-your-info__ticket-col .booking-session-card__continue-btn--mobile:hover:not(:disabled) { background: var(--color-brand-black); }
+}
+
+@media (min-width: 768px) {
+  .booking-your-info__grid { grid-template-rows: minmax(460px, auto) auto; row-gap: 24px; align-items: stretch; }
+  .booking-your-info__form-col, .booking-your-info__ticket-col, .booking-your-info__ticket-col .booking-session-wrapper { display: contents; }
+  .booking-your-info__card { grid-column: 1; grid-row: 1; }
+  .booking-your-info__ticket-col .booking-session-card { grid-column: 2; grid-row: 1; height: 100%; }
+  .booking-your-info__ticket-col .booking-session-card__body { height: 100%; }
+  .booking-your-info__next-section { grid-column: 1; grid-row: 2; margin-top: 0; }
+  .booking-your-info__ticket-col .booking-session-card__continue-btn--mobile { grid-column: 2; grid-row: 2; justify-self: center; align-self: start; margin-top: 0; }
+}
