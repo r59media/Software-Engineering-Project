@@ -101,8 +101,15 @@ export interface BookingSectionProps {
 }
 
 export interface BookingReviewDraft {
+  photoPermissions: BookingPhotoPermissions
+  photoPermissionTextVersion: string
   serviceId: string
   people: number
   dateTime: BookingDateTimeSelection
   customerInfo: BookingCustomerInfo
+}
+
+export interface BookingPhotoPermissions {
+  websitePortfolio: boolean
+  socialMedia: boolean
 }

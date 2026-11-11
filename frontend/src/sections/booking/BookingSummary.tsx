@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { previewBookingDepositPercent } from '../../config/booking'
-import type { BookingCustomerInfo, BookingDateTimeSelection, BookingReviewDraft, BookingService } from '../../types/booking'
+import type { BookingPhotoPermissions, BookingCustomerInfo, BookingDateTimeSelection, BookingReviewDraft, BookingService } from '../../types/booking'
 import { BookingProgressBar } from './BookingProgressBar'
 import './BookingSection.css'
 
@@ -8,12 +8,14 @@ interface BookingSummaryProps {
   service: BookingService
   people: number
   dateTime: BookingDateTimeSelection
+  photoPermissions: BookingPhotoPermissions
+  onPhotoPermissionsChange: (permissions: BookingPhotoPermissions) => void
   customerInfo: BookingCustomerInfo
   onEdit: (step: 'services' | 'datetime' | 'info') => void
   onProceedToDeposit?: (draft: BookingReviewDraft) => void | Promise<void>
 }
 
-export function BookingSummary({ service, people, dateTime, customerInfo, onEdit, onProceedToDeposit }: BookingSummaryProps) {
+export function BookingSummary({ service, people, dateTime, customerInfo, photoPermissions, onPhotoPermissionsChange, onEdit, onProceedToDeposit }: BookingSummaryProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lock = useRef(false)
@@ -24,7 +26,7 @@ export function BookingSummary({ service, people, dateTime, customerInfo, onEdit
     lock.current = true
     setBusy(true)
     setError(null)
-    try { await onProceedToDeposit({ serviceId: service.id, people, dateTime, customerInfo }) }
+    try { await onProceedToDeposit({ serviceId: service.id, people, dateTime, customerInfo, photoPermissions: { ...photoPermissions }, photoPermissionTextVersion: '2026-11-11-v1' }) }
     catch { setError('We couldn’t continue to the deposit. Your details are still here. Please try again.') }
     finally { lock.current = false; setBusy(false) }
   }
@@ -57,6 +59,13 @@ export function BookingSummary({ service, people, dateTime, customerInfo, onEdit
         </section>
         {customerInfo.notes && <section className="booking-review__block booking-review__notes"><div className="booking-review__block-heading"><h4>Your notes</h4><button className="booking-review__edit" disabled={busy} onClick={() => onEdit('info')}>Edit notes</button></div><p className="booking-review__detail-line">{customerInfo.notes}</p></section>}
       </div>
+      <fieldset className="booking-review__permissions" disabled={busy} aria-describedby="photo-permissions-help">
+        <legend>Photo sharing permission <span>— Optional</span></legend>
+        <p id="photo-permissions-help">Choose where R59MEDIA may share photos of you from this session. Leaving these unchecked will not affect your booking.</p>
+        <label><input type="checkbox" checked={photoPermissions.websitePortfolio} onChange={event => onPhotoPermissionsChange({ ...photoPermissions, websitePortfolio: event.target.checked })} /><span>I allow R59MEDIA to feature photos of me from this session on its website and portfolio.</span></label>
+        <label><input type="checkbox" checked={photoPermissions.socialMedia} onChange={event => onPhotoPermissionsChange({ ...photoPermissions, socialMedia: event.target.checked })} /><span>I allow R59MEDIA to share photos of me from this session on its social media accounts.</span></label>
+        <p>These permissions do not include paid advertising, sale, or licensing to third parties.</p>
+      </fieldset>
       <footer className="booking-review__footer">
         <div className="booking-review__price"><span>SESSION BASE PRICE</span><strong>{price}</strong><div><b>{previewBookingDepositPercent}% deposit to reserve</b><p>Review your final total and payment details at the deposit step.</p></div></div>
       </footer>
