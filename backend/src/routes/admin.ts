@@ -2,15 +2,12 @@ import { Hono, Context } from 'hono'
 import type { Bindings } from '../index'
 import {
   adminAuth,
-  timingSafeEqual,
   createSessionToken,
   extractSessionToken,
   getSigningSecret,
   verifySessionToken,
   revokeSessionToken,
   revokeTokenInDb,
-  hashPassword,
-  verifyPassword,
   verifyGoogleIdToken,
   getTrustedClientIp,
   hasForbiddenPaymentFields,
@@ -62,10 +59,9 @@ export async function ensureSchemaReady(db: D1Database): Promise<void> {
       'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)'
     ).run()
 
-    // Ensure Login_Attempts and Revoked_Sessions security tables exist (Findings 2 & 3)
-    await db.prepare(
-      'CREATE TABLE IF NOT EXISTS Login_Attempts (bucket TEXT PRIMARY KEY, attempts INTEGER NOT NULL, window_start INTEGER NOT NULL)'
-    ).run().catch(() => {})
+    // Cleanup legacy admin password data and deprecated tables
+    await db.prepare("DELETE FROM Admin_Settings WHERE setting_key IN ('admin_password_hash', 'password_reset', 'recovery_email')").run().catch(() => {})
+    await db.prepare("DROP TABLE IF EXISTS Login_Attempts").run().catch(() => {})
 
     await db.prepare(
       'CREATE TABLE IF NOT EXISTS Revoked_Sessions (signature TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)'
@@ -341,98 +337,9 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
 // Re-export rate limiting helpers from middleware/auth
 export { normalizeIpBucket, checkAndRecordLoginAttempt, clearLoginAttempts }
 
-// ── Admin_Settings helpers (account keys) ────────────────────────
-async function readSetting(db: D1Database | undefined, key: string): Promise<string | null> {
-  if (!db) return null
-  const row = await db.prepare(
-    'SELECT setting_value FROM Admin_Settings WHERE setting_key = ?'
-  ).bind(key).first<{ setting_value: string }>()
-  return row ? row.setting_value : null
-}
-
-async function writeSetting(db: D1Database, key: string, value: string): Promise<void> {
-  await db.prepare(
-    'INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value'
-  ).bind(key, value).run()
-}
-
-async function deleteSetting(db: D1Database, key: string): Promise<void> {
-  await db.prepare('DELETE FROM Admin_Settings WHERE setting_key = ?').bind(key).run()
-}
-
-/** The PBKDF2 hash stored in D1, else the ADMIN_SECRET (legacy plain secret). */
-async function readStoredPasswordSource(env: Bindings): Promise<string> {
-  let source = env.ADMIN_SECRET || ''
-  try {
-    const stored = await readSetting(env.DB, 'admin_password_hash')
-    if (stored && stored.startsWith('pbkdf2_sha256$')) source = stored
-  } catch {}
-  return source
-}
-
-const RECOVERY_EMAIL_KEY = 'recovery_email'
-const PASSWORD_RESET_KEY = 'password_reset'
-const RESET_TOKEN_TTL_MS = 30 * 60 * 1000
-const PASSWORD_MIN = 8
-const PASSWORD_MAX = 128
-// Same rule as the admin UI (Settings, Recovery email)
-const RECOVERY_EMAIL_REGEX = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/
-const RECOVERY_EMAIL_MAX = 254
-const FORGOT_PASSWORD_MESSAGE = 'If that address is the recovery email, a reset link has been sent.'
-const INVALID_RESET_TOKEN_MESSAGE = 'This reset link is invalid or has expired. Request a new one.'
-
-async function readRecoveryEmail(db: D1Database | undefined): Promise<string> {
-  try {
-    return (await readSetting(db, RECOVERY_EMAIL_KEY)) || ''
-  } catch {
-    return ''
-  }
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
-  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
-function randomTokenHex(bytes = 32): string {
-  const buf = new Uint8Array(bytes)
-  crypto.getRandomValues(buf)
-  return [...buf].map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
 function noStore(c: Context): void {
   c.header('Cache-Control', 'no-store')
   c.header('Pragma', 'no-cache')
-}
-
-function tooManyRequests(c: Context, message: string) {
-  c.header('Retry-After', '60')
-  return c.json({ error: { code: 'TOO_MANY_REQUESTS', message, details: [] } }, 429)
-}
-
-function forbiddenPayloadResponse(c: Context) {
-  return c.json({
-    error: {
-      code: 'FORBIDDEN_PAYLOAD',
-      message: 'Request contains fields that are not accepted.',
-      details: []
-    }
-  }, 400)
-}
-
-function passwordLengthError(c: Context, field: string, value: string) {
-  if (value.length >= PASSWORD_MIN && value.length <= PASSWORD_MAX) return null
-  const tooShort = value.length < PASSWORD_MIN
-  const message = tooShort
-    ? `New password must be at least ${PASSWORD_MIN} characters long.`
-    : `New password must be at most ${PASSWORD_MAX} characters.`
-  return c.json({
-    error: {
-      code: 'VALIDATION_FAILED',
-      message,
-      details: [{ field, message, code: tooShort ? 'TOO_SHORT' : 'TOO_LONG' }]
-    }
-  }, 400)
 }
 
 // ── Admin Google Sign-In Authentication ──────────────────────────
@@ -637,8 +544,7 @@ adminRouter.put('/password', (c) => {
 adminRouter.get('/account', async (c) => {
   noStore(c)
   try {
-    const recovery = await readRecoveryEmail(c.env.DB)
-    return c.json({ recovery_email: recovery, email_configured: isEmailConfigured(c.env) })
+    return c.json({ recovery_email: '', email_configured: isEmailConfigured(c.env) })
   } catch {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not load account settings.', details: [] } }, 500)
   }

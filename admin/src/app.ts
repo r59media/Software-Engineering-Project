@@ -676,10 +676,10 @@
         }
         await initDashboard();
       } else {
-        setLoginStatus('Access denied: Account not authorized for admin access.');
+        setLoginStatus(res?.error || 'Access denied: Account not authorized for admin access.');
       }
-    } catch {
-      setLoginStatus('Access denied: Account not authorized for admin access.');
+    } catch (err) {
+      setLoginStatus(err?.message || 'Access denied: Account not authorized for admin access.');
     }
   }
 
