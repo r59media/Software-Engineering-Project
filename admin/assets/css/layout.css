@@ -9,7 +9,17 @@
 .app > main{flex:1;display:flex;flex-direction:column;min-width:0}
 .app > main > .view{flex:1 0 auto}
 /* nothing of the workspace shows before the session is known */
-body:not(.authenticated) .app{visibility:hidden}
+body:not(.authenticated) .app,
+body.is-login .app {
+  display: none;
+}
+
+body:not(.authenticated),
+body.is-login {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
 
 /* ================= Top bar ================= */
 .top{position:sticky;top:0;z-index:30;background:var(--page-bar);color:var(--ink);border-bottom:1px solid var(--rule)}
@@ -145,11 +155,13 @@ body:not(.authenticated) .app{visibility:hidden}
 /* ================= Login ================= */
 .login{display:none}
 .login.open{
-  position:fixed;inset:0;z-index:100;overflow:auto;
-  display:grid;place-items:center;padding:var(--s6) 16px;
+  position:fixed;inset:0;z-index:100;
+  height:100vh;max-height:100vh;overflow:hidden;
+  display:flex;align-items:center;justify-content:center;
+  padding:var(--s6) 16px;
   background:var(--page-bg);color:var(--ink);
 }
-.login.open::before{content:"";position:absolute;z-index:-1;inset:0 0 auto;height:72rem;pointer-events:none;background:var(--glow) var(--glow-pos) / var(--glow-size) no-repeat;opacity:var(--glow-o)}
+.login.open::before{content:"";position:absolute;z-index:-1;inset:0;height:100%;pointer-events:none;background:var(--glow) var(--glow-pos) / var(--glow-size) no-repeat;opacity:var(--glow-o)}
 .login .dialog{position:relative;width:min(26rem,100%)}
 .login .dialog__inner{display:grid;gap:var(--s4)}
 .login .logo{width:4.5rem}
@@ -159,3 +171,35 @@ body:not(.authenticated) .app{visibility:hidden}
 .login .link-btn{justify-self:center}
 .login-notice{display:flex;gap:var(--s2);align-items:flex-start;margin:0;font-size:.875rem;line-height:1.45;color:var(--ink)}
 .login-notice .ico{stroke-width:2;margin-top:.15rem}
+
+.login__google-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s3) 0 var(--s2);
+  width: 100%;
+}
+.login__google-btn {
+  display: flex;
+  justify-content: center;
+  min-height: 44px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.login__google-btn iframe {
+  color-scheme: dark;
+  border-radius: var(--radius);
+}
+.login__status {
+  margin-top: var(--s2);
+  font: 400 .875rem/1.4 "Inter", system-ui, sans-serif;
+  color: var(--error-ink, #ff6b6b);
+  text-align: center;
+  max-width: 280px;
+  word-break: break-word;
+}
+.login__status:empty {
+  display: none;
+}

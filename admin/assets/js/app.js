@@ -45,6 +45,7 @@
     /* ---------- Shell ---------- */
     function setWorkspaceAuthenticated(isAuth) {
         document.body.classList.toggle('authenticated', Boolean(isAuth));
+        document.body.classList.toggle('is-login', !isAuth);
         const appEl = $('.app');
         if (appEl) {
             if (isAuth) {
@@ -694,11 +695,12 @@
                 if (targetBtn) {
                     targetBtn.innerHTML = '';
                     google.accounts.id.renderButton(targetBtn, {
-                        theme: 'filled_blue',
+                        theme: 'filled_black',
                         size: 'large',
                         text: 'signin_with',
                         shape: 'rectangular',
-                        width: 280
+                        width: 280,
+                        logo_alignment: 'left'
                     });
                 }
             }

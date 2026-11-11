@@ -33,7 +33,7 @@
   <!-- REGION:head END -->
 </head>
 
-<body>
+<body class="is-login">
 
   <!-- REGION:sprite START -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
@@ -1199,9 +1199,9 @@
           <h1 id="loginTitle">Sign in</h1>
           <p class="hint" id="loginHint">Sign in with your Google administrator account.</p>
         </div>
-        <div id="googleSignInContainer" class="text-center py-4">
-          <div id="googleSignInBtn" class="flex justify-center"></div>
-          <div id="loginStatus" class="mt-3 text-sm text-red-500 hidden"></div>
+        <div id="googleSignInContainer" class="login__google-wrap">
+          <div id="googleSignInBtn" class="login__google-btn"></div>
+          <div id="loginStatus" class="login__status" role="alert" aria-live="polite"></div>
         </div>
       </div>
     </div>
