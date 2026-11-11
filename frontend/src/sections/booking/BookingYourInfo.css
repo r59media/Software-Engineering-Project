@@ -327,7 +327,8 @@
   .booking-your-info__grid { grid-template-rows: minmax(460px, auto) auto; row-gap: 24px; align-items: stretch; }
   .booking-your-info__form-col, .booking-your-info__ticket-col, .booking-your-info__ticket-col .booking-session-wrapper { display: contents; }
   .booking-your-info__card { grid-column: 1; grid-row: 1; }
-  .booking-your-info__ticket-col .booking-session-card { grid-column: 2; grid-row: 1; height: 100%; }
+  .booking-your-info__ticket-col .booking-session-card-frame { grid-column: 2; grid-row: 1; min-width: 0; }
+  .booking-your-info__ticket-col .booking-session-card { height: 100%; }
   .booking-your-info__ticket-col .booking-session-card__body { height: 100%; }
   .booking-your-info__next-section { grid-column: 1; grid-row: 2; margin-top: 0; }
   .booking-your-info__ticket-col .booking-session-card__continue-btn--mobile { grid-column: 2; grid-row: 2; justify-self: center; align-self: start; margin-top: 0; }

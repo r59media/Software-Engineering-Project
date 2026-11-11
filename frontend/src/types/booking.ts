@@ -49,6 +49,7 @@ export interface BookingProgressBarProps {
 }
 
 export interface BookingSessionCardProps {
+  hideDateHighlight?: boolean
   service: BookingService
   people: number
   dateTime?: BookingDateTimeSelection | null
@@ -92,8 +93,16 @@ export interface BookingServicesProps {
 }
 
 export interface BookingSectionProps {
+  onProceedToDeposit?: (draft: BookingReviewDraft) => void | Promise<void>
   services?: readonly BookingService[]
   status?: 'ready' | 'loading' | 'error'
   onRetry?: () => void
   inquiryHref?: string
+}
+
+export interface BookingReviewDraft {
+  serviceId: string
+  people: number
+  dateTime: BookingDateTimeSelection
+  customerInfo: BookingCustomerInfo
 }
