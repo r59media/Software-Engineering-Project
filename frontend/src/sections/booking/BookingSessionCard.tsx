@@ -58,7 +58,7 @@ export function BookingSessionCard({
     const { left, top, width, height } = currentTarget.getBoundingClientRect()
     const x = Math.max(-1, Math.min(1, (clientX - left) / width * 2 - 1))
     const y = Math.max(-1, Math.min(1, (clientY - top) / height * 2 - 1))
-    const angle = Math.min(4, Math.hypot(x, y) * 4)
+    const angle = Math.min(8, Math.hypot(x, y) * 8)
     currentTarget.style.setProperty('--ticket-rotation', angle ? `${-y} ${x} 0 ${angle}deg` : 'none')
   }
 

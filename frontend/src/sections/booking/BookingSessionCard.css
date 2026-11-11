@@ -106,7 +106,7 @@
 @media (prefers-reduced-motion: reduce) { .booking-session-card__datetime-block { transition: none; } }
 
 @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
-  .booking-session-card-frame { perspective: 1000px; }
+  .booking-session-card-frame { perspective: 800px; }
   .booking-session-card-frame > .booking-session-card {
     rotate: var(--ticket-rotation, 1 0 0 0deg);
     transition: rotate 180ms ease-out;
