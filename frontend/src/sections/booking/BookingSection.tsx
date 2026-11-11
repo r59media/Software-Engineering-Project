@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useMemo, useState } from 'react'
 import { previewBookingServices } from '../../config/booking'
 import type {
   BookingCustomerInfo,
+  BookingPhotoPermissions,
   BookingDateTimeSelection,
   BookingSectionProps,
   BookingStep,
@@ -82,6 +83,7 @@ function BookingFlow({
   const [attendees, setAttendees] = useState(1)
   const [dateTime, setDateTime] = useState<BookingDateTimeSelection | null>(null)
   const [customerInfo, setCustomerInfo] = useState<BookingCustomerInfo | null>(null)
+  const [photoPermissions, setPhotoPermissions] = useState<BookingPhotoPermissions>({ websitePortfolio: false, socialMedia: false })
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   // Find the selected service
@@ -196,6 +198,8 @@ function BookingFlow({
           people={attendees}
           dateTime={dateTime}
           customerInfo={customerInfo}
+          photoPermissions={photoPermissions}
+          onPhotoPermissionsChange={setPhotoPermissions}
           onEdit={nextStep => {
             setStep(nextStep)
             document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
