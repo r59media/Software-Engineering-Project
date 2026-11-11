@@ -21,9 +21,208 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return mismatch === 0
 }
 
+// ── Google ID Token Verification (Web Crypto RS256 + JWKS cache) ──
+export interface GoogleJwksKey {
+  kty: string
+  alg: string
+  use?: string
+  kid: string
+  n: string
+  e: string
+  [key: string]: unknown
+}
+
+let cachedJwks: GoogleJwksKey[] | null = null
+let jwksCachedAt = 0
+let jwksTtlMs = 3600 * 1000
+
+export async function getGoogleJwks(forceRefresh = false): Promise<GoogleJwksKey[]> {
+  const now = Date.now()
+  if (!forceRefresh && cachedJwks && now - jwksCachedAt < jwksTtlMs) {
+    return cachedJwks
+  }
+  const res = await fetch('https://www.googleapis.com/oauth2/v3/certs')
+  if (!res.ok) {
+    throw new Error(`Failed to fetch Google JWKS: ${res.statusText}`)
+  }
+  const cacheControl = res.headers.get('cache-control')
+  if (cacheControl) {
+    const match = cacheControl.match(/max-age=(\d+)/i)
+    if (match) {
+      jwksTtlMs = Math.max(60, parseInt(match[1], 10)) * 1000
+    }
+  }
+  const data = (await res.json()) as { keys?: GoogleJwksKey[] }
+  if (!data || !Array.isArray(data.keys)) {
+    throw new Error('Invalid Google JWKS response: missing keys array')
+  }
+  cachedJwks = data.keys
+  jwksCachedAt = now
+  return cachedJwks
+}
+
+function base64UrlDecode(str: string): Uint8Array {
+  let base64 = str.replace(/-/g, '+').replace(/_/g, '/')
+  const pad = base64.length % 4
+  if (pad === 2) base64 += '=='
+  else if (pad === 3) base64 += '='
+  else if (pad === 1) throw new Error('Illegal base64url string')
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
+function base64UrlDecodeText(str: string): string {
+  return new TextDecoder().decode(base64UrlDecode(str))
+}
+
+/**
+ * Verifies a Google ID token against Google's public JWKS using Web Crypto (RS256).
+ * Enforces single-account authorized email check in constant time.
+ */
+export async function verifyGoogleIdToken(
+  idToken: string,
+  clientId?: string,
+  authorizedEmail?: string,
+  options?: { mockKeys?: GoogleJwksKey[] }
+): Promise<{ success: true; email: string } | { success: false; error: string }> {
+  try {
+    if (!idToken || typeof idToken !== 'string') {
+      return { success: false, error: 'Missing or invalid ID token' }
+    }
+
+    const parts = idToken.split('.')
+    if (parts.length !== 3) {
+      return { success: false, error: 'Malformed ID token: expected 3 dot-separated segments' }
+    }
+
+    const [headerB64, payloadB64, signatureB64] = parts
+
+    let header: { alg?: string; kid?: string; typ?: string }
+    let payload: {
+      iss?: string
+      aud?: string
+      exp?: number
+      email?: string
+      email_verified?: boolean | string
+      [key: string]: unknown
+    }
+
+    try {
+      header = JSON.parse(base64UrlDecodeText(headerB64))
+      payload = JSON.parse(base64UrlDecodeText(payloadB64))
+    } catch {
+      return { success: false, error: 'Failed to decode token header or payload' }
+    }
+
+    if (!header || header.alg !== 'RS256' || !header.kid) {
+      return { success: false, error: 'Invalid token header: expected RS256 algorithm with kid' }
+    }
+
+    // 1. Fetch & match public key from JWKS
+    let keys: GoogleJwksKey[]
+    if (options?.mockKeys) {
+      keys = options.mockKeys
+    } else {
+      keys = await getGoogleJwks()
+    }
+
+    let jwk = keys.find(k => k.kid === header.kid)
+    if (!jwk && !options?.mockKeys) {
+      keys = await getGoogleJwks(true)
+      jwk = keys.find(k => k.kid === header.kid)
+    }
+
+    if (!jwk) {
+      return { success: false, error: `No matching public key found for kid "${header.kid}"` }
+    }
+
+    // 2. Import RSA public key and verify signature with Web Crypto
+    const cryptoKey = await crypto.subtle.importKey(
+      'jwk',
+      {
+        kty: jwk.kty,
+        n: jwk.n,
+        e: jwk.e,
+        alg: 'RS256',
+        ext: true
+      },
+      {
+        name: 'RSASSA-PKCS1-v1_5',
+        hash: 'SHA-256'
+      },
+      false,
+      ['verify']
+    )
+
+    const signedData = new TextEncoder().encode(`${headerB64}.${payloadB64}`)
+    const signatureBytes = base64UrlDecode(signatureB64)
+    const isSignatureValid = await crypto.subtle.verify(
+      'RSASSA-PKCS1-v1_5',
+      cryptoKey,
+      signatureBytes,
+      signedData
+    )
+
+    if (!isSignatureValid) {
+      return { success: false, error: 'Invalid ID token signature' }
+    }
+
+    // 3. Verify claims
+    const validIssuers = ['accounts.google.com', 'https://accounts.google.com']
+    if (!payload.iss || !validIssuers.includes(payload.iss)) {
+      return { success: false, error: `Invalid issuer: ${payload.iss}` }
+    }
+
+    if (clientId && payload.aud !== clientId) {
+      return { success: false, error: `Audience mismatch: expected ${clientId}, got ${payload.aud}` }
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000)
+    if (!payload.exp || typeof payload.exp !== 'number' || payload.exp <= nowSeconds) {
+      return { success: false, error: 'ID token has expired' }
+    }
+
+    const isEmailVerified = payload.email_verified === true || payload.email_verified === 'true'
+    if (!isEmailVerified) {
+      return { success: false, error: 'Google account email is not verified' }
+    }
+
+    if (!payload.email || typeof payload.email !== 'string') {
+      return { success: false, error: 'ID token missing email claim' }
+    }
+
+    // 4. Enforce single-account check using timingSafeEqual
+    const targetEmail = (authorizedEmail || 'r59mediatesting@gmail.com').trim().toLowerCase()
+    const tokenEmail = payload.email.trim().toLowerCase()
+    if (!timingSafeEqual(tokenEmail, targetEmail)) {
+      return { success: false, error: `Unauthorized email address: ${payload.email}` }
+    }
+
+    return { success: true, email: payload.email }
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Token verification failed' }
+  }
+}
+
+/**
+ * @deprecated Legacy PBKDF2 prefix. Replaced by Google Sign-In.
+ */
 const PBKDF2_PREFIX = 'pbkdf2_sha256'
+/**
+ * @deprecated Legacy PBKDF2 iterations. Replaced by Google Sign-In.
+ */
 const PBKDF2_ITERATIONS = 100_000
+/**
+ * @deprecated Legacy PBKDF2 key bits. Replaced by Google Sign-In.
+ */
 const PBKDF2_KEY_BITS = 256
+/**
+ * @deprecated Legacy salt bytes. Replaced by Google Sign-In.
+ */
 const SALT_BYTES = 16
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -39,6 +238,9 @@ function hexToBytes(hex: string): Uint8Array | null {
   return out
 }
 
+/**
+ * @deprecated Legacy PBKDF2 derivation. Replaced by Google Sign-In.
+ */
 async function derivePbkdf2Hex(password: string, salt: Uint8Array, iterations: number): Promise<string> {
   const encoder = new TextEncoder()
   const baseKey = await crypto.subtle.importKey(
@@ -62,8 +264,7 @@ async function derivePbkdf2Hex(password: string, salt: Uint8Array, iterations: n
 }
 
 /**
- * Generates a salted PBKDF2-SHA256 password hash:
- * Format: pbkdf2_sha256$100000$<16-byte-random-salt-hex>$<32-byte-hash-hex>
+ * @deprecated Legacy PBKDF2 password hashing. Replaced by Google Sign-In.
  */
 export async function hashPassword(password: string, iterations: number = PBKDF2_ITERATIONS): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES))
@@ -72,9 +273,7 @@ export async function hashPassword(password: string, iterations: number = PBKDF2
 }
 
 /**
- * Verifies a candidate password against either:
- * 1. A salted PBKDF2-SHA256 hash (`pbkdf2_sha256$<iterations>$<saltHex>$<hashHex>`), OR
- * 2. A legacy secret (for seamless first-login migration, after which it is upgraded to a salted hash in D1).
+ * @deprecated Legacy PBKDF2 password verification. Replaced by Google Sign-In.
  */
 export async function verifyPassword(
   candidatePassword: string,
@@ -98,7 +297,7 @@ export async function verifyPassword(
       needsHashUpgrade: false
     }
   }
-  // Legacy raw secret comparison (constant-time) — triggers automatic upgrade to salted PBKDF2 hash in D1
+  // Legacy raw secret comparison (constant-time)
   const matches = timingSafeEqual(candidatePassword, storedSecretOrHash)
   return { matches, needsHashUpgrade: matches }
 }
@@ -115,8 +314,24 @@ export function getSigningSecret(env?: Bindings): string | null {
 
 /**
  * Creates an HMAC-SHA256 signed session token containing the authenticated email, issuedAt timestamp, and expiration.
+ * Supports arguments in either order: (secret, email) or (email, secret).
  */
-export async function createSessionToken(secret: string, email: string): Promise<string> {
+export async function createSessionToken(arg1: string, arg2: string): Promise<string> {
+  let secret: string
+  let email: string
+  if (arg1.includes('@')) {
+    email = arg1
+    secret = arg2
+  } else if (arg2.includes('@')) {
+    secret = arg1
+    email = arg2
+  } else if (arg2.length >= 32 && arg1.length < 32) {
+    email = arg1
+    secret = arg2
+  } else {
+    secret = arg1
+    email = arg2
+  }
   const now = Date.now()
   const expiry = now + SESSION_TTL_MS
   const payload = `${email}:${now}:${expiry}`
@@ -506,7 +721,7 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }, 401)
   }
 
-  const adminEmail = c.env.ADMIN_EMAIL ? c.env.ADMIN_EMAIL.trim().toLowerCase() : ''
+  const adminEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
   const sessionEmail = session.email ? session.email.trim().toLowerCase() : ''
   if (!adminEmail || !sessionEmail || !timingSafeEqual(sessionEmail, adminEmail)) {
     return c.json({

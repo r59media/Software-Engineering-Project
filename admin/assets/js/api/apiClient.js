@@ -138,16 +138,72 @@
             throw networkError;
         }
     }
-    async function login(email, password) {
-        const data = await request('/admin/login', {
-            method: 'POST',
-            body: { email, password }
-        });
-        if (data && (data.authenticated || data.status === 'success' || data.token)) {
-            setSessionHint(true);
-            return data;
+    /**
+     * Fetches the admin authentication configuration (e.g. Google Client ID).
+     * @returns {Promise<{ googleClientId?: string }>}
+     */
+    async function fetchAuthConfig() {
+        try {
+            const data = await request('/admin/auth-config', { suppressUnauthorized: true });
+            return {
+                googleClientId: data?.googleClientId || data?.google_client_id || data?.clientId
+            };
         }
-        throw new Error((data && (data.message || (data.error && data.error.message))) || 'Authentication failed: Invalid credentials.');
+        catch {
+            return {};
+        }
+    }
+    /**
+     * Authenticates with Google Identity Services ID token.
+     * @param {string} idToken
+     * @returns {Promise<{ ok: boolean; email?: string; error?: string }>}
+     */
+    async function loginWithGoogle(idToken) {
+        try {
+            const data = await request('/admin/google-login', {
+                method: 'POST',
+                body: { idToken },
+                suppressUnauthorized: true
+            });
+            if (data && (data.ok !== false && !data.error)) {
+                setSessionHint(true);
+                return { ok: true, email: data.email };
+            }
+            return {
+                ok: false,
+                error: (data && (data.error?.message || data.error || data.message)) || 'Authentication failed'
+            };
+        }
+        catch (err) {
+            return {
+                ok: false,
+                error: err?.data?.error?.message || err?.message || 'Authentication failed'
+            };
+        }
+    }
+    /** @deprecated Password-based login is deprecated in favor of loginWithGoogle */
+    async function login(email, password) {
+        throw new Error('Password login is deprecated. Please use Google Sign-In.');
+    }
+    /** @deprecated Deprecated in favor of Google Sign-In */
+    async function forgotPassword() {
+        throw new Error('Password reset is deprecated.');
+    }
+    /** @deprecated Deprecated in favor of Google Sign-In */
+    async function resetPassword() {
+        throw new Error('Password reset is deprecated.');
+    }
+    /** @deprecated Deprecated in favor of Google Sign-In */
+    async function checkPasswordResetAvailable() {
+        return { available: false };
+    }
+    /** @deprecated Deprecated in favor of Google Sign-In */
+    async function updatePassword() {
+        throw new Error('Password update is deprecated.');
+    }
+    /** @deprecated Deprecated in favor of Google Sign-In */
+    async function updateRecoveryEmail() {
+        throw new Error('Recovery email is deprecated.');
     }
     /**
      * Asks the server whether the session cookie is valid. Never fires `r59:unauthorized`.
@@ -211,7 +267,14 @@
         getAuthToken,
         setAuthToken,
         clearAuthToken,
+        fetchAuthConfig,
+        loginWithGoogle,
         login,
+        forgotPassword,
+        resetPassword,
+        checkPasswordResetAvailable,
+        updatePassword,
+        updateRecoveryEmail,
         verifySession,
         logout,
         request,

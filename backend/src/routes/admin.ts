@@ -11,6 +11,7 @@ import {
   revokeTokenInDb,
   hashPassword,
   verifyPassword,
+  verifyGoogleIdToken,
   getTrustedClientIp,
   hasForbiddenPaymentFields,
   normalizeIpBucket,
@@ -434,162 +435,19 @@ function passwordLengthError(c: Context, field: string, value: string) {
   }, 400)
 }
 
-// ── Public password reset (registered before adminAuth, like /login) ──
+// ── Admin Google Sign-In Authentication ──────────────────────────
 
-// GET: whether "Forgot password?" can work (email sending configured and a recovery email saved)
-adminRouter.get('/password-reset/available', async (c) => {
+// GET: Public authentication configuration for Google Sign-In
+adminRouter.get('/auth-config', (c) => {
   noStore(c)
-  try {
-    if (!isEmailConfigured(c.env)) return c.json({ available: false })
-    if (c.env.DB) await ensureSchemaReady(c.env.DB)
-    const recovery = await readRecoveryEmail(c.env.DB)
-    return c.json({ available: recovery !== '' })
-  } catch {
-    return c.json({ available: false })
-  }
+  return c.json({ googleClientId: c.env.GOOGLE_CLIENT_ID || '' })
 })
 
-// POST: request a reset link. Always the same answer, so it never reveals the recovery address.
-adminRouter.post('/forgot-password', async (c) => {
-  noStore(c)
-  if (c.env.DB) await ensureSchemaReady(c.env.DB)
-  const clientIp = getTrustedClientIp(c)
-  const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
-  if (!rateLimit.allowed) {
-    c.header('Retry-After', String(rateLimit.retryAfterSeconds))
-    return c.json({
-      error: {
-        code: 'TOO_MANY_REQUESTS',
-        message: 'Too many requests. Please wait before trying again.',
-        details: []
-      }
-    }, 429)
-  }
-
-  const generic = { success: true, status: 'success', message: FORGOT_PASSWORD_MESSAGE }
+// POST: Google Sign-In authentication via Google ID token
+adminRouter.post('/google-login', async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({}))
-    if (hasForbiddenPaymentFields(body)) return forbiddenPayloadResponse(c)
-    const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : ''
-    if (!email || email.length > RECOVERY_EMAIL_MAX || !c.env.DB || !isEmailConfigured(c.env)) {
-      return c.json(generic)
-    }
-
-    const recovery = await readRecoveryEmail(c.env.DB)
-    if (!recovery || !timingSafeEqual(email, recovery)) return c.json(generic)
-
-    const token = randomTokenHex(32)
-    const record = {
-      token_hash: await sha256Hex(token),
-      expires_at: Date.now() + RESET_TOKEN_TTL_MS,
-      used: false
-    }
-    await writeSetting(c.env.DB, PASSWORD_RESET_KEY, JSON.stringify(record)) // replaces any earlier link
-
-    // Fragment, not query: the token is never sent to a server or written to request logs
-    const link = `${new URL(c.req.url).origin}/admin/#reset=${token}`
-    const result = await sendEmail(c.env, {
-      to: recovery,
-      subject: 'Reset your R59 Media admin password',
-      text: [
-        'Someone asked to reset the password for the R59 Media admin.',
-        '',
-        'Open this link to choose a new password:',
-        link,
-        '',
-        'The link expires in 30 minutes and works once.',
-        "If you didn't ask for this, ignore this email. Your password stays the same."
-      ].join('\n')
-    })
-    if (!result.sent) console.warn('Password reset email not sent:', result.reason || 'unknown')
-    return c.json(generic)
-  } catch {
-    return c.json(generic)
-  }
-})
-
-// POST: set a new password with a reset token (single use, 30 minutes)
-adminRouter.post('/reset-password', async (c) => {
-  noStore(c)
-  if (c.env.DB) await ensureSchemaReady(c.env.DB)
-  const clientIp = getTrustedClientIp(c)
-  const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
-  if (!rateLimit.allowed) {
-    c.header('Retry-After', String(rateLimit.retryAfterSeconds))
-    return c.json({
-      error: {
-        code: 'TOO_MANY_REQUESTS',
-        message: 'Too many attempts. Please wait before trying again.',
-        details: []
-      }
-    }, 429)
-  }
-
-  const invalidToken = () => c.json({
-    error: {
-      code: 'INVALID_RESET_TOKEN',
-      message: INVALID_RESET_TOKEN_MESSAGE,
-      details: [{ field: 'token', message: INVALID_RESET_TOKEN_MESSAGE, code: 'INVALID_RESET_TOKEN' }]
-    }
-  }, 400)
-
-  try {
-    const body = await c.req.json().catch(() => ({}))
-    if (hasForbiddenPaymentFields(body)) return forbiddenPayloadResponse(c)
-    const token = typeof body?.token === 'string' ? body.token : ''
-    const newPassword = typeof body?.newPassword === 'string' ? body.newPassword : ''
-
-    // Checked before any hashing so an oversized value never reaches PBKDF2 (never trimmed)
-    const lengthError = passwordLengthError(c, 'newPassword', newPassword)
-    if (lengthError) return lengthError
-
-    if (!c.env.DB || !/^[0-9a-f]{64}$/.test(token)) {
-      return invalidToken()
-    }
-
-    const raw = await readSetting(c.env.DB, PASSWORD_RESET_KEY)
-    let record: { token_hash?: unknown; expires_at?: unknown; used?: unknown } | null = null
-    try { record = raw ? JSON.parse(raw) : null } catch { record = null }
-
-    const tokenHash = await sha256Hex(token)
-    const storedHash = record && typeof record.token_hash === 'string' ? record.token_hash : ''
-    const hashMatches = timingSafeEqual(tokenHash, storedHash)
-    const expiresAt = record && typeof record.expires_at === 'number' ? record.expires_at : 0
-    const usable = Boolean(record) && record!.used !== true && Date.now() <= expiresAt
-    if (!hashMatches || !usable) {
-      if (record && Date.now() > expiresAt) await deleteSetting(c.env.DB, PASSWORD_RESET_KEY).catch(() => {})
-      return invalidToken()
-    }
-
-    // Single use: the reset record goes away in the same batch as the password write
-    const saltedHash = await hashPassword(newPassword)
-    const revocationTime = Date.now()
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        'INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value'
-      ).bind('admin_password_hash', saltedHash),
-      c.env.DB.prepare(
-        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('sessions_valid_after', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-      ).bind(String(revocationTime)),
-      c.env.DB.prepare('DELETE FROM Admin_Settings WHERE setting_key = ?').bind(PASSWORD_RESET_KEY)
-    ])
-    await clearLoginAttempts(c.env.DB, clientIp)
-
-    return c.json({ success: true, status: 'success', message: 'Password updated.' })
-  } catch {
-    return c.json({
-      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not reset the password.', details: [] }
-    }, 500)
-  }
-})
-
-// Public login endpoint for admin credentials
-adminRouter.post('/login', async (c) => {
-  try {
-    const signingSecret = getSigningSecret(c.env)
-    const expectedSecret = c.env.ADMIN_SECRET
-    const expectedEmail = c.env.ADMIN_EMAIL ? c.env.ADMIN_EMAIL.trim().toLowerCase() : ''
-    if (!signingSecret || !expectedSecret || !expectedEmail) {
+    const sessionSecret = getSigningSecret(c.env) || c.env.SESSION_SECRET
+    if (!sessionSecret || sessionSecret.length < 32) {
       return c.json({
         error: {
           code: 'INTERNAL_SERVER_ERROR',
@@ -617,59 +475,30 @@ adminRouter.post('/login', async (c) => {
     }
 
     const body = await c.req.json().catch(() => ({}))
-    const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
-    const password = typeof body.password === 'string' ? body.password : ''
+    const idToken = typeof body?.idToken === 'string' ? body.idToken.trim() : ''
+    if (!idToken) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Missing Google ID token.',
+          details: [{ field: 'idToken', message: 'idToken is required', code: 'REQUIRED_FIELD' }]
+        }
+      }, 400)
+    }
 
-    // Both email and password must be non-empty
-    if (!email || !password) {
+    const authorizedEmail = c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com'
+    const verified = await verifyGoogleIdToken(idToken, c.env.GOOGLE_CLIENT_ID, authorizedEmail)
+    if (!verified.success) {
       return c.json({
         error: {
           code: 'UNAUTHORIZED',
-          message: 'Invalid email address or password.',
+          message: verified.error || 'Google authentication failed.',
           details: []
         }
       }, 401)
     }
 
-    let storedPasswordSource = expectedSecret
-    if (c.env.DB) {
-      try {
-        const row = await c.env.DB.prepare(
-          "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'admin_password_hash'"
-        ).first<{ setting_value: string }>()
-        if (row?.setting_value && row.setting_value.startsWith('pbkdf2_sha256$')) {
-          storedPasswordSource = row.setting_value
-        }
-      } catch {}
-    }
-
-    // Timing-safe constant-time credential comparison with PBKDF2-SHA256 support
-    const emailMatches = timingSafeEqual(email, expectedEmail)
-    const { matches: passwordMatches, needsHashUpgrade } = await verifyPassword(password, storedPasswordSource)
-
-    if (!emailMatches || !passwordMatches) {
-      // Intentional short delay to mitigate rapid automated brute-force attacks
-      await new Promise(r => setTimeout(r, 300))
-      return c.json({
-        error: {
-          code: 'UNAUTHORIZED',
-          message: 'Invalid email address or password.',
-          details: []
-        }
-      }, 401)
-    }
-
-    // If legacy secret was used and validated, upgrade to salted PBKDF2 hash in D1
-    if (needsHashUpgrade && c.env.DB) {
-      try {
-        const saltedHash = await hashPassword(password)
-        await c.env.DB.prepare(
-          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('admin_password_hash', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-        ).bind(saltedHash).run()
-      } catch {}
-    }
-
-    // Clear failed attempts on successful login
+    // Clear failed login attempts on success
     await clearLoginAttempts(c.env.DB, clientIp)
 
     // Opportunistically prune expired revoked sessions
@@ -677,40 +506,68 @@ adminRouter.post('/login', async (c) => {
       c.env.DB.prepare('DELETE FROM Revoked_Sessions WHERE expires_at <= ?').bind(Date.now()).run().catch(() => {})
     }
 
-    // Generate secure HMAC-signed session token with decoupled SESSION_SECRET
-    const token = await createSessionToken(signingSecret, expectedEmail)
+    // Generate secure session token and set __Host-r59_session cookie
+    const token = await createSessionToken(verified.email, sessionSecret)
 
-    // Set cookie __Host-r59_session and clear old r59_session
-    const isHttps = c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https'
     c.header(
       'Set-Cookie',
-      `__Host-r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${isHttps ? '; Secure' : ''}`
+      `__Host-r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`
     )
     c.header(
       'Set-Cookie',
-      `r59_session=; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}; Max-Age=0`,
+      `r59_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`,
       { append: true }
     )
 
-    return c.json({
-      success: true,
-      status: 'success',
-      authenticated: true,
-      email: expectedEmail,
-      data: {
-        authenticated: true,
-        email: expectedEmail
-      }
-    })
+    return c.json({ ok: true, email: verified.email })
   } catch (e: any) {
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
-        message: 'Authentication error.',
+        message: 'Google login error.',
         details: []
       }
     }, 500)
   }
+})
+
+// ── Deprecated Password Endpoints (Replaced by Google Sign-In) ───
+
+adminRouter.get('/password-reset/available', (c) => {
+  noStore(c)
+  return c.json({ available: false, deprecated: true }, 410)
+})
+
+adminRouter.post('/forgot-password', (c) => {
+  noStore(c)
+  return c.json({
+    error: {
+      code: 'DEPRECATED',
+      message: 'Password reset is deprecated. Please use Google Sign-In.',
+      details: []
+    }
+  }, 410)
+})
+
+adminRouter.post('/reset-password', (c) => {
+  noStore(c)
+  return c.json({
+    error: {
+      code: 'DEPRECATED',
+      message: 'Password reset is deprecated. Please use Google Sign-In.',
+      details: []
+    }
+  }, 410)
+})
+
+adminRouter.post('/login', (c) => {
+  return c.json({
+    error: {
+      code: 'DEPRECATED',
+      message: 'Password login is deprecated. Please use Google Sign-In.',
+      details: []
+    }
+  }, 410)
 })
 
 // Public logout endpoint (registered before adminAuth so cookie is always cleared)
@@ -765,100 +622,15 @@ adminRouter.get('/verify', async (c) => {
   })
 })
 
-// PUT: Update admin password with salted PBKDF2-SHA256 hash
-adminRouter.put('/password', async (c) => {
-  try {
-    const clientIp = getTrustedClientIp(c)
-    const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
-    if (!rateLimit.allowed) {
-      c.header('Retry-After', String(rateLimit.retryAfterSeconds))
-      return c.json({
-        error: {
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Too many password update attempts. Please wait 1 minute before trying again.',
-          details: []
-        }
-      }, 429)
+// PUT: Deprecated password update endpoint (Replaced by Google Sign-In)
+adminRouter.put('/password', (c) => {
+  return c.json({
+    error: {
+      code: 'DEPRECATED',
+      message: 'Password management is deprecated. Please use Google Sign-In.',
+      details: []
     }
-
-    const body = await c.req.json().catch(() => ({}))
-    const currentPassword = typeof body.currentPassword === 'string' ? body.currentPassword : (typeof body.current_password === 'string' ? body.current_password : '')
-    const newPassword = typeof body.newPassword === 'string' ? body.newPassword : (typeof body.new_password === 'string' ? body.new_password : '')
-
-    if (!currentPassword) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Current password is required.',
-          details: [{ field: 'currentPassword', message: 'Current password is required.', code: 'REQUIRED_FIELD' }]
-        }
-      }, 400)
-    }
-
-    if (!newPassword || newPassword.length < 12 || newPassword.length > 256) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Password must be between 12 and 256 characters.',
-          details: [{ field: 'newPassword', message: 'Password must be between 12 and 256 characters.', code: 'INVALID_LENGTH' }]
-        }
-      }, 400)
-    }
-
-    const storedPasswordSource = await readStoredPasswordSource(c.env)
-
-    const { matches: currentMatches } = await verifyPassword(currentPassword, storedPasswordSource)
-    if (!currentMatches) {
-      return c.json({
-        error: {
-          code: 'UNAUTHORIZED',
-          message: 'Incorrect current password.',
-          details: [{ field: 'currentPassword', message: 'Current password does not match.', code: 'INVALID_CREDENTIALS' }]
-        }
-      }, 401)
-    }
-
-    await clearLoginAttempts(c.env.DB, clientIp)
-
-    const saltedHash = await hashPassword(newPassword)
-    const revocationTime = Date.now()
-    if (c.env.DB) {
-      await c.env.DB.batch([
-        c.env.DB.prepare(
-          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('admin_password_hash', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-        ).bind(saltedHash),
-        c.env.DB.prepare(
-          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('sessions_valid_after', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-        ).bind(String(revocationTime))
-      ])
-    }
-
-    const signingSecret = getSigningSecret(c.env)
-    const expectedEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
-    if (signingSecret && expectedEmail) {
-      const token = await createSessionToken(signingSecret, expectedEmail)
-      const isHttps = c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https'
-      c.header(
-        'Set-Cookie',
-        `__Host-r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${isHttps ? '; Secure' : ''}`
-      )
-    }
-
-    return c.json({
-      success: true,
-      status: 'success',
-      message: 'Password updated with salted PBKDF2-SHA256 hash.',
-      data: { message: 'Password updated with salted PBKDF2-SHA256 hash.' }
-    })
-  } catch (e: any) {
-    return c.json({
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Could not update password.',
-        details: []
-      }
-    }, 500)
-  }
+  }, 410)
 })
 
 // GET: account settings shown in the Settings dialog
@@ -872,94 +644,16 @@ adminRouter.get('/account', async (c) => {
   }
 })
 
-// PUT: set or remove ('' ) the recovery email; needs the current password, like PUT /password
-adminRouter.put('/recovery-email', async (c) => {
+// PUT: Deprecated recovery email endpoint (Replaced by Google Sign-In)
+adminRouter.put('/recovery-email', (c) => {
   noStore(c)
-  try {
-    const clientIp = getTrustedClientIp(c)
-    const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
-    if (!rateLimit.allowed) {
-      c.header('Retry-After', String(rateLimit.retryAfterSeconds))
-      return c.json({
-        error: {
-          code: 'TOO_MANY_REQUESTS',
-          message: 'Too many attempts. Please wait before trying again.',
-          details: []
-        }
-      }, 429)
+  return c.json({
+    error: {
+      code: 'DEPRECATED',
+      message: 'Password recovery email is deprecated. Please use Google Sign-In.',
+      details: []
     }
-
-    const body = await c.req.json().catch(() => ({}))
-    if (hasForbiddenPaymentFields(body)) return forbiddenPayloadResponse(c)
-    const currentPassword = typeof body?.currentPassword === 'string' ? body.currentPassword : ''
-    const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : null
-
-    if (email === null) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Enter an email address.',
-          details: [{ field: 'email', message: 'Enter an email address.', code: 'REQUIRED_FIELD' }]
-        }
-      }, 400)
-    }
-    if (email !== '' && (email.length > RECOVERY_EMAIL_MAX || !RECOVERY_EMAIL_REGEX.test(email))) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Enter an email like name@example.com.',
-          details: [{ field: 'email', message: 'Enter an email like name@example.com.', code: 'INVALID_FORMAT' }]
-        }
-      }, 400)
-    }
-    if (!currentPassword) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Current password is required.',
-          details: [{ field: 'currentPassword', message: 'Current password is required.', code: 'REQUIRED_FIELD' }]
-        }
-      }, 400)
-    }
-    // Checked before hashing so an oversized value never reaches PBKDF2
-    if (currentPassword.length > PASSWORD_MAX) {
-      return c.json({
-        error: {
-          code: 'UNAUTHORIZED',
-          message: 'Incorrect current password.',
-          details: [{ field: 'currentPassword', message: 'Current password does not match.', code: 'INVALID_CREDENTIALS' }]
-        }
-      }, 401)
-    }
-
-    const { matches } = await verifyPassword(currentPassword, await readStoredPasswordSource(c.env))
-    if (!matches) {
-      return c.json({
-        error: {
-          code: 'UNAUTHORIZED',
-          message: 'Incorrect current password.',
-          details: [{ field: 'currentPassword', message: 'Current password does not match.', code: 'INVALID_CREDENTIALS' }]
-        }
-      }, 401)
-    }
-    await clearLoginAttempts(c.env.DB, clientIp)
-
-    if (email === '') {
-      // Removing the address also invalidates any reset link sent to it
-      await c.env.DB.batch([
-        c.env.DB.prepare('DELETE FROM Admin_Settings WHERE setting_key = ?').bind(RECOVERY_EMAIL_KEY),
-        c.env.DB.prepare('DELETE FROM Admin_Settings WHERE setting_key = ?').bind(PASSWORD_RESET_KEY)
-      ])
-    } else {
-      const previous = await readRecoveryEmail(c.env.DB)
-      await writeSetting(c.env.DB, RECOVERY_EMAIL_KEY, email)
-      if (previous && previous !== email) await deleteSetting(c.env.DB, PASSWORD_RESET_KEY)
-    }
-
-    return c.json({ success: true, status: 'success', recovery_email: email })
-  } catch {
-    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not save the recovery email.', details: [] } }, 500)
-  }
+  }, 410)
 })
 
 // ── Schedule Management ──────────────────────────────────────────

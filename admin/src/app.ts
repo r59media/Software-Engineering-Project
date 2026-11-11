@@ -646,45 +646,89 @@
 
   /* ---------- Login / logout ---------- */
 
-  function setLoginError(message) {
-    const errEl = $('#loginError');
-    if (!errEl) return;
-    errEl.textContent = message || '';
-    errEl.hidden = !message;
-  }
-
-  function setRetryVisible(visible) {
-    const btn = $('#loginRetry');
-    if (btn) {
-      btn.hidden = !visible;
-      btn.disabled = false;
+  function setLoginStatus(message) {
+    const statusEl = document.getElementById('loginStatus');
+    if (!statusEl) return;
+    if (message) {
+      statusEl.textContent = message;
+      statusEl.classList.remove('hidden');
+      statusEl.removeAttribute('hidden');
+    } else {
+      statusEl.textContent = '';
+      statusEl.classList.add('hidden');
+      statusEl.setAttribute('hidden', '');
     }
   }
 
-  function resetLoginButton() {
-    const submitBtn = $('#loginBtn');
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Sign in';
+  async function handleCredentialResponse(response) {
+    setLoginStatus('');
+    if (!response || !response.credential) {
+      setLoginStatus('Access denied: Account not authorized for admin access.');
+      return;
+    }
+    try {
+      const res = await R().apiClient.loginWithGoogle(response.credential);
+      if (res && res.ok) {
+        try {
+          localStorage.setItem('r59_admin_session_hint', '1');
+        } catch {
+          // ignore storage error
+        }
+        await initDashboard();
+      } else {
+        setLoginStatus('Access denied: Account not authorized for admin access.');
+      }
+    } catch {
+      setLoginStatus('Access denied: Account not authorized for admin access.');
     }
   }
 
-  function focusLogin() {
-    setTimeout(() => {
-      const u = $('#lu');
-      if (u && !u.value) u.focus();
-      else $('#lp')?.focus();
-    }, 50);
+  async function initGoogleSignIn() {
+    const btn = document.getElementById('googleSignInBtn');
+    if (!btn) return;
+    try {
+      const config = await R().apiClient.fetchAuthConfig();
+      const googleClientId = config?.googleClientId;
+      if (!googleClientId) {
+        console.error('[R59 Admin] Google client ID not found in auth config');
+        return;
+      }
+
+      function setupGsi() {
+        if (typeof google === 'undefined' || !google.accounts?.id) {
+          setTimeout(setupGsi, 100);
+          return;
+        }
+        google.accounts.id.initialize({
+          client_id: googleClientId,
+          callback: handleCredentialResponse
+        });
+        const targetBtn = document.getElementById('googleSignInBtn');
+        if (targetBtn) {
+          targetBtn.innerHTML = '';
+          google.accounts.id.renderButton(targetBtn, {
+            theme: 'filled_blue',
+            size: 'large',
+            text: 'signin_with',
+            shape: 'rectangular',
+            width: 280
+          });
+        }
+      }
+
+      setupGsi();
+    } catch (err) {
+      console.error('[R59 Admin] Failed to initialize Google Sign-In:', err);
+    }
   }
 
   /** Shows the login screen. In-memory edits are kept. */
-  function showLogin({ message = '', retry = false } = {}) {
+  function showLogin({ message = '' } = {}) {
     R().reviewChanges?.close?.({ restoreFocus: false });
     if ($('#modal')?.classList.contains('open')) R().modal?.closeModal?.();
     if ($('#bookingModal')?.classList.contains('open')) R().schedule?.closeBookingEditor?.();
     if ($('#newBookingModal')?.classList.contains('open')) R().schedule?.closeNewBooking?.();
     if ($('#settingsModal')?.classList.contains('open')) R().account?.closeSettings?.({ restoreFocus: false });
-    R().passwordReset?.showSignIn?.(); // a Forgot password form left open goes back to Sign in
     R().leads?.reset?.();
     const menuPanel = $('#menuPanel');
     if (menuPanel && !menuPanel.hidden) {
@@ -693,11 +737,8 @@
     }
     setWorkspaceAuthenticated(false);
     $('#login')?.classList.add('open');
-    resetLoginButton();
-    if ($('#lp')) $('#lp').value = '';
-    setLoginError(message);
-    setRetryVisible(retry);
-    focusLogin();
+    setLoginStatus(message);
+    initGoogleSignIn();
   }
 
   /** After a confirmed session: load modules, show the app, load data. */
@@ -709,8 +750,7 @@
     }
     setWorkspaceAuthenticated(true);
     $('#login')?.classList.remove('open');
-    setLoginError('');
-    setRetryVisible(false);
+    setLoginStatus('');
     renderAll();
     if (!hasEnteredApp) {
       R().navigation?.go?.('overview');
@@ -722,14 +762,16 @@
     return true;
   }
 
+  async function initDashboard() {
+    return enterApp();
+  }
+
   async function checkSession() {
-    const retry = $('#loginRetry');
-    if (retry) retry.disabled = true;
     let authenticated = false;
     try {
       authenticated = await R().apiClient.verifySession();
     } catch {
-      showLogin({ message: "Can't reach the server. Check your connection and try again.", retry: true });
+      showLogin({ message: "Can't reach the server. Check your connection and try again." });
       return;
     }
     if (authenticated) {
@@ -768,54 +810,12 @@
     });
 
     window.addEventListener('r59:unauthorized', () => {
-      // e.detail.message is the server's wording; the login screen uses its own, clearer copy.
       const dirty = R().state?.isDirty?.();
       showLogin({
         message: dirty
           ? 'Your session has expired. Sign in again to keep working. Your unsaved changes are kept.'
           : 'Your session has expired. Sign in again to keep working.'
       });
-    });
-
-    $('#loginRetry')?.addEventListener('click', () => {
-      setLoginError('');
-      checkSession();
-    });
-
-    $('#loginForm')?.addEventListener('submit', async e => {
-      e.preventDefault();
-      const email = $('#lu')?.value.trim() || '';
-      const password = $('#lp')?.value || '';
-      const submitBtn = $('#loginBtn');
-
-      setLoginError('');
-      setRetryVisible(false);
-
-      if (!email || !password) {
-        setLoginError('Please enter both email and password.');
-        return;
-      }
-
-      if (submitBtn) {
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Signing in…';
-      }
-
-      try {
-        await R().apiClient.login(email, password);
-      } catch (err) {
-        setLoginError(err.message || 'Invalid email address or password.');
-        resetLoginButton();
-        $('#lp')?.focus();
-        return;
-      }
-
-      const entered = await enterApp();
-      if (entered) {
-        resetLoginButton();
-        if ($('#lp')) $('#lp').value = '';
-        toast('Signed in', { type: 'success' });
-      }
     });
   }
 
@@ -830,10 +830,10 @@
     initRetry();
     R().state?.recompute?.();
 
-    // A #reset= link shows "Choose a new password" instead of the session check
-    if (R().passwordReset?.startFromLink?.()) return;
     checkSession();
   });
+
+  window.handleCredentialResponse = handleCredentialResponse;
 
   window.R59 = window.R59 || {};
   window.R59.app = {
@@ -843,7 +843,9 @@
     reloadArea,
     ensureAdminModulesLoaded,
     setWorkspaceAuthenticated,
-    checkSession
+    checkSession,
+    initDashboard,
+    handleCredentialResponse
   };
   window.renderAll = renderAll;
 })();

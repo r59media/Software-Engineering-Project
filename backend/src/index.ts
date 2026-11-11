@@ -27,6 +27,7 @@ export type Bindings = {
   SESSION_SECRET?: string
   SQUARE_WEBHOOK_SIGNATURE_KEY?: string
   SQUARE_WEBHOOK_URL?: string
+  GOOGLE_CLIENT_ID?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -39,14 +40,14 @@ app.use('*', async (c, next) => {
   await next()
   c.header(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+    "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' https://accounts.google.com/gsi/; frame-src 'self' https://accounts.google.com/gsi/ https://accounts.google.com/; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
   )
   c.header('X-Frame-Options', 'DENY')
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
   c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(self)')
-  c.header('Cross-Origin-Opener-Policy', 'same-origin')
+  c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
 })
 
 // CORS — restrict to known frontend origins and same-origin requests (Finding 6)

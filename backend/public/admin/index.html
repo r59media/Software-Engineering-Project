@@ -9,6 +9,9 @@
   <link rel="icon" type="image/png" href="/favicon-dark.png" media="(prefers-color-scheme: light)" />
   <link rel="icon" type="image/png" href="/favicon-light.png" media="(prefers-color-scheme: dark)" />
 
+  <!-- Google Identity Services -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
   <!-- Theme before first paint (blocking, external: CSP script-src 'self') -->
   <script src="assets/js/theme-init.js"></script>
 
@@ -1171,65 +1174,9 @@
       <div class="dialog__inner">
         <h2 id="settingsTitle">Settings</h2>
 
-        <section class="set-sec" aria-labelledby="passwordTitle">
-          <form id="passwordForm" novalidate>
-            <h3 id="passwordTitle">Change password</h3>
-            <p class="hint" id="passwordHint">At least 8 characters. After 5 wrong attempts, sign-in is locked for a minute. Other signed-in devices stay signed in.</p>
-            <input id="pwUser" type="email" autocomplete="username" hidden tabindex="-1" aria-hidden="true">
-            <div class="form-grid">
-              <div class="field full">
-                <label class="field__label" for="pwCurrent">Current password</label>
-                <div class="field__control"><input class="field__input" id="pwCurrent" type="password" autocomplete="current-password" required aria-describedby="passwordHint"></div>
-                <p class="field__error" id="pwCurrent-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
-              </div>
-              <div class="field full">
-                <label class="field__label" for="pwNew">New password</label>
-                <div class="field__control"><input class="field__input" id="pwNew" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div>
-                <p class="field__error" id="pwNew-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
-              </div>
-              <div class="field full">
-                <label class="field__label" for="pwConfirm">Confirm new password</label>
-                <div class="field__control"><input class="field__input" id="pwConfirm" type="password" autocomplete="new-password" maxlength="128" required></div>
-                <p class="field__error" id="pwConfirm-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
-              </div>
-            </div>
-            <p class="form-error" id="pwError" role="alert"></p>
-            <div class="set-acts">
-              <button type="submit" class="btn btn--primary" id="pwSave">Update password</button>
-            </div>
-          </form>
-        </section>
-
-        <section class="set-sec" aria-labelledby="recoveryTitle">
-          <form id="recoveryForm" novalidate>
-            <h3 id="recoveryTitle">Recovery email</h3>
-            <p class="hint" id="recoveryHint">Used to reset your password if you forget it.</p>
-            <dl class="set-current">
-              <dt class="caps">Saved address</dt>
-              <dd id="recoveryCurrent" aria-live="polite">Loading…</dd>
-            </dl>
-            <p class="form-error" id="recoveryLoadError" role="alert"></p>
-            <button type="button" class="btn btn--sm" id="recoveryRetry" hidden>Retry</button>
-            <p class="set-note" id="recoveryNote" hidden><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-alert"/></svg><span>Password reset emails aren't set up yet. Your recovery email is saved and will be used once email sending is configured.</span></p>
-            <div class="form-grid">
-              <div class="field full">
-                <label class="field__label" for="recEmail">New recovery email</label>
-                <div class="field__control"><input class="field__input" id="recEmail" type="email" autocomplete="email" maxlength="254" aria-describedby="recoveryHint"></div>
-                <p class="field__error" id="recEmail-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
-              </div>
-              <div class="field full">
-                <label class="field__label" for="recPassword">Current password</label>
-                <div class="field__control"><input class="field__input" id="recPassword" type="password" autocomplete="current-password" required aria-describedby="recPasswordHint"></div>
-                <p class="field__hint" id="recPasswordHint">Needed to change or remove the recovery email.</p>
-                <p class="field__error" id="recPassword-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
-              </div>
-            </div>
-            <p class="form-error" id="recError" role="alert"></p>
-            <div class="set-acts">
-              <button type="button" class="btn btn--danger" id="recRemove" hidden>Remove</button>
-              <button type="submit" class="btn btn--primary" id="recSave">Save email</button>
-            </div>
-          </form>
+        <section class="set-sec" id="settingsAccountSec">
+          <h3 id="accountTitle">Account</h3>
+          <p class="hint" id="accountIndicator">Authorized Admin: r59mediatesting@gmail.com (Google Sign-In)</p>
         </section>
 
         <div class="dialog__foot">
@@ -1246,66 +1193,17 @@
     <div class="dialog">
       <div class="sprockets" aria-hidden="true"></div>
       <div class="edge caps" aria-hidden="true"><span><svg class="tri" focusable="false"><use href="#i-tri"/></svg>Frame 00</span><span>00A</span></div>
-      <form class="dialog__inner" id="loginForm">
+      <div class="dialog__inner">
         <svg class="logo" width="81" height="50" viewBox="0 0 81 50" role="img" aria-label="R59 Media" focusable="false"><use href="#logo-r59"/></svg>
         <div>
           <h1 id="loginTitle">Sign in</h1>
-          <p class="hint" id="loginHint">Enter your administrator credentials to sign in.</p>
+          <p class="hint" id="loginHint">Sign in with your Google administrator account.</p>
         </div>
-        <p class="login-notice" id="loginNotice" role="status" hidden><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span></span></p>
-        <p class="form-error" id="loginError" role="alert"></p>
-        <div class="field">
-          <label class="field__label" for="lu">Email</label>
-          <div class="field__control"><input class="field__input" id="lu" type="email" required autocomplete="username"></div>
+        <div id="googleSignInContainer" class="text-center py-4">
+          <div id="googleSignInBtn" class="flex justify-center"></div>
+          <div id="loginStatus" class="mt-3 text-sm text-red-500 hidden"></div>
         </div>
-        <div class="field">
-          <label class="field__label" for="lp">Password</label>
-          <div class="field__control"><input class="field__input" id="lp" type="password" required autocomplete="current-password"></div>
-        </div>
-        <button class="btn btn--primary" id="loginBtn" type="submit">Sign in</button>
-        <button class="btn" id="loginRetry" type="button" hidden>Retry</button>
-        <button class="link-btn" id="forgotOpen" type="button" hidden>Forgot password?</button>
-      </form>
-
-      <!-- Forgot password (components/passwordReset.js; shown only when reset emails are available) -->
-      <form class="dialog__inner" id="forgotForm" novalidate hidden>
-        <svg class="logo" width="81" height="50" viewBox="0 0 81 50" role="img" aria-label="R59 Media" focusable="false"><use href="#logo-r59"/></svg>
-        <div>
-          <h1 id="forgotTitle" tabindex="-1">Reset password</h1>
-          <p class="hint">Enter your recovery email. If it matches, we'll send a link to choose a new password.</p>
-        </div>
-        <p class="login-notice" id="forgotNotice" role="status" hidden><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-check"/></svg><span></span></p>
-        <p class="form-error" id="forgotError" role="alert"></p>
-        <div class="field">
-          <label class="field__label" for="fpEmail">Recovery email</label>
-          <div class="field__control"><input class="field__input" id="fpEmail" type="email" autocomplete="email" maxlength="254" required></div>
-          <p class="field__error" id="fpEmail-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
-        </div>
-        <button class="btn btn--primary" id="forgotSend" type="submit">Send reset link</button>
-        <button class="link-btn" type="button" data-signin>Back to sign in</button>
-      </form>
-
-      <!-- Choose a new password from a #reset= link (components/passwordReset.js) -->
-      <form class="dialog__inner" id="resetForm" novalidate hidden>
-        <svg class="logo" width="81" height="50" viewBox="0 0 81 50" role="img" aria-label="R59 Media" focusable="false"><use href="#logo-r59"/></svg>
-        <div>
-          <h1 id="resetTitle" tabindex="-1">Choose a new password</h1>
-          <p class="hint" id="resetHint">At least 8 characters.</p>
-        </div>
-        <p class="form-error" id="resetError" role="alert"></p>
-        <div class="field">
-          <label class="field__label" for="rpNew">New password</label>
-          <div class="field__control"><input class="field__input" id="rpNew" type="password" autocomplete="new-password" minlength="8" maxlength="128" required aria-describedby="resetHint"></div>
-          <p class="field__error" id="rpNew-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
-        </div>
-        <div class="field">
-          <label class="field__label" for="rpConfirm">Confirm new password</label>
-          <div class="field__control"><input class="field__input" id="rpConfirm" type="password" autocomplete="new-password" maxlength="128" required></div>
-          <p class="field__error" id="rpConfirm-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
-        </div>
-        <button class="btn btn--primary" id="resetSave" type="submit">Update password</button>
-        <button class="link-btn" type="button" data-signin>Back to sign in</button>
-      </form>
+      </div>
     </div>
   </section>
   <!-- REGION:login END -->
@@ -1327,7 +1225,6 @@
   <script src="assets/js/components/confirmation.js"></script>
   <script src="assets/js/components/headerFold.js"></script>
   <script src="assets/js/components/settings.js"></script>
-  <script src="assets/js/components/passwordReset.js"></script>
 
   <!-- Navigation & bootstrapper (protected API and page modules load after authentication) -->
   <script src="assets/js/navigation.js"></script>

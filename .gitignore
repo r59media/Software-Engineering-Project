@@ -14,6 +14,7 @@ coverage/
 
 # Graphify local AI knowledge graph
 graphify-out/
+.graphify*
 graph-assist.py
 
 # Personal agent rules
