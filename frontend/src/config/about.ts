@@ -3,9 +3,9 @@ import redCard from '../assets/aboutMeImages/redCard_img.webp'
 import portrait from "../assets/aboutMeImages/kevin'sPortrait.webp"
 import portraitFrame from '../assets/aboutMeImages/aboutMe_portraitFrame_img.webp'
 import signature from '../assets/aboutMeImages/kevin_Logo_IMG.webp'
-import topLens from '../assets/aboutMeImages/bigLense_IMG.webp'
+import topLens from '../assets/aboutMeImages/r59media-large-lens.webp'
 import rightLens from '../assets/aboutMeImages/smalLense_IMG.webp'
-import camera from '../assets/aboutMeImages/EOS-90D-top-w-lens 2.webp'
+import camera from '../assets/aboutMeImages/r59media-dslr.webp'
 import flash from '../assets/aboutMeImages/speedlight_IMG.webp'
 import leftCard from '../assets/aboutMeImages/128MmrCard_IMG.webp'
 import topCard from '../assets/aboutMeImages/32MmrCard_IMG.webp'
@@ -31,9 +31,9 @@ export const aboutImages = {
 } satisfies Record<string, AboutImage>
 
 export const aboutDecorations: readonly AboutImage[] = [
-  { id: 'top-lens', imageUrl: topLens, alt: '', width: 1848, height: 2988 },
+  { id: 'top-lens', imageUrl: topLens, alt: '', width: 1040, height: 1686 },
   { id: 'top-right-lens', imageUrl: rightLens, alt: '', width: 2070, height: 2072 },
-  { id: 'bottom-right-camera', imageUrl: camera, alt: '', width: 2390, height: 2788 },
+  { id: 'bottom-right-camera', imageUrl: camera, alt: '', width: 1500, height: 1700 },
   { id: 'left-flash', imageUrl: flash, alt: '', width: 1208, height: 1856 },
   { id: 'left-memory-card', imageUrl: leftCard, alt: '', width: 1162, height: 1160 },
   { id: 'top-memory-card', imageUrl: topCard, alt: '', width: 1342, height: 1342 },

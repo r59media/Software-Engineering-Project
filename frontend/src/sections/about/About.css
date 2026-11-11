@@ -42,12 +42,12 @@
   transform-style: preserve-3d;
   will-change: transform;
 }
-.about__decorations [data-about-part="top-lens"] { width: 16.07%; left: 30.2%; top: -7.5cqw; }
+.about__decorations [data-about-part="top-lens"] { width: 15%; left: 35%; top: -11cqw; }
 .about__decorations [data-about-part="top-lens"] .about__art { transform: rotate(78.1deg); }
 .about__decorations [data-about-part="top-right-lens"] { width: 18%; right: -3.4%; top: -2.4cqw; }
 .about__decorations [data-about-part="top-right-lens"] .about__art { transform: rotate(-12.73deg); }
 .about__decorations [data-about-part="bottom-right-camera"] { width: 20.8%; right: -3.9%; bottom: -6.4cqw; }
-.about__decorations [data-about-part="bottom-right-camera"] .about__art { transform: rotate(25.65deg); }
+.about__decorations [data-about-part="bottom-right-camera"] .about__art { transform: rotate(25.65deg) scale(1.25); }
 .about__decorations [data-about-part="left-flash"] { width: 10.46%; left: -4.4%; bottom: 1.9cqw; }
 .about__decorations [data-about-part="left-flash"] .about__art { transform: rotate(8.98deg); }
 .about__decorations [data-about-part="left-memory-card"] { width: 3.46%; left: -1.2%; top: 1.65cqw; }
@@ -64,7 +64,7 @@
   .about__subheading { padding: .5rem 0 0; font-size: clamp(1.5rem, 4.9vw, 3rem); }
   .about__biography { margin-top: 1.75rem; max-width: 42rem; }
   .about__lens { width: clamp(7.7rem, 18.7vw, 10.45rem); margin: 2.5rem 0 0 10%; }
-  .about__decorations [data-about-part="top-lens"] { width: 20%; top: -7cqw; }
+  .about__decorations [data-about-part="top-lens"] { width: 20%; left: 30.2%; top: -7cqw; }
   .about__decorations [data-about-part="top-right-lens"] { width: 22.5%; top: -1cqw; }
   .about__decorations [data-about-part="left-flash"] { width: 15%; bottom: auto; top: calc(55cqw + clamp(3rem, 8vw, 5rem)); }
   .about__decorations [data-about-part="left-memory-card"] { width: clamp(2rem, 5vw, 3rem); left: -.625rem; top: 1.25rem; }
