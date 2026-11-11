@@ -656,7 +656,8 @@
             const res = await R().apiClient.loginWithGoogle(response.credential);
             if (res && res.ok) {
                 try {
-                    localStorage.setItem('r59_admin_session_hint', '1');
+                    sessionStorage.setItem('r59_admin_session_hint', '1');
+                    localStorage.removeItem('r59_admin_session_hint');
                 }
                 catch {
                     // ignore storage error

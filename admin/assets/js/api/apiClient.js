@@ -246,7 +246,7 @@
     const SESSION_HINT_KEY = 'r59_admin_session_hint';
     function hasSessionHint() {
         try {
-            return localStorage.getItem(SESSION_HINT_KEY) === '1';
+            return sessionStorage.getItem(SESSION_HINT_KEY) === '1';
         }
         catch {
             return true;
@@ -254,12 +254,18 @@
     }
     function setSessionHint(on) {
         try {
-            if (on)
-                localStorage.setItem(SESSION_HINT_KEY, '1');
-            else
-                localStorage.removeItem(SESSION_HINT_KEY);
+            if (on) {
+                sessionStorage.setItem(SESSION_HINT_KEY, '1');
+            }
+            else {
+                sessionStorage.removeItem(SESSION_HINT_KEY);
+            }
+            // Clear any lingering legacy localStorage item
+            localStorage.removeItem(SESSION_HINT_KEY);
         }
-        catch { /* storage blocked: hasSessionHint() then always verifies */ }
+        catch {
+            // ignore storage errors
+        }
     }
     // HTTP method convenience helpers
     const apiClient = {

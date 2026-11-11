@@ -418,7 +418,7 @@ adminRouter.post('/google-login', async (c) => {
 
     c.header(
       'Set-Cookie',
-      `__Host-r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=86400`
+      `__Host-r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict`
     )
     c.header(
       'Set-Cookie',
