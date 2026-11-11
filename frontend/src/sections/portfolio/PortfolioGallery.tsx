@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { GalleryEmptyState } from './GalleryEmptyState'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import { PhotoLightbox } from '../recent/PhotoLightbox'
 import { useGalleryPhotos } from './useGalleryPhotos'
@@ -77,9 +78,7 @@ export function PortfolioGallery() {
             <span>Loading gallery...</span>
           </div>
         ) : filteredPhotos.length === 0 ? (
-          <div className="portfolio-gallery__empty" role="status">
-            <p>No photographs found in this category.</p>
-          </div>
+          <GalleryEmptyState />
         ) : (
           <div className="portfolio-gallery__grid">
             {filteredPhotos.map((photo, index) => (
