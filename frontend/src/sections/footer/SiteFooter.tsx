@@ -5,12 +5,11 @@ import { ActionLink } from '../../components/ActionLink'
 import type { HeroDestinations } from '../../types/hero'
 import type { FooterSlide, FooterSocialLink } from '../../types/footer'
 import adminIcon from '../../assets/footer/admin.svg'
-import cameraLogo from '../../assets/footer/camera-logo.svg'
+import lightLogo from '../../assets/footer/r59-media-logo-light.svg'
+import cameraLogo from '../../assets/footer/logo-camera-state.svg'
+import revealLogo from '../../assets/footer/logo-reveal-state.svg'
 import divider from '../../assets/footer/divider.svg'
 import upArrow from '../../assets/footer/back-to-top.svg'
-import instagram from '../../assets/footer/instagram.svg'
-import threads from '../../assets/footer/threads.svg'
-import x from '../../assets/footer/x.svg'
 import { FooterBackground } from './FooterBackground'
 import { usePublicProfile } from '../about/useAboutData'
 import './SiteFooter.css'
@@ -63,9 +62,9 @@ const pinterestIcon = (
 )
 
 function renderSocialIcon(platform: string) {
-  if (platform === 'Instagram') return <img src={instagram} alt="" />
-  if (platform === 'Threads') return <img src={threads} alt="" />
-  if (platform === 'X') return <img src={x} alt="" />
+  if (platform === 'Instagram') return <span className="site-footer__social-icon site-footer__social-icon--instagram" aria-hidden="true" />
+  if (platform === 'Threads') return <span className="site-footer__social-icon site-footer__social-icon--threads" aria-hidden="true" />
+  if (platform === 'X') return <span className="site-footer__social-icon site-footer__social-icon--x" aria-hidden="true" />
   if (platform === 'Facebook') return facebookIcon
   if (platform === 'Pinterest') return pinterestIcon
   return null
@@ -136,10 +135,16 @@ export function SiteFooter({
           aria-label="R59 Media home"
           data-footer-part="logo"
         >
-          <span className="site-footer__logo-camera" data-footer-motion="logo-camera">
-            <img src={cameraLogo} alt="" width="110" height="96" />
+          <img className="site-footer__logo-full" src={lightLogo} alt="" width="128" />
+          <span className="site-footer__logo-animation" aria-hidden="true">
+            <span className="site-footer__logo-camera" data-footer-motion="logo-camera">
+              <span className="site-footer__logo-crop">
+                <img src={cameraLogo} alt="" width="160" height="96" />
+              </span>
+              <span className="site-footer__logo-divider" data-footer-motion="logo-divider" />
+            </span>
+            <img className="site-footer__logo-reveal" src={revealLogo} alt="" width="165" height="96" />
           </span>
-          <span className="site-footer__logo-divider" data-footer-motion="logo-divider" />
         </a>
         <p className="site-footer__name">{footerContent.photographer}</p>
         <img className="site-footer__rule" src={divider} alt="" width="712.003" height="1" />

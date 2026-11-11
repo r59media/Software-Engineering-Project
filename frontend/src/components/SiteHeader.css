@@ -88,3 +88,27 @@
 .site-header__link[data-pressed="true"] { font-weight: var(--font-weight-bold); }
 .site-header__link:focus-visible { outline: 2px solid var(--color-brand-red); outline-offset: 5px; }
 .site-header__link[aria-disabled="true"] { background: transparent; color: var(--color-brand-black); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .mobile-navigation[open] :is(.mobile-navigation__link, .mobile-navigation__booking, .mobile-navigation__connect, .mobile-navigation__legal) {
+    animation: mobile-navigation-enter 150ms cubic-bezier(.22, 1, .36, 1) var(--menu-entry-delay, 0ms) backwards;
+  }
+
+  .mobile-navigation__link:nth-child(2) { --menu-entry-delay: 32ms; }
+  .mobile-navigation__link:nth-child(3) { --menu-entry-delay: 64ms; }
+  .mobile-navigation__link:nth-child(4) { --menu-entry-delay: 96ms; }
+  .mobile-navigation__link:nth-child(5) { --menu-entry-delay: 128ms; }
+  .mobile-navigation__link:nth-child(6) { --menu-entry-delay: 160ms; }
+  .mobile-navigation__booking { --menu-entry-delay: 310ms; }
+  .mobile-navigation__connect { --menu-entry-delay: 342ms; }
+  .mobile-navigation__legal { --menu-entry-delay: 374ms; }
+
+  .mobile-navigation[open] :is(.mobile-navigation__link, .mobile-navigation__booking, .mobile-navigation__connect, .mobile-navigation__legal):is(:focus-visible, :has(:focus-visible)) {
+    animation: none;
+  }
+
+  @keyframes mobile-navigation-enter {
+    from { translate: 36px 0; opacity: 0; }
+    to { translate: 0 0; opacity: 1; }
+  }
+}
