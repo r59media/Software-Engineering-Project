@@ -99,3 +99,16 @@
 
 .booking-session-card__continue-btn { appearance: none; -webkit-appearance: none; background-image: none; border: 0; box-shadow: none; text-decoration: none; position: relative; isolation: isolate; overflow: hidden; }
 .booking-session-card__continue-btn::before, .booking-session-card__continue-btn::after { content: none; }
+
+.booking-session-card__datetime-block { isolation: isolate; background: transparent; box-shadow: none; overflow: hidden; transition: color .24s ease; }
+.booking-session-card__datetime-block[data-highlight="false"] { color: var(--color-brand-black); }
+.booking-session-card__date-highlight { position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--color-brand-red); pointer-events: none; }
+@media (prefers-reduced-motion: reduce) { .booking-session-card__datetime-block { transition: none; } }
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .booking-session-card-frame { perspective: 1000px; }
+  .booking-session-card-frame > .booking-session-card {
+    rotate: var(--ticket-rotation, 1 0 0 0deg);
+    transition: rotate 180ms ease-out;
+  }
+}

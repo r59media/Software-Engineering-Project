@@ -1,3 +1,4 @@
+import { BookingPanelMotion } from './BookingPanelMotion'
 import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import type { BookingCustomerInfo, BookingYourInfoProps } from '../../types/booking'
@@ -130,7 +131,7 @@ export function BookingYourInfo({
       {/* 2-Column Grid */}
       <div className="booking-your-info__grid">
         <div className="booking-your-info__form-col">
-          <div className="booking-your-info__card">
+          <BookingPanelMotion className="booking-your-info__card" entersRightward>
             <div className="booking-your-info__card-header">
               <h4 className="booking-your-info__card-title">Contact details</h4>
               <span className="booking-your-info__required-notice">
@@ -287,11 +288,11 @@ export function BookingYourInfo({
                 Your details will only be used to contact you about your booking.
               </div>
             </form>
-          </div>
+          </BookingPanelMotion>
 
           <div className="booking-your-info__next-section">
             <h5 className="booking-your-info__next-title">Next: secure your session</h5>
-            <p className="booking-your-info__next-desc">Review your total and pay your deposit.</p>
+            <p className="booking-your-info__next-desc">Review your session and contact details.</p>
           </div>
 
           {/* Mobile Only Submit Area */}
@@ -318,6 +319,7 @@ export function BookingYourInfo({
             service={service}
             people={people}
             dateTime={dateTime}
+            hideDateHighlight
             continueText={busy ? 'Submitting...' : 'Continue to summary'}
             onContinue={() => handleSubmit()}
             isContinueDisabled={!isFormComplete || busy}

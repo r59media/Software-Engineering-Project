@@ -1,3 +1,4 @@
+import { BookingPanelMotion } from './BookingPanelMotion'
 import { previewBookingTimeSlots } from '../../config/booking'
 import calendarIcon from '../../assets/booking/calendar-days.svg'
 import clockIcon from '../../assets/booking/clock-3.svg'
@@ -184,7 +185,7 @@ export function BookingDateTime({
       </div>
 
       {/* Mobile Form Triggers */}
-      <div className="booking-datetime__mobile-triggers">
+      <BookingPanelMotion className="booking-datetime__mobile-triggers" entersRightward={false}>
         <button
           type="button"
           className="booking-datetime__trigger-btn"
@@ -235,20 +236,20 @@ export function BookingDateTime({
             ← Back to services
           </button>
         </div>
-      </div>
+      </BookingPanelMotion>
 
       {/* 3-Column Desktop Grid with Exact Parallel Alignment */}
       <div className="booking-datetime__grid-layout">
-        <div className="booking-datetime__col-date">
+        <BookingPanelMotion className="booking-datetime__col-date" entersRightward={false}>
           <BookingDatePicker
             selectedDate={currentDate}
             onSelectDate={handleSelectDate}
             availableDates={availableDates}
             minDate={easternToday}
           />
-        </div>
+        </BookingPanelMotion>
 
-        <div className="booking-datetime__col-time">
+        <BookingPanelMotion className="booking-datetime__col-time" entersRightward={false}>
           <BookingTimeSlots
             selectedDate={currentDate}
             selectedSlot={liveSelection?.timeSlot}
@@ -257,7 +258,7 @@ export function BookingDateTime({
             durationMinutes={service.durationMinutes}
             inquiryHref={inquiryHref}
           />
-        </div>
+        </BookingPanelMotion>
 
         <div className="booking-datetime__col-ticket">
           <BookingSessionCard
@@ -274,9 +275,9 @@ export function BookingDateTime({
       {/* Bottom Row across 3 Columns (Desktop Alignment) */}
       <div className="booking-datetime__bottom-row">
         <div className="booking-datetime__bottom-info">
-          <div className="booking-datetime__bottom-title">Choose a session to continue</div>
+          <div className="booking-datetime__bottom-title">Next: your information</div>
           <div className="booking-datetime__bottom-desc">
-            Business package? Request a quote first; scheduling follows your proposal.
+            Enter your contact details for this session.
           </div>
         </div>
 

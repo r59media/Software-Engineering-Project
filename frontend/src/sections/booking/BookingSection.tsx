@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { AnimatePresence, LayoutGroup, motion, useIsPresent, useReducedMotion } from 'motion/react'
+import type { ReactNode } from 'react'
+import { forwardRef, useEffect, useMemo, useState } from 'react'
 import { previewBookingServices } from '../../config/booking'
-import { submitContactLead } from '../../api/client'
 import type {
   BookingCustomerInfo,
   BookingDateTimeSelection,
@@ -12,27 +13,75 @@ import { BookingServices } from './BookingServices'
 import { BookingDateTime } from './BookingDateTime'
 import { validateBookingInfo } from './bookingValidation'
 import { BookingYourInfo } from './BookingYourInfo'
-import { BookingProgressBar } from './BookingProgressBar'
-import { BookingSessionCard } from './BookingSessionCard'
+import { BookingSummary } from './BookingSummary'
 import './BookingSection.css'
 
 const STORAGE_KEY = 'r59_booking_session'
 
-export function BookingSection({
+export function BookingSection(props: BookingSectionProps) {
+  return <LayoutGroup><BookingFlow {...props} /></LayoutGroup>
+}
+
+type StepMotion = { direction: -1 | 1; panelsOnly: boolean }
+
+const BookingStagePanel = forwardRef<HTMLDivElement, { children: ReactNode; movement: StepMotion }>(
+  function BookingStagePanel({ children, movement }, ref) {
+    const reduced = useReducedMotion()
+    const present = useIsPresent()
+    const distance = reduced ? 0 : 64
+
+    return (
+      <motion.div
+        ref={ref}
+        className="booking-stage__panel"
+        data-exiting={!present}
+        inert={!present}
+        custom={movement}
+        initial={movement.panelsOnly ? 'enterPanels' : 'enter'}
+        animate="center"
+        exit="leave"
+        variants={{
+          enter: (move: StepMotion) => ({ x: -move.direction * distance, opacity: reduced ? 1 : 0 }),
+          enterPanels: { x: 0, opacity: 1 },
+          center: { x: 0, opacity: 1 },
+          leave: (move: StepMotion) => ({ x: move.panelsOnly ? 0 : move.direction * distance, opacity: move.panelsOnly ? 1 : 0 }),
+        }}
+        transition={{ duration: reduced ? 0 : .32, ease: [.22, 1, .36, 1] }}
+      >
+        {children}
+      </motion.div>
+    )
+  },
+)
+
+function BookingStage({ children, stage, movement }: { children: ReactNode; stage: string; movement: StepMotion }) {
+  return (
+    <div className="booking-stage">
+      <AnimatePresence initial={false} mode="popLayout" custom={movement}>
+        <BookingStagePanel key={stage} movement={movement}>{children}</BookingStagePanel>
+      </AnimatePresence>
+    </div>
+  )
+}
+
+function BookingFlow({
   services = previewBookingServices,
   status = 'ready',
   onRetry,
   inquiryHref = '#contact',
+  onProceedToDeposit,
 }: BookingSectionProps) {
-  const [step, setStep] = useState<BookingStep>('services')
+  const [{ step, movement }, setStage] = useState<{ step: BookingStep; movement: StepMotion }>({ step: 'services', movement: { direction: -1, panelsOnly: false } })
+  const setStep = (next: BookingStep) => setStage(previous => {
+    const from = previous.step
+    const panelsOnly = (from === 'datetime' && next === 'info') || (from === 'info' && next === 'datetime')
+    const direction = panelsOnly ? (next === 'info' ? 1 : -1) : (from === 'summary' ? 1 : -1)
+    return { step: next, movement: { direction, panelsOnly } }
+  })
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null)
   const [attendees, setAttendees] = useState(1)
   const [dateTime, setDateTime] = useState<BookingDateTimeSelection | null>(null)
   const [customerInfo, setCustomerInfo] = useState<BookingCustomerInfo | null>(null)
-  const requestLock = useRef(false)
-  const retryAfter = useRef(0)
-
-  const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   // Find the selected service
@@ -60,6 +109,7 @@ export function BookingSection({
   }, [])
 
   const handleServicesContinue = (selection: ServiceSelection) => {
+    if (selection.serviceId !== selectedServiceId || selection.people !== attendees) setDateTime(null)
     setSelectedServiceId(selection.serviceId)
     setAttendees(selection.people)
     setStep('datetime')
@@ -73,88 +123,36 @@ export function BookingSection({
     }
   }
 
-  const handleInfoSubmit = async (info: BookingCustomerInfo) => {
-    if (requestLock.current || !selectedService || !dateTime) return
-    if (Date.now() < retryAfter.current) {
-      setSubmitError('Too many requests. Please wait a minute before trying again.')
-      return
-    }
+  const handleInfoSubmit = (info: BookingCustomerInfo) => {
+    if (!selectedService || !dateTime) return
     if (Object.keys(validateBookingInfo(info)).length) {
       setSubmitError('Please check your contact details before continuing.')
       return
     }
-    requestLock.current = true
-    setIsSubmitting(true)
     setSubmitError(null)
     setCustomerInfo(info)
-
-    try {
-      const messageBody = [
-        `Booking request for ${selectedService.name}`,
-        `Date: ${dateTime.date}`,
-        `Time Slot: ${dateTime.timeSlot} (${dateTime.timezone || 'ET'})`,
-        `Attendees: ${attendees}`,
-        info.notes ? `Client Notes: ${info.notes}` : '',
-      ]
-        .filter(Boolean)
-        .join('\n')
-
-      const result = await submitContactLead({
-        name: `${info.firstName} ${info.lastName}`.trim(),
-        email: info.email,
-        phone: info.phone,
-        session_type: ['Portrait', 'Brand', 'Creative', 'Event'].includes(selectedService.name) ? selectedService.name : 'Other',
-        message: messageBody,
-      })
-
-      if (result.status === 'success') {
-        setStep('summary')
-        document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
-      } else {
-        if (result.code === 'TOO_MANY_REQUESTS') retryAfter.current = Date.now() + (result.retryAfterSeconds ?? 60) * 1000
-        setSubmitError(result.message || 'Unable to send your request. Your details have been kept. Please try again.')
-      }
-    } catch {
-      setSubmitError('An unexpected error occurred while submitting your booking. Please try again.')
-    } finally {
-      requestLock.current = false
-      setIsSubmitting(false)
-    }
-  }
-
-  const handleReset = () => {
-    try {
-      sessionStorage.removeItem(STORAGE_KEY)
-    } catch {
-      // ignore
-    }
-    setStep('services')
-    setSelectedServiceId(null)
-    setAttendees(1)
-    setDateTime(null)
-    setCustomerInfo(null)
-    setSubmitError(null)
+    setStep('summary')
     document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
   }
 
   // Render Step 1
   if (effectiveStep === 'services' || !selectedService) {
     return (
-      <BookingServices
+      <BookingStage movement={movement} stage="services"><BookingServices
         services={services}
         status={status}
         onRetry={onRetry}
         onContinue={handleServicesContinue}
         initialSelection={selectedService ? { serviceId: selectedService.id, people: attendees } : null}
         inquiryHref={inquiryHref}
-      />
+      /></BookingStage>
     )
   }
 
   // Render Step 2
   if (effectiveStep === 'datetime') {
     return (
-      <section id="booking" className="booking" aria-labelledby="booking-title">
+      <BookingStage movement={movement} stage={effectiveStep}><section id="booking" className="booking" aria-labelledby="booking-title">
         <div className="booking__inner">
           <BookingDateTime
             service={selectedService}
@@ -166,14 +164,14 @@ export function BookingSection({
             inquiryHref={inquiryHref}
           />
         </div>
-      </section>
+      </section></BookingStage>
     )
   }
 
   // Render Step 3
   if (effectiveStep === 'info') {
     return (
-      <section id="booking" className="booking" aria-labelledby="booking-title">
+      <BookingStage movement={movement} stage={effectiveStep}><section id="booking" className="booking" aria-labelledby="booking-title">
         <div className="booking__inner">
           <BookingYourInfo
             service={selectedService}
@@ -183,122 +181,28 @@ export function BookingSection({
             onDraftChange={setCustomerInfo}
             onSubmit={handleInfoSubmit}
             onBack={() => setStep('datetime')}
-            isSubmitting={isSubmitting}
             error={submitError}
           />
         </div>
-      </section>
+      </section></BookingStage>
     )
   }
 
-  // Render Step 4 (Summary / Confirmation)
   return (
-    <section id="booking" className="booking" aria-labelledby="booking-title">
+    <BookingStage movement={movement} stage="summary"><section id="booking" className="booking" aria-labelledby="booking-title">
       <div className="booking__inner">
-        <BookingProgressBar currentStep="summary" />
-
-        <div className="booking-summary">
-          <div className="booking-summary__main">
-            <header className="booking-summary__header">
-              <span className="booking-summary__badge-success" aria-hidden="true">
-                ✓
-              </span>
-              <h3 id="booking-title" className="booking-summary__title">
-                Booking Request Received!
-              </h3>
-              <p className="booking-summary__subtitle">
-                Thank you, <strong>{customerInfo?.firstName}</strong>! Your session request for the{' '}
-                <strong>{selectedService.name}</strong> has been received.
-              </p>
-            </header>
-
-            <div className="booking-summary__card">
-              <h4 className="booking-summary__card-title">What Happens Next?</h4>
-              <ol className="booking-summary__steps-list">
-                <li className="booking-summary__step-item">
-                  <span className="booking-summary__step-num">1</span>
-                  <div className="booking-summary__step-content">
-                    <strong>Schedule Review &amp; Confirmation</strong>
-                    <p>
-                      We will review your requested date (<strong>{dateTime?.date}</strong> at{' '}
-                      <strong>{dateTime?.timeSlot}</strong>) and email your confirmation within 24 hours.
-                    </p>
-                  </div>
-                </li>
-                <li className="booking-summary__step-item">
-                  <span className="booking-summary__step-num">2</span>
-                  <div className="booking-summary__step-content">
-                    <strong>Deposit Invoice</strong>
-                    <p>
-                      You will receive a secure Square invoice link sent to <strong>{customerInfo?.email}</strong> to
-                      secure your slot.
-                    </p>
-                  </div>
-                </li>
-                <li className="booking-summary__step-item">
-                  <span className="booking-summary__step-num">3</span>
-                  <div className="booking-summary__step-content">
-                    <strong>Photoshoot Preparation Guide</strong>
-                    <p>
-                      We’ll share our tailored wardrobe styling advice, location guides, and day-of checklist so you
-                      feel completely prepared.
-                    </p>
-                  </div>
-                </li>
-              </ol>
-            </div>
-
-            {customerInfo && (
-              <div className="booking-summary__details-card">
-                <h4 className="booking-summary__card-title">Submitted Client Details</h4>
-                <dl className="booking-summary__dl">
-                  <div>
-                    <dt>Client Name</dt>
-                    <dd>
-                      {customerInfo.firstName} {customerInfo.lastName}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Email</dt>
-                    <dd>{customerInfo.email}</dd>
-                  </div>
-                  <div>
-                    <dt>Phone</dt>
-                    <dd>{customerInfo.phone}</dd>
-                  </div>
-                  {customerInfo.notes && (
-                    <div className="booking-summary__dl-full">
-                      <dt>Special Notes</dt>
-                      <dd>{customerInfo.notes}</dd>
-                    </div>
-                  )}
-                </dl>
-              </div>
-            )}
-
-            <div className="booking-summary__actions">
-              <button
-                type="button"
-                className="booking-summary__btn booking-summary__btn--primary"
-                onClick={handleReset}
-              >
-                Book Another Session
-              </button>
-              <a href="#hero" className="booking-summary__btn booking-summary__btn--secondary">
-                Back to Top ↑
-              </a>
-            </div>
-          </div>
-
-          <div className="booking-summary__sidebar">
-            <BookingSessionCard
-              service={selectedService}
-              people={attendees}
-              dateTime={dateTime}
-            />
-          </div>
-        </div>
+        {dateTime && customerInfo && <BookingSummary
+          service={selectedService}
+          people={attendees}
+          dateTime={dateTime}
+          customerInfo={customerInfo}
+          onEdit={nextStep => {
+            setStep(nextStep)
+            document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+          }}
+          onProceedToDeposit={onProceedToDeposit}
+        />}
       </div>
-    </section>
+    </section></BookingStage>
   )
 }
