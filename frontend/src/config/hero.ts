@@ -14,6 +14,7 @@ export const heroSlides: readonly HeroSlide[] = [
 
 export const heroDestinations: HeroDestinations = {
   about: '#about',
+  contact: '#contact',
   booking: '#booking',
   portfolio: '#portfolio',
   discover: '#about',

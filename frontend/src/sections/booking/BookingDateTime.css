@@ -4,7 +4,7 @@
 
 .booking-datetime__top-header {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 1.5rem;
   margin-bottom: 0.5rem;
@@ -21,7 +21,7 @@
 }
 
 .booking-datetime__subtitle {
-  margin: 0;
+  margin: 0 0 4px 0;
   color: #666666;
   font-size: 16px;
   line-height: 24px;
@@ -133,8 +133,8 @@
   justify-content: center;
   width: 300px;
   height: 42px;
-  background: var(--color-brand-red, #ff2626);
-  color: #ffffff;
+  background: var(--color-brand-red);
+  color: var(--color-white);
   font-size: 16px;
   font-weight: 600;
   line-height: 24px;
@@ -146,19 +146,19 @@
 
 /* Hover: Solid Black from Figma Button States */
 .booking-datetime__continue-btn:hover:not(:disabled) {
-  background: #111111;
-  color: #ffffff;
+  background: var(--color-brand-black);
+  color: var(--color-white);
 }
 
 /* Pressed: Pitch Black from Figma Button States */
 .booking-datetime__continue-btn:active:not(:disabled) {
-  background: #000000;
+  background: var(--color-brand-black);
 }
 
 /* Disabled: Light Neutral Tint from Figma Button States */
 .booking-datetime__continue-btn:disabled {
-  background: rgba(17, 17, 17, 0.1);
-  color: #888888;
+  background: var(--color-black-10);
+  color: var(--color-gray);
   cursor: not-allowed;
 }
 
@@ -173,6 +173,7 @@
   .booking-datetime__subtitle {
     text-align: left;
     font-size: 14px;
+    margin-bottom: 0;
   }
 
   .booking-datetime__subnav {
@@ -355,8 +356,8 @@
   justify-content: center;
   width: 100%;
   min-height: 44px;
-  background: var(--color-brand-red, #ff2626);
-  color: #ffffff;
+  background: var(--color-brand-red);
+  color: var(--color-white);
   border: none;
   border-radius: 7px;
   font-size: 16px;
@@ -366,7 +367,7 @@
 }
 
 .booking-modal-confirm-btn:hover {
-  background: #111111;
+  background: var(--color-brand-black);
 }
 
 @keyframes bookingFadeIn {

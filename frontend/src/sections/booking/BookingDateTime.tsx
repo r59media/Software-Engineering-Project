@@ -179,7 +179,13 @@ export function BookingDateTime({
     <div className="booking-datetime">
       {/* Top Main Header */}
       <header className="booking-datetime__top-header">
-        <h2 className="booking-datetime__main-title">BOOK YOUR SESSION</h2>
+        <div className="booking__title-group">
+          <p className="booking__eyebrow">
+            <span aria-hidden="true" />
+            Booking
+          </p>
+          <h2 className="booking-datetime__main-title">BOOK YOUR SESSION</h2>
+        </div>
         <p className="booking-datetime__subtitle">Choose a date and time that work for you.</p>
       </header>
 

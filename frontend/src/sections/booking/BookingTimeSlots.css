@@ -1,5 +1,5 @@
 .booking-time-slots {
-  background: #ffffff;
+  background: var(--color-white);
   border-radius: 7px;
   padding: 18px 16px;
   width: 100%;
@@ -14,7 +14,7 @@
   font-size: 24px;
   font-weight: 700;
   line-height: 32px;
-  color: #111111;
+  color: var(--color-brand-black);
   margin: 0 0 6px 0;
 }
 
@@ -25,13 +25,13 @@
 .booking-time-slots__date-text {
   font-size: 16px;
   font-weight: 700;
-  color: #111111;
+  color: var(--color-brand-black);
   line-height: 22px;
 }
 
 .booking-time-slots__tz-text {
   font-size: 16px;
-  color: #666666;
+  color: var(--color-gray);
   line-height: 22px;
 }
 
@@ -63,7 +63,7 @@
   border-radius: 7px;
   border: none;
   background: rgba(17, 17, 17, 0.08);
-  color: #666666;
+  color: var(--color-gray);
   font-size: 15px;
   font-weight: 400;
   cursor: pointer;
@@ -72,22 +72,22 @@
 
 /* Hover: Brand Yellow from Figma System Design */
 .booking-time-slot-btn:hover:not(.booking-time-slot-btn--selected) {
-  background: #ffcc00;
-  color: #111111;
+  background: var(--color-brand-yellow);
+  color: var(--color-brand-black);
 }
 
 /* Selected: Brand Red with white text from Figma System Design */
 .booking-time-slot-btn--selected {
-  background: var(--color-brand-red, #ff2626) !important;
-  color: #ffffff !important;
+  background: var(--color-brand-red) !important;
+  color: var(--color-white) !important;
   font-weight: 700;
 }
 
 /* Focus */
 .booking-time-slot-btn:focus-visible {
-  background: #ffffff;
-  outline: 2px solid var(--color-brand-red, #ff2626);
-  color: #111111;
+  background: var(--color-white);
+  outline: 2px solid var(--color-brand-red);
+  color: var(--color-brand-black);
 }
 
 .booking-time-slots__footer {
@@ -98,13 +98,13 @@
 .booking-time-slots__duration-note {
   font-size: 16px;
   font-weight: 700;
-  color: #111111;
+  color: var(--color-brand-black);
   line-height: 22px;
 }
 
 .booking-time-slots__info-note {
   font-size: 15px;
-  color: #666666;
+  color: var(--color-gray);
   line-height: 20px;
 }
 
@@ -115,14 +115,14 @@
 .booking-time-slots__inquiry-heading {
   font-size: 16px;
   font-weight: 700;
-  color: #111111;
+  color: var(--color-brand-black);
   line-height: 22px;
 }
 
 .booking-time-slots__inquiry-link,
 .booking-time-slots__inquiry-btn {
   font-size: 15px;
-  color: #666666;
+  color: var(--color-gray);
   text-decoration: underline;
   background: none;
   border: none;
