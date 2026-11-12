@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { Hono } from 'hono'
 import {
   getSigningSecret,
@@ -12,6 +14,7 @@ import {
   verifyPassword,
   timingSafeEqual,
   revokeTokenInDb,
+  isTokenRevokedInDb,
   normalizeIpBucket,
   checkAndRecordLoginAttempt,
   clearLoginAttempts
@@ -122,7 +125,7 @@ test('createSessionToken and verifySessionToken include issuedAt and validate si
   assert.equal(expiredSession.valid, false)
 })
 
-test('extractSessionToken extracts tokens from headers and cookies with correct precedence', () => {
+test('extractSessionToken strictly extracts tokens from Authorization Bearer header', () => {
   const app = new Hono()
 
   let extracted: any = null
@@ -135,37 +138,28 @@ test('extractSessionToken extracts tokens from headers and cookies with correct 
   app.request('/test', { headers: { Authorization: 'Bearer token_from_header' } })
   assert.deepEqual(extracted, { token: 'token_from_header', source: 'header' })
 
-  // Bearer cookie is ignored and falls back to cookies
+  // Bearer cookie sentinel is ignored
   app.request('/test', {
     headers: {
-      Authorization: 'Bearer cookie',
-      Cookie: '__Host-r59_session=token_from_host_cookie'
+      Authorization: 'Bearer cookie'
     }
   })
-  assert.deepEqual(extracted, { token: 'token_from_host_cookie', source: 'cookie' })
+  assert.deepEqual(extracted, { token: null, source: null })
 
-  // __Host-r59_session takes precedence over r59_session
+  // Cookies are completely ignored
   app.request('/test', {
     headers: {
       Cookie: '__Host-r59_session=host_tok; r59_session=legacy_tok'
     }
   })
-  assert.deepEqual(extracted, { token: 'host_tok', source: 'cookie' })
-
-  // Fallback to r59_session
-  app.request('/test', {
-    headers: {
-      Cookie: 'r59_session=legacy_tok'
-    }
-  })
-  assert.deepEqual(extracted, { token: 'legacy_tok', source: 'cookie' })
+  assert.deepEqual(extracted, { token: null, source: null })
 
   // No token
   app.request('/test')
   assert.deepEqual(extracted, { token: null, source: null })
 })
 
-test('adminAuth middleware enforces signing secret, email match, revocation, and CSRF', async () => {
+test('adminAuth middleware enforces signing secret, email match, revocation, and header auth', async () => {
   const db = setupDb()
   const app = new Hono<{ Bindings: Bindings }>()
   app.use('*', adminAuth)
@@ -208,37 +202,24 @@ test('adminAuth middleware enforces signing secret, email match, revocation, and
   // Reset sessions_valid_after to past
   await db.prepare("UPDATE Admin_Settings SET setting_value = ? WHERE setting_key = 'sessions_valid_after'").bind('0').run()
 
-  // 5. CSRF validation on cookie-authenticated mutating requests
-  // Cookie auth with POST and no CSRF header -> 403
-  const resCookieCsrfFail = await app.request('http://localhost/admin/action', {
+  // 5. Cookie-only request is rejected (cookieless architecture) -> 401
+  const resCookieOnly = await app.request('http://localhost/admin/action', {
     method: 'POST',
     headers: {
       Cookie: `__Host-r59_session=${validToken}`
     }
   }, { DB: db, SESSION_SECRET: VALID_SECRET, ADMIN_EMAIL } as any)
-  assert.equal(resCookieCsrfFail.status, 403)
+  assert.equal(resCookieOnly.status, 401)
 
-  // Cookie auth with POST and Authorization: Bearer cookie (bypass attempt) -> must STILL be 403!
-  const resBypassAttempt = await app.request('http://localhost/admin/action', {
-    method: 'POST',
+  // 6. Header auth with GET and POST passes without requiring CSRF cookies
+  const resHeaderGet = await app.request('http://localhost/admin/action', {
+    method: 'GET',
     headers: {
-      Authorization: 'Bearer cookie',
-      Cookie: `__Host-r59_session=${validToken}`
+      Authorization: `Bearer ${validToken}`
     }
   }, { DB: db, SESSION_SECRET: VALID_SECRET, ADMIN_EMAIL } as any)
-  assert.equal(resBypassAttempt.status, 403)
+  assert.equal(resHeaderGet.status, 200)
 
-  // Cookie auth with POST and X-Requested-With -> 200
-  const resCookieCsrfPass = await app.request('http://localhost/admin/action', {
-    method: 'POST',
-    headers: {
-      Cookie: `__Host-r59_session=${validToken}`,
-      'X-Requested-With': 'XMLHttpRequest'
-    }
-  }, { DB: db, SESSION_SECRET: VALID_SECRET, ADMIN_EMAIL } as any)
-  assert.equal(resCookieCsrfPass.status, 200)
-
-  // Header auth with POST (API/CLI client) -> does not require CSRF
   const resHeaderPost = await app.request('http://localhost/admin/action', {
     method: 'POST',
     headers: {
@@ -332,4 +313,154 @@ test('adminAuth rejects tokens revoked in D1 Revoked_Sessions table', async () =
     headers: { Authorization: `Bearer ${token}` }
   }, { DB: db, SESSION_SECRET: VALID_SECRET, ADMIN_EMAIL } as any)
   assert.equal(resRevoked.status, 401)
+})
+
+test('/admin/ response has Cross-Origin-Opener-Policy: same-origin-allow-popups (never same-origin)', async () => {
+  const db = setupDb()
+  const mockAssets: any = {
+    fetch: async (req: Request) => {
+      const url = new URL(req.url)
+      if (url.pathname === '/admin/' || url.pathname === '/admin/index.html') {
+        return new Response('<!DOCTYPE html><html><head><title>Admin</title></head><body>Admin</body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        })
+      }
+      return new Response('Not Found', { status: 404 })
+    }
+  }
+
+  const testApp = new Hono<{ Bindings: Bindings }>()
+
+  // Global Security Headers (matches backend/src/index.ts)
+  testApp.use('*', async (c, next) => {
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    await next()
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  })
+
+  testApp.get('/admin', (c) => {
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    return c.redirect('/admin/', 301)
+  })
+
+  testApp.get('/admin/*', async (c) => {
+    const url = new URL(c.req.url)
+    const canonicalAdminUrl = new URL('/admin/', url.origin)
+    const assetRes = await c.env.ASSETS.fetch(
+      new Request(canonicalAdminUrl.toString(), {
+        method: 'GET',
+        headers: c.req.raw.headers
+      })
+    )
+    const headers = new Headers(assetRes.headers)
+    headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    return new Response(assetRes.body, {
+      status: assetRes.status,
+      statusText: assetRes.statusText,
+      headers
+    })
+  })
+
+  const env = {
+    DB: db,
+    SESSION_SECRET: VALID_SECRET,
+    ADMIN_EMAIL,
+    ASSETS: mockAssets
+  } as any
+
+  // 1. /admin redirect response has same-origin-allow-popups
+  const resRedirect = await testApp.request('/admin', {}, env)
+  assert.equal(resRedirect.status, 301)
+  assert.equal(resRedirect.headers.get('Location'), '/admin/')
+  assert.equal(resRedirect.headers.get('Cross-Origin-Opener-Policy'), 'same-origin-allow-popups')
+  assert.notEqual(resRedirect.headers.get('Cross-Origin-Opener-Policy'), 'same-origin')
+
+  // 2. /admin/ page response has same-origin-allow-popups and never same-origin
+  const resAdmin = await testApp.request('/admin/', {}, env)
+  assert.equal(resAdmin.status, 200)
+  assert.equal(resAdmin.headers.get('Cross-Origin-Opener-Policy'), 'same-origin-allow-popups')
+  assert.notEqual(resAdmin.headers.get('Cross-Origin-Opener-Policy'), 'same-origin')
+})
+
+test('/admin/assets/js/api/bookingsApi.js is present in backend/public/admin/assets/js/api/ after build and is served cleanly (not 404)', async () => {
+  const db = setupDb()
+  const bookingsApiFile = resolve(import.meta.dirname, '../public/admin/assets/js/api/bookingsApi.js')
+  assert.equal(existsSync(bookingsApiFile), true, 'bookingsApi.js must exist on disk in public/admin/assets/js/api/')
+
+  const bookingsApiContent = readFileSync(bookingsApiFile, 'utf8')
+  assert.ok(bookingsApiContent.includes('bookingsApi'), 'bookingsApi.js must define bookingsApi')
+
+  const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb|wasm)$/i
+
+  const mockAssets: any = {
+    fetch: async (req: Request) => {
+      const url = new URL(req.url)
+      if (url.pathname === '/admin/assets/js/api/bookingsApi.js') {
+        return new Response(bookingsApiContent, {
+          status: 200,
+          headers: { 'Content-Type': 'application/javascript' }
+        })
+      }
+      return new Response('Not Found', { status: 404 })
+    }
+  }
+
+  const testApp = new Hono<{ Bindings: Bindings }>()
+
+  // Global Security Headers (matches backend/src/index.ts)
+  testApp.use('*', async (c, next) => {
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    await next()
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  })
+
+  testApp.get('/admin/*', async (c) => {
+    const url = new URL(c.req.url)
+
+    if (STATIC_EXT_REGEX.test(url.pathname)) {
+      const assetRes = await c.env.ASSETS.fetch(c.req.raw)
+      if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
+        return c.notFound()
+      }
+      const headers = new Headers(assetRes.headers)
+      headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+      headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+      if (url.pathname.endsWith('.js')) {
+        headers.set('Content-Type', 'application/javascript')
+      }
+      return new Response(assetRes.body, {
+        status: assetRes.status,
+        statusText: assetRes.statusText,
+        headers
+      })
+    }
+    return c.notFound()
+  })
+
+  const env = {
+    DB: db,
+    SESSION_SECRET: VALID_SECRET,
+    ADMIN_EMAIL,
+    ASSETS: mockAssets
+  } as any
+
+  // Unauthenticated request must succeed with 200 (served cleanly as a static module, NOT 404)
+  const resUnauth = await testApp.request('/admin/assets/js/api/bookingsApi.js', {}, env)
+  assert.equal(resUnauth.status, 200, 'Unauthenticated request must return 200 OK, never 404')
+  assert.equal(resUnauth.headers.get('Content-Type'), 'application/javascript')
+  assert.equal(resUnauth.headers.get('Cross-Origin-Opener-Policy'), 'same-origin-allow-popups')
+  assert.notEqual(resUnauth.headers.get('Cross-Origin-Opener-Policy'), 'same-origin')
+  const bodyText = await resUnauth.text()
+  assert.ok(bodyText.includes('bookingsApi'), 'Delivered script body must contain bookingsApi')
+
+  // Authenticated request also succeeds with 200 OK and same-origin-allow-popups COOP
+  const token = await createSessionToken(VALID_SECRET, ADMIN_EMAIL)
+  const resAuth = await testApp.request('/admin/assets/js/api/bookingsApi.js', {
+    headers: { Authorization: `Bearer ${token}` }
+  }, env)
+  assert.equal(resAuth.status, 200)
+  assert.equal(resAuth.headers.get('Content-Type'), 'application/javascript')
+  assert.equal(resAuth.headers.get('Cross-Origin-Opener-Policy'), 'same-origin-allow-popups')
 })

@@ -2,11 +2,16 @@
 /**
  * R59 Media Admin — Universal WebP Converter Engine
  * 
- * Zero-build-step client-side image processing utility. Converts standard formats
+ * High-fidelity client-side image processing utility. Converts standard formats
  * (JPG, PNG, GIF, BMP, TIFF, AVIF), Apple HEIC/HEIF photos, and Camera RAW formats
  * (Canon CR2/CR3, Nikon NEF, Sony ARW, Adobe DNG, Fuji RAF, Olympus ORF, Panasonic RW2,
- * Pentax PEF, Samsung SRW) into maximum-fidelity, lossless/100% quality WebP images
- * preserving 1:1 original sensor/image resolution.
+ * Pentax PEF, Samsung SRW) into maximum-fidelity, 92% quality WebP images
+ * with automatic lanczos3 downscaling for images exceeding 2560px.
+ * 
+ * Pipeline:
+ * - 100% EXIF/GPS/metadata stripping via createImageBitmap({ premultiplyAlpha: 'none', colorSpaceConversion: 'default' })
+ * - Off-main-thread C-Wasm libwebp and lanczos3 resize via webpEncoder.worker.js
+ * - Graceful fallback to HTML5 <canvas> 0.92 encoding if WebAssembly/Worker is unavailable or fails
  */
 
 (function () {
@@ -211,54 +216,208 @@
   }
 
   /**
-   * Decodes a File or Blob into an ImageBitmap or HTMLImageElement.
-   * @param {File|Blob} fileOrBlob
-   * @returns {Promise<ImageBitmap|HTMLImageElement>}
+   * Decode a File or Blob to raw RGBA ImageData buffer via createImageBitmap.
+   * Uses { premultiplyAlpha: 'none', colorSpaceConversion: 'default' } to guarantee
+   * 100% EXIF, GPS, and camera metadata stripping before WebP encoding.
+   * Immediately calls bitmap.close() to free GPU/native resources.
+   * 
+   * @param {Blob|File} blob
+   * @returns {Promise<{ rgbaBuffer: ArrayBuffer, width: number, height: number }>}
    */
-  async function decodeToBitmap(fileOrBlob) {
-    if (typeof createImageBitmap === 'function') {
+  async function decodeBlobToRawRgba(blob) {
+    if (typeof createImageBitmap !== 'function') {
+      throw new Error('createImageBitmap is not supported in this browser environment');
+    }
+
+    const bitmap = await createImageBitmap(blob, {
+      premultiplyAlpha: 'none',
+      colorSpaceConversion: 'default'
+    });
+
+    const width = bitmap.width;
+    const height = bitmap.height;
+
+    let imageData = null;
+
+    if (typeof OffscreenCanvas !== 'undefined') {
       try {
-        return await createImageBitmap(fileOrBlob);
+        const offscreen = new OffscreenCanvas(width, height);
+        const ctx = offscreen.getContext('2d', { willReadFrequently: true });
+        if (ctx) {
+          ctx.drawImage(bitmap, 0, 0);
+          imageData = ctx.getImageData(0, 0, width, height);
+        }
       } catch {
-        // Fallback to Image element
+        // Fallback to DOM canvas
       }
     }
 
-    return new Promise((resolve, reject) => {
-      if (typeof Image === 'undefined') {
-        return reject(new Error('Neither createImageBitmap nor Image is available'));
+    if (!imageData) {
+      if (typeof document === 'undefined') {
+        if (typeof bitmap.close === 'function') bitmap.close();
+        throw new Error('DOM canvas not available to extract raw pixel data');
       }
-      const url = URL.createObjectURL(fileOrBlob);
-      const img = new Image();
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        resolve(img);
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) {
+        if (typeof bitmap.close === 'function') bitmap.close();
+        throw new Error('Unable to create 2D canvas context');
+      }
+      ctx.drawImage(bitmap, 0, 0);
+      imageData = ctx.getImageData(0, 0, width, height);
+    }
+
+    // Immediately close the bitmap to release memory/texture
+    if (typeof bitmap.close === 'function') {
+      bitmap.close();
+    }
+
+    return {
+      rgbaBuffer: imageData.data.buffer,
+      width,
+      height
+    };
+  }
+
+  // --- Web Worker WebP Pipeline Management ---
+
+  let encoderWorker = null;
+  if (typeof window !== 'undefined' && window.__r59_encoder_worker) {
+    encoderWorker = window.__r59_encoder_worker;
+  }
+  let nextMessageId = 1;
+  const pendingRequests = new Map();
+
+  function getEncoderWorker() {
+    if (!encoderWorker) {
+      if (typeof window !== 'undefined' && window.__r59_encoder_worker) {
+        encoderWorker = window.__r59_encoder_worker;
+        return encoderWorker;
+      }
+      if (typeof Worker === 'undefined') {
+        throw new Error('Web Workers are not supported in this environment');
+      }
+
+      const workerUrl = typeof window !== 'undefined' && window.location
+        ? new URL('/admin/assets/js/webpEncoder.worker.js', window.location.origin).href
+        : '/admin/assets/js/webpEncoder.worker.js';
+
+      encoderWorker = new Worker(workerUrl, { type: 'module' });
+      if (typeof window !== 'undefined') {
+        window.__r59_encoder_worker = encoderWorker;
+      }
+
+      encoderWorker.onmessage = function (e) {
+        const data = e.data;
+        if (!data || typeof data !== 'object') return;
+        const { id, success, webpBuffer, width, height, error } = data;
+        const pending = pendingRequests.get(id);
+        if (pending) {
+          pendingRequests.delete(id);
+          if (success && webpBuffer) {
+            pending.resolve({ webpBuffer, width, height });
+          } else {
+            pending.reject(new Error(error || 'Worker WebP encoding failed'));
+          }
+        }
       };
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(new Error('Failed to decode image via HTMLImageElement'));
+
+      encoderWorker.onerror = function (err) {
+        console.warn('[R59 Admin] Encoder worker error:', err);
+        for (const [, pending] of pendingRequests.entries()) {
+          pending.reject(new Error(`Encoder worker terminated: ${err?.message || 'Worker error'}`));
+        }
+        pendingRequests.clear();
+        try {
+          encoderWorker.terminate();
+        } catch {}
+        encoderWorker = null;
+        if (typeof window !== 'undefined') {
+          delete window.__r59_encoder_worker;
+        }
       };
-      img.src = url;
+    }
+    return encoderWorker;
+  }
+
+  function encodeViaWorker(rgbaBuffer, width, height, targetWidth, targetHeight, timeoutMs = 60000) {
+    return new Promise((resolve, reject) => {
+      try {
+        const worker = getEncoderWorker();
+        const id = nextMessageId++;
+
+        const timer = setTimeout(() => {
+          if (pendingRequests.has(id)) {
+            pendingRequests.delete(id);
+            reject(new Error(`WebP worker encoding timed out after ${timeoutMs}ms`));
+          }
+        }, timeoutMs);
+
+        pendingRequests.set(id, {
+          resolve: (data) => {
+            clearTimeout(timer);
+            resolve(data);
+          },
+          reject: (err) => {
+            clearTimeout(timer);
+            reject(err);
+          }
+        });
+
+        worker.postMessage(
+          { id, rgbaBuffer, width, height, targetWidth, targetHeight },
+          [rgbaBuffer]
+        );
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
+  // --- Fallback Canvas Encoder ---
+
   /**
-   * Draw an ImageBitmap/Image to an HTMLCanvasElement at 100% 1:1 original resolution
-   * (unless a finite maxDimension is explicitly supplied) and encode to WebP with visually lossless 92% quality.
-   * @param {ImageBitmap|HTMLImageElement} bitmap
-   * @param {number} [maxDimension=Infinity]
+   * Graceful fallback to HTML5 Canvas 2D encoding at 0.92 quality.
+   * Used if WebAssembly/Web Worker is blocked (e.g. strict CSP) or encounters a runtime fault.
+   * 
+   * @param {Blob|File} blob
+   * @param {number} [maxDimension=2560]
    * @param {number} [quality=0.92]
    * @returns {Promise<{ webpBlob: Blob, width: number, height: number, canvas: HTMLCanvasElement }>}
    */
-  async function bitmapToWebPBlob(bitmap, maxDimension = 2560, quality = 0.92) {
+  async function canvasFallbackEncode(blob, maxDimension = 2560, quality = 0.92) {
+    let bitmap;
+    if (typeof createImageBitmap === 'function') {
+      bitmap = await createImageBitmap(blob);
+    } else {
+      bitmap = await new Promise((resolve, reject) => {
+        if (typeof Image === 'undefined') {
+          return reject(new Error('Neither createImageBitmap nor Image is available for canvas fallback'));
+        }
+        const url = URL.createObjectURL(blob);
+        const img = new Image();
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+          resolve(img);
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error('Failed to decode image via HTMLImageElement'));
+        };
+        img.src = url;
+      });
+    }
+
     let width = bitmap.naturalWidth || bitmap.width;
     let height = bitmap.naturalHeight || bitmap.height;
 
     if (!width || !height) {
-      throw new Error('Invalid bitmap dimensions for WebP conversion');
+      if (typeof bitmap.close === 'function') bitmap.close();
+      throw new Error('Invalid bitmap dimensions for canvas fallback');
     }
 
-    // Scale down proportionally if longest edge exceeds maxDimension (2560px)
     if (Number.isFinite(maxDimension) && Math.max(width, height) > maxDimension) {
       const scale = maxDimension / Math.max(width, height);
       width = Math.round(width * scale);
@@ -269,9 +428,52 @@
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bitmap, 0, 0, width, height);
+    if (ctx) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(bitmap, 0, 0, width, height);
+    }
+
+    if (typeof bitmap.close === 'function') {
+      bitmap.close();
+    }
+
+    const webpBlob = await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        b => {
+          if (b) resolve(b);
+          else reject(new Error('Canvas failed to encode image to WebP'));
+        },
+        'image/webp',
+        quality
+      );
+    });
+
+    return { webpBlob, width, height, canvas };
+  }
+
+  /**
+   * Backwards-compatible bitmap-to-webp helper.
+   */
+  async function bitmapToWebPBlob(bitmap, maxDimension = 2560, quality = 0.92) {
+    let width = bitmap.naturalWidth || bitmap.width;
+    let height = bitmap.naturalHeight || bitmap.height;
+
+    if (Number.isFinite(maxDimension) && Math.max(width, height) > maxDimension) {
+      const scale = maxDimension / Math.max(width, height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(bitmap, 0, 0, width, height);
+    }
 
     if (typeof bitmap.close === 'function') {
       bitmap.close();
@@ -280,11 +482,8 @@
     const webpBlob = await new Promise((resolve, reject) => {
       canvas.toBlob(
         blob => {
-          if (blob) {
-            resolve(blob);
-          } else {
-            reject(new Error('Canvas failed to encode image to WebP'));
-          }
+          if (blob) resolve(blob);
+          else reject(new Error('Canvas failed to encode image to WebP'));
         },
         'image/webp',
         quality
@@ -298,12 +497,16 @@
    * Convert any supported image (JPG, PNG, WebP, GIF, AVIF, BMP, HEIC, Camera RAW, etc.)
    * into a visually lossless WebP File (quality = 0.92, max 2560px on longest edge).
    * 
+   * Uses C-Wasm libwebp & lanczos3 pipeline via dedicated Web Worker with graceful
+   * canvas 2D fallback.
+   * 
    * @param {File} file - Source file
    * @param {number|Object} [options] - Quality number (e.g. 0.92) or options object
    * @param {number} [options.maxDimension=2560] - Max dimension on longest edge (default 2560px)
    * @param {number} [options.quality=0.92] - WebP encoding quality (default 0.92)
    * @returns {Promise<{
    *   file: File,
+   *   blob: Blob,
    *   originalSize: number,
    *   convertedSize: number,
    *   width: number,
@@ -322,112 +525,121 @@
     const ext = (lastDot > 0 ? name.slice(lastDot + 1) : '').toLowerCase();
 
     let sourceFormat = ext || (file.type ? file.type.replace('image/', '') : 'unknown');
+    let workingBlob = file;
 
-    // If already WebP, verify resolution doesn't exceed maxDimension
-    if (file.type === 'image/webp' || ext === 'webp') {
-      let width = 0;
-      let height = 0;
-      let bitmap = null;
-      try {
-        bitmap = await decodeToBitmap(file);
-        width = bitmap.naturalWidth || bitmap.width;
-        height = bitmap.naturalHeight || bitmap.height;
-      } catch {
-        // Dimensions probe optional
-      }
-
-      // If dimensions are within 2560px, pass through
-      if (!bitmap || Math.max(width, height) <= maxDimension) {
-        if (bitmap && typeof bitmap.close === 'function') bitmap.close();
-        const webpFile = file.name.endsWith('.webp') && file.type === 'image/webp'
-          ? file
-          : new File([file], `${baseName}.webp`, { type: 'image/webp', lastModified: Date.now() });
-
-        return {
-          file: webpFile,
-          originalSize: file.size,
-          convertedSize: webpFile.size,
-          width,
-          height,
-          sourceFormat: 'webp'
-        };
-      }
-
-      // Re-encode WebP that exceeds 2560px
-      const { webpBlob, width: newW, height: newH } = await bitmapToWebPBlob(bitmap, maxDimension, requestedQuality);
-      const webpFile = new File([webpBlob], `${baseName}.webp`, { type: 'image/webp', lastModified: Date.now() });
-      return {
-        file: webpFile,
-        originalSize: file.size,
-        convertedSize: webpFile.size,
-        width: newW,
-        height: newH,
-        sourceFormat: 'webp (downscaled)'
-      };
-    }
-
-    let bitmap;
+    // 1. Format-specific preprocessing (RAW embedded JPEG extraction, HEIC decoding)
     if (RAW_EXTENSIONS.has(ext)) {
       sourceFormat = `raw (${ext.toUpperCase()})`;
       const arrayBuffer = await file.arrayBuffer();
-      const jpegBlob = extractLargestEmbeddedJpeg(arrayBuffer);
-      bitmap = await decodeToBitmap(jpegBlob);
+      workingBlob = extractLargestEmbeddedJpeg(arrayBuffer);
     } else if (HEIC_EXTENSIONS.has(ext) || file.type === 'image/heic' || file.type === 'image/heif') {
       sourceFormat = ext || 'heic';
-      const decodedBlob = await decodeHeicToBlob(file);
-      bitmap = await decodeToBitmap(decodedBlob);
-    } else {
-      bitmap = await decodeToBitmap(file);
+      workingBlob = await decodeHeicToBlob(file);
     }
 
-    let { webpBlob, width, height, canvas } = await bitmapToWebPBlob(bitmap, maxDimension, requestedQuality);
+    let webpBlob = null;
+    let finalWidth = 0;
+    let finalHeight = 0;
 
-    // If converted WebP equals or exceeds original file size (e.g. converting an already compressed JPEG),
-    // attempt slightly tighter quality (0.88, visually lossless) and pick the smaller blob.
-    if (opts.quality === undefined && file.size && webpBlob.size >= file.size && canvas) {
-      try {
-        const fallbackBlob = await new Promise((resolve, reject) => {
-          canvas.toBlob(
-            blob => {
-              if (blob) resolve(blob);
-              else reject(new Error('Canvas failed to encode image to WebP at quality 0.88'));
-            },
-            'image/webp',
-            0.88
-          );
-        });
-        if (fallbackBlob && fallbackBlob.size < webpBlob.size) {
-          webpBlob = fallbackBlob;
-        }
-      } catch {
-        // Retain initial blob if fallback fails
+    // 2. Primary Path: Decode via createImageBitmap (100% EXIF/GPS stripping) and encode via C-Wasm Worker
+    try {
+      const { rgbaBuffer, width, height } = await decodeBlobToRawRgba(workingBlob);
+
+      let targetWidth = width;
+      let targetHeight = height;
+      if (Number.isFinite(maxDimension) && Math.max(width, height) > maxDimension) {
+        const scale = maxDimension / Math.max(width, height);
+        targetWidth = Math.round(width * scale);
+        targetHeight = Math.round(height * scale);
       }
+
+      const workerRes = await encodeViaWorker(rgbaBuffer, width, height, targetWidth, targetHeight);
+      webpBlob = new Blob([workerRes.webpBuffer], { type: 'image/webp' });
+      finalWidth = workerRes.width;
+      finalHeight = workerRes.height;
+    } catch (wasmErr) {
+      console.warn('[R59 Admin] C-Wasm WebP Worker pipeline unavailable or failed; executing Canvas fallback:', wasmErr);
+
+      // 3. Graceful fallback: HTML5 <canvas> 0.92 encoding
+      const fallbackRes = await canvasFallbackEncode(workingBlob, maxDimension, requestedQuality);
+      webpBlob = fallbackRes.webpBlob;
+      finalWidth = fallbackRes.width;
+      finalHeight = fallbackRes.height;
     }
 
-    const webpFile = new File([webpBlob], `${baseName}.webp`, { type: 'image/webp', lastModified: Date.now() });
+    const webpFile = new File([webpBlob], `${baseName}.webp`, {
+      type: 'image/webp',
+      lastModified: Date.now()
+    });
 
-    return {
+    const result = {
       file: webpFile,
-      originalSize: file.size,
+      blob: webpBlob,
+      originalSize: file.size || workingBlob.size || 0,
       convertedSize: webpFile.size,
-      width,
-      height,
+      width: finalWidth,
+      height: finalHeight,
       sourceFormat
     };
+
+    // Attach properties to File and Blob for universal caller interoperability
+    Object.assign(webpFile, result);
+    Object.assign(webpBlob, result);
+
+    return result;
   }
+
+  /**
+   * Public signature: fileToWebp(file, options)
+   * Alias / wrapper matching existing exported contract.
+   * 
+   * @param {File} file
+   * @param {Object} [options]
+   * @returns {Promise<File>} File object augmented with conversion metadata
+   */
+  async function fileToWebp(file, options = {}) {
+    const res = await convertToWebP(file, options);
+    return res.file;
+  }
+
+  /**
+   * Public signature: blobToWebp(blob, options)
+   * Converts a Blob to WebP.
+   * 
+   * @param {Blob} blob
+   * @param {Object} [options]
+   * @returns {Promise<Blob>} Blob object augmented with conversion metadata
+   */
+  async function blobToWebp(blob, options = {}) {
+    const file = blob instanceof File
+      ? blob
+      : new File([blob], 'image.blob', { type: blob.type || 'image/png' });
+    const res = await convertToWebP(file, options);
+    return res.blob;
+  }
+
+  const webpConverter = {
+    SUPPORTED_EXTENSIONS,
+    RAW_EXTENSIONS,
+    HEIC_EXTENSIONS,
+    isSupportedImageFile,
+    extractLargestEmbeddedJpeg,
+    decodeHeicToBlob,
+    decodeBlobToRawRgba,
+    bitmapToWebPBlob,
+    canvasFallbackEncode,
+    convertToWebP,
+    fileToWebp,
+    blobToWebp
+  };
 
   // Window global registration for zero-build script environments
   if (typeof window !== 'undefined') {
     window.R59 = window.R59 || {};
-    window.R59.webpConverter = {
-      SUPPORTED_EXTENSIONS,
-      RAW_EXTENSIONS,
-      HEIC_EXTENSIONS,
-      isSupportedImageFile,
-      extractLargestEmbeddedJpeg,
-      decodeHeicToBlob,
-      bitmapToWebPBlob,
-      convertToWebP
-    };
+    window.R59.webpConverter = webpConverter;
+  }
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = webpConverter;
   }
 })();

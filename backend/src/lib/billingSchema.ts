@@ -61,3 +61,80 @@ export const BILLING_SCHEMA_STEPS: readonly { sql: string; ignoreError: boolean 
   { sql: BOOKING_INVOICES_TABLE_SQL, ignoreError: false },
   { sql: BOOKING_INVOICES_OPEN_INDEX_SQL, ignoreError: false }
 ]
+
+/**
+ * Safely applies photo permission columns to existing Bookings table if missing (Audit 3).
+ * Verifies column presence against PRAGMA table_info(Bookings) to prevent errors and ensure
+ * schema migration executes cleanly on production D1 instances.
+ */
+export async function ensurePhotoPermissionsColumns(db: any): Promise<void> {
+  try {
+    const info = await db.prepare('PRAGMA table_info(Bookings)').all()
+    const existing = new Set((info.results || []).map((col: any) => String(col.name).toLowerCase()))
+
+    if (existing.size === 0) return // Bookings table does not exist yet
+
+    const statements: string[] = []
+    if (!existing.has('photo_permission_portfolio')) {
+      statements.push('ALTER TABLE Bookings ADD COLUMN photo_permission_portfolio BOOLEAN DEFAULT 0')
+    }
+    if (!existing.has('photo_permission_social')) {
+      statements.push('ALTER TABLE Bookings ADD COLUMN photo_permission_social BOOLEAN DEFAULT 0')
+    }
+    if (!existing.has('photo_permission_accepted_at')) {
+      statements.push('ALTER TABLE Bookings ADD COLUMN photo_permission_accepted_at TEXT')
+    }
+    if (!existing.has('photo_permission_version')) {
+      statements.push("ALTER TABLE Bookings ADD COLUMN photo_permission_version TEXT DEFAULT 'v1'")
+    }
+
+    for (const sql of statements) {
+      await db.prepare(sql).run()
+    }
+  } catch (err) {
+    console.warn('Could not ensure photo permissions columns on Bookings:', err)
+  }
+}
+
+/**
+ * Atomic replacement of media chunks in D1 Media_Storage (Audit 5).
+ * Executes deletion of old chunks and insertion of new 512KB chunks in a single atomic c.env.DB.batch([...]) transaction.
+ */
+export async function replaceMediaStorageChunks(
+  db: any,
+  fileKey: string,
+  arrayBuffer: ArrayBuffer,
+  contentType: string = 'image/webp'
+): Promise<void> {
+  await db.prepare(
+    'CREATE TABLE IF NOT EXISTS Media_Storage (file_key TEXT NOT NULL, chunk_index INTEGER NOT NULL, content_type TEXT NOT NULL DEFAULT \'image/webp\', data BLOB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (file_key, chunk_index))'
+  ).run()
+
+  const CHUNK_SIZE = 512 * 1024
+  const statements: any[] = []
+
+  // Atomic chunk replacement: old chunk deletion is included in the batch
+  statements.push(db.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(fileKey))
+
+  let chunkIndex = 0
+  for (let offset = 0; offset < arrayBuffer.byteLength; offset += CHUNK_SIZE) {
+    const chunk = new Uint8Array(arrayBuffer.slice(offset, offset + CHUNK_SIZE))
+    statements.push(
+      db.prepare(
+        'INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)'
+      ).bind(fileKey, chunkIndex, contentType, chunk)
+    )
+    chunkIndex++
+  }
+
+  if (statements.length === 1) { // Only DELETE was added
+    statements.push(
+      db.prepare(
+        'INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)'
+      ).bind(fileKey, 0, contentType, new Uint8Array(0))
+    )
+  }
+
+  // Execute deletion of old chunks and insertion of new chunks in a single atomic batch transaction
+  await db.batch(statements)
+}

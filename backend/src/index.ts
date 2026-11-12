@@ -9,9 +9,12 @@ import { uploadRouter } from './routes/upload'
 import { checkoutRouter } from './routes/checkout'
 import { portfolioRouter } from './routes/portfolio'
 import { servicesRouter } from './routes/services'
-import { adminRouter, DEFAULT_PROFILE } from './routes/admin'
+import { adminRouter, DEFAULT_PROFILE, replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady } from './routes/admin'
 import { squareWebhookRouter } from './routes/squareWebhook'
 import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret } from './middleware/auth'
+import { verifyMediaSignature, parseRangeHeader } from './utils/signedUrl'
+
+export { replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady }
 
 export type Bindings = {
   DB: D1Database
@@ -28,6 +31,7 @@ export type Bindings = {
   SQUARE_WEBHOOK_SIGNATURE_KEY?: string
   SQUARE_WEBHOOK_URL?: string
   GOOGLE_CLIENT_ID?: string
+  MEDIA_SIGNING_SECRET?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -37,10 +41,11 @@ app.use('*', logger())
 
 // Global Security Headers
 app.use('*', async (c, next) => {
+  c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   await next()
   c.header(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' https://accounts.google.com/gsi/; frame-src 'self' https://accounts.google.com/gsi/ https://accounts.google.com/; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client https://web.squarecdn.com https://sandbox.web.squarecdn.com; connect-src 'self' https://accounts.google.com/gsi/ https://connect.squareup.com https://pci-connect.squareup.com https://pci-connect.squareupsandbox.com; frame-src https://accounts.google.com/gsi/ https://web.squarecdn.com https://sandbox.web.squarecdn.com; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; worker-src 'self'; object-src 'none'; base-uri 'self'"
   )
   c.header('X-Frame-Options', 'DENY')
   c.header('X-Content-Type-Options', 'nosniff')
@@ -99,20 +104,44 @@ app.use('*', async (c, next) => {
 
 /**
  * Validates whether a media request is authorized (Finding 8).
- * Accepts requests with 'X-R59-Client: media-viewer' or a cryptographically valid,
- * non-revoked session token.
+ * Accepts requests with 'X-R59-Client: media-viewer', valid HMAC signed URL,
+ * active public portfolio asset, or a cryptographically valid, non-revoked session token.
  */
-async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>): Promise<boolean> {
+async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, fileKey?: string): Promise<boolean> {
   const clientHeader = c.req.header('X-R59-Client')
   if (clientHeader === 'media-viewer') return true
 
+  const exp = c.req.query('exp')
+  const sig = c.req.query('sig')
+  if (exp && sig) {
+    const key = fileKey || decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+    const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
+    const valid = await verifyMediaSignature(key, Number(exp), sig, secret)
+    if (valid) return true
+  }
+
   const { token } = extractSessionToken(c)
-  if (!token) return false
-  const secret = getSigningSecret(c.env)
-  if (!secret) return false
-  if (await isTokenRevokedInDb(c.env.DB, token)) return false
-  const session = await verifySessionToken(token, secret)
-  return session.valid
+  if (token) {
+    const secret = getSigningSecret(c.env)
+    if (secret && !(await isTokenRevokedInDb(c.env.DB, token))) {
+      const session = await verifySessionToken(token, secret)
+      if (session.valid) return true
+    }
+  }
+
+  const effectiveKey = fileKey || (new URL(c.req.url).pathname.startsWith('/api/media/')
+    ? decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+    : '')
+  if (effectiveKey && c.env.DB) {
+    try {
+      const row = await c.env.DB.prepare(
+        'SELECT 1 AS found FROM Portfolio_Images WHERE is_active = 1 AND (media_key = ? OR media_key = ? OR media_key = ?) LIMIT 1'
+      ).bind(effectiveKey, `/api/media/${effectiveKey}`, `/${effectiveKey}`).first()
+      if (row) return true
+    } catch {}
+  }
+
+  return false
 }
 
 // Block sourcemap files everywhere & protect media/model assets from standalone scraping & hotlinking
@@ -137,6 +166,25 @@ app.use('*', async (c, next) => {
   const is3DModel = /\.glb$/i.test(url.pathname)
 
   if ((isProtectedImage || is3DModel) && (c.req.method === 'GET' || c.req.method === 'HEAD')) {
+    // If request to /api/media/ includes signed parameters, verify signature
+    if (url.pathname.startsWith('/api/media/')) {
+      const expParam = url.searchParams.get('exp')
+      const sigParam = url.searchParams.get('sig')
+      if (expParam || sigParam) {
+        const fileKey = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+        const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
+        const isValid = expParam && sigParam ? await verifyMediaSignature(fileKey, Number(expParam), sigParam, secret) : false
+        if (!isValid) {
+          return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
+        }
+        await next()
+        c.header('Cross-Origin-Resource-Policy', 'same-origin')
+        c.header('Content-Disposition', 'inline')
+        c.header('X-Content-Type-Options', 'nosniff')
+        return
+      }
+    }
+
     const fetchDest = c.req.header('Sec-Fetch-Dest')
     const fetchSite = c.req.header('Sec-Fetch-Site')
 
@@ -152,8 +200,12 @@ app.use('*', async (c, next) => {
 
     // For images: enforce authorized in-memory fetch carrying 'X-R59-Client: media-viewer'
     // OR authenticated admin session (allows Admin dashboard to display, preview, and replace photos)
+    // OR active public portfolio asset
     if (isProtectedImage) {
-      const isAuthorizedClient = await isAuthorizedMediaRequest(c)
+      const fileKey = url.pathname.startsWith('/api/media/')
+        ? decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+        : undefined
+      const isAuthorizedClient = await isAuthorizedMediaRequest(c, fileKey)
       if (!isAuthorizedClient) {
         return c.redirect('/', 302)
       }
@@ -171,11 +223,77 @@ app.use('*', async (c, next) => {
 
 // Route /admin and /admin/* to Admin Dashboard static assets
 app.get('/admin', (c) => {
+  c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   return c.redirect('/admin/', 301)
 })
 
-const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb)$/i
-const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|utils\/webpConverter\.js|api\/(bookingsApi|dashboardApi|packagesApi|paymentsApi|personalApi|photographyApi|scheduleApi)\.js)/i
+// Dedicated handler for Wasm assets: enforces application/wasm and prevents HTML fallback (Audit 1)
+app.get('/admin/assets/wasm/*', async (c) => {
+  if (!c.env.ASSETS) {
+    return c.text('Internal server error.', 500)
+  }
+  const url = new URL(c.req.url)
+  if (!url.pathname.endsWith('.wasm')) {
+    return c.notFound()
+  }
+  const assetRes = await c.env.ASSETS.fetch(c.req.raw)
+  if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
+    return c.notFound()
+  }
+  const headers = new Headers(assetRes.headers)
+  headers.set('Content-Type', 'application/wasm')
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  headers.set('X-Content-Type-Options', 'nosniff')
+  return new Response(assetRes.body, {
+    status: assetRes.status,
+    statusText: assetRes.statusText,
+    headers
+  })
+})
+
+// Dedicated handlers for webpEncoder worker: enforces application/javascript and prevents HTML fallback (Audit 1)
+app.get('/admin/assets/js/webpEncoder.worker.js', async (c) => {
+  if (!c.env.ASSETS) {
+    return c.text('Internal server error.', 500)
+  }
+  const assetRes = await c.env.ASSETS.fetch(c.req.raw)
+  if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
+    return c.notFound()
+  }
+  const headers = new Headers(assetRes.headers)
+  headers.set('Content-Type', 'application/javascript')
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  headers.set('X-Content-Type-Options', 'nosniff')
+  return new Response(assetRes.body, {
+    status: assetRes.status,
+    statusText: assetRes.statusText,
+    headers
+  })
+})
+
+app.get('/admin/assets/js/utils/webpEncoder.worker.js', async (c) => {
+  if (!c.env.ASSETS) {
+    return c.text('Internal server error.', 500)
+  }
+  const assetRes = await c.env.ASSETS.fetch(c.req.raw)
+  if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
+    return c.notFound()
+  }
+  const headers = new Headers(assetRes.headers)
+  headers.set('Content-Type', 'application/javascript')
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  headers.set('X-Content-Type-Options', 'nosniff')
+  return new Response(assetRes.body, {
+    status: assetRes.status,
+    statusText: assetRes.statusText,
+    headers
+  })
+})
+
+const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb|wasm)$/i
 
 app.get('/admin/*', async (c) => {
   if (!c.env.ASSETS) {
@@ -194,32 +312,15 @@ app.get('/admin/*', async (c) => {
     return c.notFound()
   }
 
-  // Gate sensitive admin scripts behind valid authentication
-  if (GATED_ADMIN_SCRIPT_REGEX.test(url.pathname)) {
-    const { token } = extractSessionToken(c)
-    const signingSecret = getSigningSecret(c.env)
-    const isAuthed = Boolean(
-      token &&
-      signingSecret &&
-      !(await isTokenRevokedInDb(c.env.DB, token)) &&
-      (await verifySessionToken(token, signingSecret)).valid
-    )
-    if (!isAuthed) {
-      return new Response('Not Found', {
-        status: 404,
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'no-store, no-cache, must-revalidate'
-        }
-      })
-    }
-  }
-
   let assetRes: Response
 
   // 2. If requesting a static web asset with an extension (excluding html), fetch directly
   if (STATIC_EXT_REGEX.test(url.pathname)) {
     assetRes = await c.env.ASSETS.fetch(c.req.raw)
+    // NEVER allow an HTML fallback to intercept static assets (Audit 1)
+    if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
+      return c.notFound()
+    }
   } else {
     // 3. For '/admin/', '/admin/index.html', or extensionless SPA routes,
     // request canonical '/admin/' so html_handling serves 200 OK directly
@@ -233,8 +334,11 @@ app.get('/admin/*', async (c) => {
   }
 
   // 4. Guard against redirect loops: if ASSETS ever returns a redirect to /admin/,
-  // fetch /admin/ directly or return the body with 200 OK
+  // fetch /admin/ directly or return the body with 200 OK (strictly for HTML routes, never static assets)
   if (assetRes.status >= 300 && assetRes.status < 400) {
+    if (STATIC_EXT_REGEX.test(url.pathname)) {
+      return c.notFound()
+    }
     const loc = assetRes.headers.get('Location')
     if (loc === '/admin/' || loc === url.pathname) {
       const fallbackUrl = new URL('/admin/', url.origin)
@@ -253,6 +357,12 @@ app.get('/admin/*', async (c) => {
   // Clone with mutable headers so global security header middleware attaches headers cleanly
   const headers = new Headers(assetRes.headers)
   headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  if (url.pathname.endsWith('.wasm')) {
+    headers.set('Content-Type', 'application/wasm')
+  } else if (url.pathname.endsWith('/webpEncoder.worker.js') || url.pathname.endsWith('.js')) {
+    headers.set('Content-Type', 'application/javascript')
+  }
   const isProtectedAsset =
     !url.pathname.startsWith('/favicon') &&
     (url.pathname.startsWith('/api/media/') || /\.(webp|png|jpe?g|glb)$/i.test(url.pathname))
@@ -385,42 +495,7 @@ app.put('/api/media/*', adminAuth, async (c) => {
   }
 
   try {
-    // 1. Ensure Media_Storage table exists in D1
-    await c.env.DB.prepare(
-      'CREATE TABLE IF NOT EXISTS Media_Storage (file_key TEXT NOT NULL, chunk_index INTEGER NOT NULL, content_type TEXT NOT NULL DEFAULT \'image/webp\', data BLOB NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (file_key, chunk_index))'
-    ).run()
-
-    // 2. Delete existing chunks for key
-    await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(key).run()
-
-    // 3. Chunk arrayBuffer into 512 KB pieces to stay well within D1 statement limits
-    const CHUNK_SIZE = 512 * 1024
-    const statements: D1PreparedStatement[] = []
-    let chunkIndex = 0
-
-    for (let offset = 0; offset < arrayBuffer.byteLength; offset += CHUNK_SIZE) {
-      const chunk = new Uint8Array(arrayBuffer.slice(offset, offset + CHUNK_SIZE))
-      statements.push(
-        c.env.DB.prepare(
-          'INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)'
-        ).bind(key, chunkIndex, contentType, chunk)
-      )
-      chunkIndex++
-    }
-
-    if (statements.length === 0) {
-      statements.push(
-        c.env.DB.prepare(
-          'INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)'
-        ).bind(key, 0, contentType, new Uint8Array(0))
-      )
-    }
-
-    // Execute in batches of 50 to respect statement limits
-    for (let i = 0; i < statements.length; i += 50) {
-      await c.env.DB.batch(statements.slice(i, i + 50))
-    }
-
+    await replaceMediaStorageChunks(c.env.DB, key, arrayBuffer, contentType)
     return c.json({ success: true, fileKey: key, key }, 200)
   } catch (err: any) {
     return c.json({
@@ -433,32 +508,47 @@ app.put('/api/media/*', adminAuth, async (c) => {
   }
 })
 
-// D1 Media Storage Retrieval
-app.get('/api/media/*', async (c) => {
-  const fetchDest = c.req.header('Sec-Fetch-Dest')
-  const fetchSite = c.req.header('Sec-Fetch-Site')
-  if (fetchDest === 'document') {
-    return c.redirect('/', 302)
-  }
-  if (fetchSite === 'cross-site') {
-    return c.text('Forbidden', 403)
-  }
-
-  const isAuthorizedClient = await isAuthorizedMediaRequest(c)
-  if (!isAuthorizedClient) {
-    return c.redirect('/', 302)
-  }
-
+// D1 Media Storage Retrieval handler supporting HTTP Range 512KB chunk streaming and HMAC signed URLs
+const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
+  const fileKeyParam = c.req.param('file_key')
   const url = new URL(c.req.url)
-  const key = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-  if (!key || key.includes('..')) {
+  const fileKey = fileKeyParam
+    ? decodeURIComponent(fileKeyParam).replace(/^\/+/, '')
+    : decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+
+  if (!fileKey || fileKey.includes('..')) {
     return c.json({ status: 'error', code: 'BAD_REQUEST', message: 'Invalid media key' }, 400)
+  }
+
+  const exp = c.req.query('exp')
+  const sig = c.req.query('sig')
+  const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
+
+  if (exp || sig) {
+    const isValid = exp && sig ? await verifyMediaSignature(fileKey, Number(exp), sig, secret) : false
+    if (!isValid) {
+      return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
+    }
+  } else {
+    const fetchDest = c.req.header('Sec-Fetch-Dest')
+    const fetchSite = c.req.header('Sec-Fetch-Site')
+    if (fetchDest === 'document') {
+      return c.redirect('/', 302)
+    }
+    if (fetchSite === 'cross-site') {
+      return c.text('Forbidden', 403)
+    }
+
+    const isAuthorizedClient = await isAuthorizedMediaRequest(c, fileKey)
+    if (!isAuthorizedClient) {
+      return c.redirect('/', 302)
+    }
   }
 
   try {
     const rows = await c.env.DB.prepare(
       'SELECT chunk_index, content_type, data FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
-    ).bind(key).all<{ chunk_index: number; content_type: string; data: any }>()
+    ).bind(fileKey).all<{ chunk_index: number; content_type: string; data: any }>()
 
     if (rows?.results && rows.results.length > 0) {
       const results = rows.results
@@ -484,6 +574,11 @@ app.get('/api/media/*', async (c) => {
         totalLength += chunkArr.byteLength
       }
 
+      if (totalLength === 0) {
+        return c.notFound()
+      }
+
+      const contentType = results[0].content_type || 'image/webp'
       const combined = new Uint8Array(totalLength)
       let currentOffset = 0
       for (const chunk of byteChunks) {
@@ -491,11 +586,44 @@ app.get('/api/media/*', async (c) => {
         currentOffset += chunk.byteLength
       }
 
-      const contentType = results[0].content_type || 'image/webp'
+      // HTTP Range handling
+      const rangeHeader = c.req.header('Range')
+      if (rangeHeader) {
+        const parsedRange = parseRangeHeader(rangeHeader, totalLength)
+        if (parsedRange === 'unsatisfiable') {
+          return new Response(null, {
+            status: 416,
+            headers: {
+              'Content-Range': `bytes */${totalLength}`,
+              'Accept-Ranges': 'bytes'
+            }
+          })
+        }
+        if (parsedRange) {
+          const { start, end } = parsedRange
+          const slice = combined.subarray(start, end + 1)
+          return new Response(slice, {
+            status: 206,
+            headers: {
+              'Content-Type': contentType,
+              'Content-Range': `bytes ${start}-${end}/${totalLength}`,
+              'Content-Length': String(slice.byteLength),
+              'Accept-Ranges': 'bytes',
+              'Cache-Control': 'public, max-age=31536000, immutable',
+              'Cross-Origin-Resource-Policy': 'same-origin',
+              'Content-Disposition': 'inline',
+              'X-Content-Type-Options': 'nosniff'
+            }
+          })
+        }
+      }
+
       return new Response(combined, {
+        status: 200,
         headers: {
           'Content-Type': contentType,
           'Content-Length': String(totalLength),
+          'Accept-Ranges': 'bytes',
           'Cache-Control': 'public, max-age=31536000, immutable',
           'Cross-Origin-Resource-Policy': 'same-origin',
           'Content-Disposition': 'inline',
@@ -508,7 +636,11 @@ app.get('/api/media/*', async (c) => {
   }
 
   return c.notFound()
-})
+}
+
+app.get('/api/media/:file_key', mediaGetHandler)
+app.get('/api/media/:file_key{.*}', mediaGetHandler)
+app.get('/api/media/*', mediaGetHandler)
 
 app.get('*', async (c) => {
   const url = new URL(c.req.url)
@@ -567,6 +699,7 @@ app.get('*', async (c) => {
   }
 
   const headers = new Headers(assetRes.headers)
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   if (isProtectedAsset) {
     headers.set('Cross-Origin-Resource-Policy', 'same-origin')
     headers.set('Content-Disposition', 'inline')

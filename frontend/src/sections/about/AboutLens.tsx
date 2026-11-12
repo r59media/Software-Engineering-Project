@@ -35,11 +35,10 @@ export function AboutLens() {
   const url = mobile ? aboutLens.mobileUrl : aboutLens.desktopUrl
 
   useEffect(() => {
-    fetch(url).catch(() => {})
+    fetch(url, { credentials: 'omit' }).catch(() => {})
   }, [url])
 
   return <div ref={host} className="about__lens" data-about-part="lens-transition" aria-hidden="true">
-    <link rel="preload" as="fetch" crossOrigin="anonymous" href={url} />
     <div className="about__motion" data-about-motion="lens-transition">
       <LensBoundary key={url} onFailure={transition?.fail}>
         <Suspense fallback={<LensFallback />}>

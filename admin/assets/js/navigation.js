@@ -85,16 +85,7 @@
     const mq = matchMedia('(prefers-color-scheme: dark)');
     const ORDER = ['system', 'light', 'dark'];
     const NAME = { system: 'System', light: 'Light', dark: 'Dark' };
-    function readChoice() {
-        try {
-            const v = localStorage.getItem('r59_theme');
-            return ORDER.includes(v) ? v : 'system';
-        }
-        catch (e) {
-            return 'system';
-        }
-    }
-    let themeChoice = readChoice();
+    let themeChoice = 'system';
     function applyTheme() {
         if (themeChoice === 'system')
             root.removeAttribute('data-theme');
@@ -112,10 +103,6 @@
     }
     function cycleTheme() {
         themeChoice = ORDER[(ORDER.indexOf(themeChoice) + 1) % ORDER.length];
-        try {
-            localStorage.setItem('r59_theme', themeChoice);
-        }
-        catch (e) { /* storage blocked */ }
         applyTheme();
     }
     function initNavigation() {

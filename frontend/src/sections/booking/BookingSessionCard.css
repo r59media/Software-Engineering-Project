@@ -2,7 +2,7 @@
 .booking-session-card { position: relative; min-height: 467px; color: var(--color-brand-black); filter: drop-shadow(-3px 4px 5px rgb(0 0 0 / 12%)); isolation: isolate; }
 .booking-session-card::before { content: ''; position: absolute; inset: 0; z-index: -1; background: var(--color-brand-yellow); -webkit-mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; }
 .booking-session-card__body { position: relative; min-height: 467px; padding: 24px 24px 42px; border-radius: 7px 7px 0 0; overflow: hidden; }
-.booking-session-card__body::before { content: ''; position: absolute; inset: 0; z-index: -1; background: url('../../assets/booking/session-paper.jpeg') center / cover; opacity: .15; mix-blend-mode: multiply; -webkit-mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; }
+.booking-session-card__body::before { content: ''; position: absolute; inset: 0; z-index: -1; background: url('../../assets/booking/session-paper.webp') center / cover; opacity: .15; mix-blend-mode: multiply; -webkit-mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; mask: url('../../assets/booking/session-ticket.svg') center / 100% 100% no-repeat; }
 .booking-session-card__title { margin: 0 0 16px !important; font-family: var(--font-title); font-size: 48px !important; line-height: 40px !important; font-weight: 700; }
 .booking-session-card__title-your, .booking-session-card__title-session { display: block; }
 .booking-session-card__title-session { font-style: italic; }

@@ -91,7 +91,7 @@
                 'X-Requested-With': 'XMLHttpRequest'
             };
             const authToken = client()?.getAuthToken?.();
-            if (authToken && authToken !== 'cookie') {
+            if (authToken) {
                 headers['Authorization'] = `Bearer ${authToken}`;
             }
             let putRes;
@@ -99,7 +99,7 @@
                 putRes = await fetch(resolveApiUrl(target.uploadUrl), {
                     method: 'PUT',
                     headers,
-                    credentials: 'include',
+                    credentials: 'omit',
                     body: file
                 });
             }
@@ -217,6 +217,88 @@
          */
         async saveProfile(profileData) {
             return await client().put('/admin/profile', profileData);
+        },
+        /**
+         * Re-optimize existing D1 Gallery Media:
+         * a. Fetches existing portfolio items.
+         * b. Sequentially streams each image from /api/media/:file_key.
+         * c. Runs through webpConverter.ts (C-Wasm method 6, quality 92, use_sharp_yuv 1).
+         * d. Uploads new chunks into D1 Media_Storage, updating the record and purging old chunks.
+         *
+         * @param {(progress: { current: number; total: number; item: any; status: string }) => void} [progressCallback]
+         * @returns {Promise<{ total: number; optimized: number; failed: number; results: any[] }>}
+         */
+        async reoptimizeGalleryMedia(progressCallback) {
+            // a. Fetches existing portfolio items
+            const allItems = await this.getGalleryImages();
+            const items = (allItems || []).filter(it => it && (it.media_key || it.key));
+            const total = items.length;
+            const results = [];
+            let optimized = 0;
+            let failed = 0;
+            const converter = window.R59?.webpConverter;
+            if (!converter || typeof converter.convertToWebP !== 'function') {
+                throw new Error('WebP Converter engine is not available.');
+            }
+            let index = 0;
+            for (const item of items) {
+                index++;
+                const rawKey = item.media_key || item.key || '';
+                const fileKey = String(rawKey).replace(/^\/+/, '').replace(/^api\/media\//, '');
+                const filename = fileKey.split('/').pop() || `gallery-${item.id || index}.webp`;
+                const statusMsg = `Optimizing ${index}/${total}: ${item.title || filename}...`;
+                if (typeof progressCallback === 'function') {
+                    if (progressCallback.length > 1) {
+                        progressCallback(index, total, statusMsg, item);
+                    }
+                    else {
+                        progressCallback({ current: index, total, status: statusMsg, item });
+                    }
+                }
+                try {
+                    // b. Sequentially streams each image from /api/media/:file_key
+                    let streamUrl = resolveApiUrl(`/api/media/${fileKey}`);
+                    let res = await fetch(streamUrl, { credentials: 'omit' });
+                    if (!res.ok && (item.url || item.public_url)) {
+                        streamUrl = resolveApiUrl(item.url || item.public_url);
+                        res = await fetch(streamUrl, { credentials: 'omit' });
+                    }
+                    if (!res.ok) {
+                        throw new Error(`Failed to stream media: HTTP ${res.status} ${res.statusText}`);
+                    }
+                    const blob = await res.blob();
+                    const fileToConvert = blob instanceof File
+                        ? blob
+                        : new File([blob], filename, { type: blob.type || 'image/webp' });
+                    // c. Runs through webpConverter.ts (C-Wasm method 6, quality 92, use_sharp_yuv 1)
+                    const convertRes = await converter.convertToWebP(fileToConvert, {
+                        quality: 0.92,
+                        maxDimension: 2560,
+                        method: 6,
+                        use_sharp_yuv: 1
+                    });
+                    const optimizedFile = convertRes.file;
+                    // d. Uploads new chunks into D1 Media_Storage, updating the record and purging old chunks
+                    const updated = await this.replaceImageFile(item.id, optimizedFile);
+                    optimized++;
+                    results.push({ item, success: true, updated });
+                }
+                catch (err) {
+                    console.warn(`[Re-optimizer] Failed to re-optimize image ${item.id} (${fileKey}):`, err);
+                    failed++;
+                    results.push({ item, success: false, error: err });
+                }
+            }
+            const finishMsg = `Finished: ${optimized} optimized, ${failed} failed.`;
+            if (typeof progressCallback === 'function') {
+                if (progressCallback.length > 1) {
+                    progressCallback(total, total, finishMsg, null);
+                }
+                else {
+                    progressCallback({ current: total, total, status: finishMsg, item: null });
+                }
+            }
+            return { total, optimized, failed, results };
         }
     };
     window.R59 = window.R59 || {};

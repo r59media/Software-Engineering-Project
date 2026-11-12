@@ -77,6 +77,10 @@ CREATE TABLE Bookings (
     coupon_code TEXT DEFAULT '',
     custom_price INTEGER,
     deposit_percent INTEGER, -- percent charged at online checkout; NULL for older and manual bookings
+    photo_permission_portfolio BOOLEAN DEFAULT 0,
+    photo_permission_social BOOLEAN DEFAULT 0,
+    photo_permission_accepted_at TEXT,
+    photo_permission_version TEXT DEFAULT 'v1',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (service_id) REFERENCES Services(id),
     FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)

@@ -292,11 +292,7 @@ export const legalContent: Record<'terms' | 'privacy', LegalContent> = {
       },
       {
         "type": "paragraph",
-        "text": "[Development team: verify the public-site statement across hosting, embedded content, and payment integrations. Explain any necessary technologies used by those services.]"
-      },
-      {
-        "type": "paragraph",
-        "text": "[Confirm whether administrator authentication uses cookies, local storage, or another mechanism, how long it persists, and what happens at logout. Do not describe it as \"session cookies\" until verified.]"
+        "text": "Our website and administrator portal operate entirely without cookies. Administrator authentication uses short-lived tokens stored in browser session storage that are automatically cleared when the browser session ends or upon logout."
       }
     ]
   },

@@ -38,7 +38,14 @@ import {
   toChargeJSON,
   toPayment
 } from '../lib/squareBilling'
-import { BOOKING_PAYMENTS_TABLE_SQL, BOOKING_PAYMENTS_INDEX_SQL, BILLING_SCHEMA_STEPS } from '../lib/billingSchema'
+import {
+  BOOKING_PAYMENTS_TABLE_SQL,
+  BOOKING_PAYMENTS_INDEX_SQL,
+  BILLING_SCHEMA_STEPS,
+  ensurePhotoPermissionsColumns,
+  replaceMediaStorageChunks
+} from '../lib/billingSchema'
+import { signMediaKey } from '../utils/signedUrl'
 
 function isValidId(id: string | undefined): boolean {
   return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
@@ -47,7 +54,7 @@ function isValidId(id: string | undefined): boolean {
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export const adminRouter = new Hono<{ Bindings: Bindings }>()
-export { DEFAULT_PROFILE }
+export { DEFAULT_PROFILE, ensurePhotoPermissionsColumns, replaceMediaStorageChunks }
 
 // ── Live D1 Schema Auto-Migration (OPT-02: once per isolate) ─────
 let schemaInitialized = false
@@ -175,6 +182,9 @@ export async function ensureSchemaReady(db: D1Database): Promise<void> {
       await db.prepare(sql).run().catch(() => {})
     }
 
+    // Ensure photo permission columns are present on Bookings (Audit 3)
+    await ensurePhotoPermissionsColumns(db)
+
     await db.prepare('CREATE INDEX IF NOT EXISTS idx_services_active_order ON Services(is_active, display_order)').run().catch(() => {})
 
     // Bookings rebuild (one path): older tables carry an inline `slot_id ... UNIQUE` (BUG-01) and/or
@@ -245,7 +255,8 @@ const BOOKINGS_ACTIVE_SLOT_INDEX_SQL =
 const BOOKINGS_REBUILD_COLUMNS = [
   'id', 'service_id', 'slot_id', 'client_name', 'client_email', 'price_at_booking',
   'square_payment_id', 'status', 'customer_phone', 'location', 'notes', 'attendees',
-  'deposit_paid', 'coupon_code', 'custom_price', 'deposit_percent', 'created_at'
+  'deposit_paid', 'coupon_code', 'custom_price', 'deposit_percent', 'created_at',
+  'photo_permission_portfolio', 'photo_permission_social', 'photo_permission_accepted_at', 'photo_permission_version'
 ]
 
 const BOOKINGS_SLOT_UNIQUE_RE = /slot_id\s+INTEGER\s+NOT\s+NULL\s+UNIQUE/i
@@ -310,6 +321,10 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
       coupon_code TEXT DEFAULT '',
       custom_price INTEGER,
       deposit_percent INTEGER,
+      photo_permission_portfolio BOOLEAN DEFAULT 0,
+      photo_permission_social BOOLEAN DEFAULT 0,
+      photo_permission_accepted_at TEXT,
+      photo_permission_version TEXT DEFAULT 'v1',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (service_id) REFERENCES Services(id),
       FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)
@@ -317,14 +332,19 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
     db.prepare(`INSERT INTO Bookings_new (
       id, service_id, slot_id, client_name, client_email, price_at_booking,
       square_payment_id, status, customer_phone, location, notes, attendees,
-      deposit_paid, coupon_code, custom_price, deposit_percent, created_at
+      deposit_paid, coupon_code, custom_price, deposit_percent,
+      photo_permission_portfolio, photo_permission_social, photo_permission_accepted_at, photo_permission_version,
+      created_at
     ) SELECT
       id,
       CASE WHEN EXISTS (SELECT 1 FROM Services WHERE id = Bookings.service_id) THEN service_id END,
       slot_id, client_name, client_email, price_at_booking,
       square_payment_id, status, COALESCE(customer_phone, ''), COALESCE(location, ''),
       COALESCE(notes, ''), COALESCE(attendees, 1), COALESCE(deposit_paid, 0),
-      COALESCE(coupon_code, ''), custom_price, deposit_percent, created_at
+      COALESCE(coupon_code, ''), custom_price, deposit_percent,
+      COALESCE(photo_permission_portfolio, 0), COALESCE(photo_permission_social, 0),
+      photo_permission_accepted_at, COALESCE(photo_permission_version, 'v1'),
+      created_at
     FROM Bookings`),
     db.prepare('DROP TABLE Bookings'),
     db.prepare('ALTER TABLE Bookings_new RENAME TO Bookings'),
@@ -413,20 +433,10 @@ adminRouter.post('/google-login', async (c) => {
       c.env.DB.prepare('DELETE FROM Revoked_Sessions WHERE expires_at <= ?').bind(Date.now()).run().catch(() => {})
     }
 
-    // Generate secure session token and set __Host-r59_session cookie
+    // Generate secure session token
     const token = await createSessionToken(verified.email, sessionSecret)
 
-    c.header(
-      'Set-Cookie',
-      `__Host-r59_session=${encodeURIComponent(token)}; Path=/; HttpOnly; Secure; SameSite=Strict`
-    )
-    c.header(
-      'Set-Cookie',
-      `r59_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`,
-      { append: true }
-    )
-
-    return c.json({ ok: true, email: verified.email })
+    return c.json({ ok: true, email: verified.email, token })
   } catch (e: any) {
     return c.json({
       error: {
@@ -477,7 +487,7 @@ adminRouter.post('/login', (c) => {
   }, 410)
 })
 
-// Public logout endpoint (registered before adminAuth so cookie is always cleared)
+// Public logout endpoint
 adminRouter.post('/logout', async (c) => {
   const { token } = extractSessionToken(c)
   const signingSecret = getSigningSecret(c.env)
@@ -488,16 +498,6 @@ adminRouter.post('/logout', async (c) => {
       await revokeTokenInDb(c.env.DB, token)
     }
   }
-  const isHttps = c.req.url.startsWith('https://') || c.req.header('x-forwarded-proto') === 'https'
-  c.header(
-    'Set-Cookie',
-    `__Host-r59_session=; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}; Max-Age=0`
-  )
-  c.header(
-    'Set-Cookie',
-    `r59_session=; Path=/; HttpOnly; SameSite=Strict${isHttps ? '; Secure' : ''}; Max-Age=0`,
-    { append: true }
-  )
   return c.json({
     success: true,
     status: 'success',
@@ -527,6 +527,38 @@ adminRouter.get('/verify', async (c) => {
       email: expectedEmail
     }
   })
+})
+
+// POST /api/admin/media-token — Generates short-lived HMAC signed media URL for streaming (30s TTL)
+adminRouter.post('/media-token', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => null)
+    const fileKey = typeof body?.file_key === 'string' ? body.file_key.trim() : ''
+    if (!fileKey || fileKey.includes('..')) {
+      return c.json({
+        error: {
+          code: 'BAD_REQUEST',
+          message: 'Invalid or missing file_key',
+          details: []
+        }
+      }, 400)
+    }
+
+    const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
+    const { exp, sig } = await signMediaKey(fileKey, secret, 30)
+
+    return c.json({
+      url: `/api/media/${fileKey}?exp=${exp}&sig=${sig}`
+    }, 200)
+  } catch (err: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to generate signed media token',
+        details: []
+      }
+    }, 500)
+  }
 })
 
 // PUT: Deprecated password update endpoint (Replaced by Google Sign-In)
@@ -909,7 +941,7 @@ adminRouter.get('/bookings', async (c) => {
       `SELECT b.id, b.client_name, b.client_email, b.price_at_booking, b.square_payment_id, b.status, b.created_at,
               b.service_id, b.slot_id,
               b.customer_phone, b.location, b.notes, b.attendees, b.deposit_paid, b.coupon_code, b.custom_price,
-              b.deposit_percent,
+              b.deposit_percent, b.photo_permission_portfolio, b.photo_permission_social, b.photo_permission_accepted_at, b.photo_permission_version,
               s.name as service_name, s.price as service_price, sl.date, sl.start_time, sl.end_time,
               COALESCE(p.payments_total, 0) AS payments_total, COALESCE(p.payments_count, 0) AS payments_count,
               COALESCE(ch.charges_total, 0) AS charges_total
@@ -960,6 +992,10 @@ adminRouter.get('/bookings', async (c) => {
         base_cents: priceCents,
         charges_cents: chargesCents,
         deposit_percent: b.deposit_percent ?? null,
+        photo_permission_portfolio: b.photo_permission_portfolio ? 1 : 0,
+        photo_permission_social: b.photo_permission_social ? 1 : 0,
+        photo_permission_accepted_at: b.photo_permission_accepted_at ?? null,
+        photo_permission_version: b.photo_permission_version || 'v1',
         total_cents: priceCents + chargesCents
       }
     })
@@ -2308,20 +2344,69 @@ adminRouter.put('/portfolio/:id', async (c) => {
     const is_featured = body.is_featured !== undefined ? (body.is_featured ? 1 : 0) : existing.is_featured
     const display_order = body.display_order !== undefined ? Number(body.display_order) : existing.display_order
 
-    await c.env.DB.prepare(
-      'UPDATE Portfolio_Images SET section = ?, title = ?, category = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
-    ).bind(section, title, category, alt_text, is_active, is_featured, display_order, id).run()
+    const rawMediaKey = body.media_key !== undefined ? (typeof body.media_key === 'string' ? body.media_key.trim() : null) : undefined
+    const media_key = rawMediaKey !== undefined ? (rawMediaKey || existing.media_key) : existing.media_key
+
+    const updateStatements: D1PreparedStatement[] = [
+      c.env.DB.prepare(
+        'UPDATE Portfolio_Images SET media_key = ?, section = ?, title = ?, category = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
+      ).bind(media_key, section, title, category, alt_text, is_active, is_featured, display_order, id)
+    ]
+
+    // If replacing image file with a new key, delete old chunks from Media_Storage atomically
+    if (rawMediaKey && existing.media_key && rawMediaKey !== existing.media_key && !existing.media_key.startsWith('/assets/')) {
+      updateStatements.push(
+        c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(existing.media_key)
+      )
+    }
+
+    if (updateStatements.length === 1) {
+      await updateStatements[0].run()
+    } else {
+      await c.env.DB.batch(updateStatements)
+    }
 
     return c.json({
       success: true,
       status: 'success',
-      data: { id: Number(id), section, title, category, alt_text, is_active, is_featured, display_order }
+      data: { id: Number(id), media_key, section, title, category, alt_text, is_active, is_featured, display_order }
     })
   } catch (e: any) {
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
         message: 'Could not update portfolio image.',
+        details: []
+      }
+    }, 500)
+  }
+})
+
+// PUT /api/admin/media/* — Direct replacement of image media chunks (Audit 5)
+adminRouter.put('/media/*', async (c) => {
+  const url = new URL(c.req.url)
+  const key = decodeURIComponent(url.pathname.replace(/^\/api\/admin\/media\//, '').replace(/^\/admin\/media\//, '')).replace(/^\/+/, '')
+  if (!key || key.includes('..')) {
+    return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid media key', details: [] } }, 400)
+  }
+
+  const contentType = (c.req.header('Content-Type') || 'image/webp').split(';')[0].trim().toLowerCase()
+  const arrayBuffer = await c.req.arrayBuffer()
+  if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+    return c.json({ error: { code: 'VALIDATION_FAILED', message: 'No file data received.', details: [] } }, 400)
+  }
+  if (arrayBuffer.byteLength > 50 * 1024 * 1024) {
+    return c.json({ error: { code: 'FILE_TOO_LARGE', message: 'File size exceeds the 50 MB maximum limit.', details: [] } }, 413)
+  }
+
+  try {
+    await replaceMediaStorageChunks(c.env.DB, key, arrayBuffer, contentType)
+    return c.json({ success: true, fileKey: key, key }, 200)
+  } catch (err: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to store image in database storage.',
         details: []
       }
     }, 500)

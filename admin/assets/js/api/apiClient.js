@@ -2,22 +2,194 @@
 /**
  * R59 Media Admin — Centralized API Client
  *
- * Unified HTTP request handling: configurable base URL, cookie session (same-origin
- * credentials), JSON serialization, and normalized errors:
- * err.message (server message), err.status, err.isNetworkError.
+ * In-Memory Auth Vault with SharedWorker and Cross-Tab Synchronization.
+ *
+ * - Primary Path: SharedWorker ('/admin/assets/js/authWorker.js') keeps bearer token
+ *   in an isolated worker context and proxies authenticated requests (PROXY_FETCH),
+ *   never leaking the bearer token to the window DOM context.
+ * - Fallback Path (iOS Safari): Private module closure (`closureToken`) synchronized
+ *   across tabs via BroadcastChannel('r59_admin_sync').
+ * - All client token storage is completely in-memory (no web storage).
  */
 (function () {
     'use strict';
-    // Auth is the HttpOnly session cookie only (sent automatically, shared by every tab).
-    // Remove a token left by older builds of the admin.
-    try {
-        localStorage.removeItem('r59_admin_token');
+    // --- Private In-Memory Auth State ---
+    let closureToken = null;
+    let isWorkerMode = false;
+    let sharedWorker = null;
+    let workerPort = null;
+    let fallbackChannel = null;
+    let isWorkerAuthenticated = false;
+    let reqIdCounter = 0;
+    const pendingRequests = new Map();
+    function sendWorkerMessage(type, payload = {}, timeoutMs = 30000) {
+        return new Promise((resolve, reject) => {
+            if (!workerPort) {
+                return reject(new Error('SharedWorker is not available'));
+            }
+            const id = `sw_${++reqIdCounter}_${Date.now()}`;
+            const timer = setTimeout(() => {
+                pendingRequests.delete(id);
+                reject(new Error(`SharedWorker request timed out: ${type}`));
+            }, timeoutMs);
+            pendingRequests.set(id, { resolve, reject, timer });
+            workerPort.postMessage({ id, type, ...payload });
+        });
     }
-    catch {
-        // ignore storage errors
+    // --- Primary Path: Connect to SharedWorker ---
+    if (typeof SharedWorker !== 'undefined') {
+        try {
+            sharedWorker = new SharedWorker('/admin/assets/js/authWorker.js', { type: 'module' });
+            workerPort = sharedWorker.port;
+            workerPort.start();
+            isWorkerMode = true;
+            workerPort.onmessage = (event) => {
+                const data = event.data;
+                if (!data || typeof data !== 'object')
+                    return;
+                // Correlation response to a specific request
+                if (data.id && pendingRequests.has(data.id)) {
+                    const req = pendingRequests.get(data.id);
+                    clearTimeout(req.timer);
+                    pendingRequests.delete(data.id);
+                    req.resolve(data);
+                    return;
+                }
+                // Broadcast event from SharedWorker
+                if (data.event === 'AUTH_SYNC') {
+                    const authenticated = Boolean(data.authenticated);
+                    const wasAuthenticated = isWorkerAuthenticated;
+                    isWorkerAuthenticated = authenticated;
+                    if (!authenticated) {
+                        closureToken = null;
+                    }
+                    // Dispatch DOM event for open tabs to update UI automatically
+                    window.dispatchEvent(new CustomEvent('r59:auth-ready', {
+                        detail: { authenticated }
+                    }));
+                    if (!authenticated && wasAuthenticated) {
+                        window.dispatchEvent(new CustomEvent('r59:unauthorized', {
+                            detail: { message: 'Session ended or signed out in another tab.' }
+                        }));
+                    }
+                }
+            };
+            workerPort.onmessageerror = (err) => {
+                console.warn('[R59 Admin] SharedWorker message error:', err);
+            };
+            // Check worker initial auth status on mount
+            sendWorkerMessage('CHECK_AUTH').then((res) => {
+                if (res && res.authenticated) {
+                    isWorkerAuthenticated = true;
+                    window.dispatchEvent(new CustomEvent('r59:auth-ready', {
+                        detail: { authenticated: true }
+                    }));
+                }
+            }).catch(() => { });
+        }
+        catch (err) {
+            console.warn('[R59 Admin] Failed to initialize SharedWorker, falling back:', err);
+            sharedWorker = null;
+            workerPort = null;
+            isWorkerMode = false;
+        }
     }
-    // Configurable base URL: can be overridden via window.R59_API_URL or
-    // window.APP_CONFIG.apiBaseUrl; defaults to '/api' (or localhost:8787/api on file://).
+    // --- Fallback Path (iOS Safari): BroadcastChannel ---
+    if (!isWorkerMode && typeof BroadcastChannel !== 'undefined') {
+        try {
+            fallbackChannel = new BroadcastChannel('r59_admin_sync');
+            fallbackChannel.onmessage = (event) => {
+                const data = event.data;
+                if (!data || typeof data !== 'object')
+                    return;
+                if (data.type === 'NEEDS_AUTH') {
+                    // Authenticated tab replies with the token
+                    if (closureToken) {
+                        fallbackChannel.postMessage({
+                            type: 'PROVIDE_AUTH',
+                            token: closureToken
+                        });
+                    }
+                }
+                else if (data.type === 'PROVIDE_AUTH') {
+                    if (data.token) {
+                        closureToken = String(data.token);
+                        window.dispatchEvent(new CustomEvent('r59:auth-ready', {
+                            detail: { authenticated: true }
+                        }));
+                    }
+                }
+                else if (data.type === 'CLEAR_AUTH') {
+                    const wasAuth = Boolean(closureToken);
+                    closureToken = null;
+                    window.dispatchEvent(new CustomEvent('r59:auth-ready', {
+                        detail: { authenticated: false }
+                    }));
+                    if (wasAuth) {
+                        window.dispatchEvent(new CustomEvent('r59:unauthorized', {
+                            detail: { message: 'Signed out in another tab.' }
+                        }));
+                    }
+                }
+            };
+            // On tab mount: broadcast NEEDS_AUTH to sync from any already-open authenticated tab
+            fallbackChannel.postMessage({ type: 'NEEDS_AUTH' });
+        }
+        catch (err) {
+            console.warn('[R59 Admin] BroadcastChannel initialization failed:', err);
+        }
+    }
+    // Auto-update UI when another tab authenticates
+    window.addEventListener('r59:auth-ready', (e) => {
+        if (e && e.detail && e.detail.authenticated) {
+            if (document.body && document.body.classList.contains('is-login')) {
+                window.R59?.app?.checkSession?.();
+            }
+        }
+    });
+    // Token accessors (in-memory closure)
+    function getAuthToken() {
+        return closureToken || '';
+    }
+    function setAuthToken(token) {
+        if (isWorkerMode && workerPort) {
+            if (token) {
+                sendWorkerMessage('SET_TOKEN', { token: String(token) }).catch(() => { });
+            }
+            else {
+                sendWorkerMessage('CLEAR_TOKEN').catch(() => { });
+            }
+        }
+        else {
+            closureToken = token ? String(token).trim() : null;
+            if (fallbackChannel) {
+                if (closureToken) {
+                    fallbackChannel.postMessage({ type: 'PROVIDE_AUTH', token: closureToken });
+                }
+                else {
+                    fallbackChannel.postMessage({ type: 'CLEAR_AUTH' });
+                }
+            }
+            window.dispatchEvent(new CustomEvent('r59:auth-ready', {
+                detail: { authenticated: Boolean(closureToken) }
+            }));
+        }
+    }
+    function clearAuthToken() {
+        if (isWorkerMode && workerPort) {
+            sendWorkerMessage('CLEAR_TOKEN').catch(() => { });
+        }
+        else {
+            closureToken = null;
+            if (fallbackChannel) {
+                fallbackChannel.postMessage({ type: 'CLEAR_AUTH' });
+            }
+            window.dispatchEvent(new CustomEvent('r59:auth-ready', {
+                detail: { authenticated: false }
+            }));
+        }
+    }
+    // Configurable base URL
     const DEFAULT_BASE_URL = 'http://localhost:8787/api';
     function getBaseUrl() {
         if (window.R59_API_URL) {
@@ -38,23 +210,37 @@
         }
         return '/api';
     }
-    // Kept for compatibility with older callers; the cookie is the only credential.
-    function getAuthToken() { return ''; }
-    function setAuthToken() { }
-    function clearAuthToken() { }
     /**
-     * Core request function wrapping fetch.
+     * Core request function wrapping SharedWorker PROXY_FETCH (primary) or window fetch (fallback).
      *
      * @param {string} endpoint Relative or absolute path, e.g. '/admin/bookings'
      * @param {Object} options Fetch options: method, headers, body, params,
      *   suppressUnauthorized (true: a 401 does not fire the `r59:unauthorized` event)
      * @returns {Promise<any>} Parsed JSON response
      */
+    /**
+     * Core request function wrapping SharedWorker PROXY_FETCH (primary) or window fetch (fallback).
+     *
+     * @param {string} endpoint Relative or absolute path, e.g. '/admin/bookings'
+     * @param {Object} options Fetch options: method, headers, body, params,
+     *   suppressUnauthorized (true: a 401 does not fire the `r59:unauthorized` event),
+     *   responseType ('json' | 'blob' | 'arraybuffer' | 'text')
+     * @returns {Promise<any>} Parsed JSON response or binary data
+     */
     async function request(endpoint, options = {}) {
-        const { method = 'GET', headers: optHeaders = {}, body = null, params = null, suppressUnauthorized = false } = options;
-        let url = endpoint.startsWith('http://') || endpoint.startsWith('https://')
-            ? endpoint
-            : `${getBaseUrl()}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+        const { method = 'GET', headers: optHeaders = {}, body = null, params = null, suppressUnauthorized = false, responseType = null } = options;
+        const baseUrl = getBaseUrl();
+        const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+        let url;
+        if (cleanEndpoint.startsWith('http://') || cleanEndpoint.startsWith('https://')) {
+            url = cleanEndpoint;
+        }
+        else if (baseUrl.endsWith('/api') && cleanEndpoint.startsWith('/api/')) {
+            url = `${baseUrl}${cleanEndpoint.slice(4)}`;
+        }
+        else {
+            url = `${baseUrl}${cleanEndpoint}`;
+        }
         if (params) {
             const searchParams = new URLSearchParams();
             Object.entries(params).forEach(([k, v]) => {
@@ -68,7 +254,7 @@
             }
         }
         const headers = {
-            'Accept': 'application/json',
+            'Accept': responseType ? '*/*' : 'application/json',
             'Content-Type': 'application/json',
             'X-Requested-With': 'XMLHttpRequest',
             ...(optHeaders || {}),
@@ -76,9 +262,72 @@
         if (options.body instanceof FormData || body instanceof FormData) {
             delete headers['Content-Type'];
         }
+        if (method === 'GET' || method === 'HEAD') {
+            delete headers['Content-Type'];
+        }
+        // --- PRIMARY PATH: Proxy fetch through SharedWorker ---
+        if (isWorkerMode && workerPort && !(body instanceof FormData)) {
+            let serializedBody = body;
+            if (body !== null && body !== undefined && method !== 'GET' && method !== 'HEAD') {
+                if (typeof body !== 'string' && !(body instanceof Blob)) {
+                    serializedBody = JSON.stringify(body);
+                }
+            }
+            else {
+                serializedBody = undefined;
+            }
+            try {
+                const response = await sendWorkerMessage('PROXY_FETCH', {
+                    url,
+                    init: {
+                        method,
+                        headers,
+                        body: serializedBody,
+                        responseType
+                    }
+                });
+                if (!response.ok) {
+                    if (response.status === 401 && !suppressUnauthorized && !url.includes('/admin/login') && !url.includes('/admin/google-login')) {
+                        clearAuthToken();
+                        window.dispatchEvent(new CustomEvent('r59:unauthorized', {
+                            detail: {
+                                message: (response.data && response.data.error && response.data.error.message) ||
+                                    (response.data && response.data.message) ||
+                                    'Session expired. Please sign in again.'
+                            }
+                        }));
+                    }
+                    const error = new Error((response.data && response.data.error && response.data.error.message) ||
+                        (response.data && response.data.message) ||
+                        `HTTP Error ${response.status}: ${response.statusText}`);
+                    error.status = response.status;
+                    error.data = response.data;
+                    error.isHttpError = true;
+                    throw error;
+                }
+                if (responseType === 'blob' && response.data instanceof ArrayBuffer) {
+                    return new Blob([response.data], { type: response.headers?.['content-type'] || 'application/octet-stream' });
+                }
+                return response.data;
+            }
+            catch (err) {
+                if (err.isHttpError) {
+                    throw err;
+                }
+                const networkError = new Error("Can't reach the server. Check your connection and try again.");
+                networkError.url = url;
+                networkError.isNetworkError = true;
+                networkError.originalError = err;
+                throw networkError;
+            }
+        }
+        // --- FALLBACK PATH: Direct Window fetch ---
+        if (closureToken && !headers['Authorization']) {
+            headers['Authorization'] = `Bearer ${closureToken}`;
+        }
         const fetchConfig = {
             method,
-            credentials: 'same-origin',
+            credentials: 'omit',
             headers
         };
         if (body !== null && body !== undefined && method !== 'GET' && method !== 'HEAD') {
@@ -89,11 +338,46 @@
                 fetchConfig.body = JSON.stringify(body);
             }
         }
-        else if (method === 'GET' || method === 'HEAD') {
-            delete headers['Content-Type'];
-        }
         try {
             const response = await fetch(url, fetchConfig);
+            if (!response.ok) {
+                let responseData = null;
+                try {
+                    const contentType = response.headers.get('content-type') || '';
+                    if (contentType.includes('application/json')) {
+                        responseData = await response.json();
+                    }
+                    else {
+                        responseData = await response.text();
+                    }
+                }
+                catch {
+                    // ignore parsing error
+                }
+                if (response.status === 401 && !suppressUnauthorized && !url.includes('/admin/login') && !url.includes('/admin/google-login')) {
+                    clearAuthToken();
+                    window.dispatchEvent(new CustomEvent('r59:unauthorized', {
+                        detail: {
+                            message: (responseData && responseData.error && responseData.error.message) ||
+                                (responseData && responseData.message) ||
+                                'Session expired. Please sign in again.'
+                        }
+                    }));
+                }
+                const error = new Error((responseData && responseData.error && responseData.error.message) ||
+                    (responseData && responseData.message) ||
+                    `HTTP Error ${response.status}: ${response.statusText}`);
+                error.status = response.status;
+                error.data = responseData;
+                error.isHttpError = true;
+                throw error;
+            }
+            if (responseType === 'arraybuffer') {
+                return (await response.arrayBuffer());
+            }
+            if (responseType === 'blob') {
+                return (await response.blob());
+            }
             let responseData = null;
             const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('application/json')) {
@@ -108,29 +392,12 @@
                     responseData = text;
                 }
             }
-            if (!response.ok) {
-                if (response.status === 401 && !suppressUnauthorized && !url.includes('/admin/login')) {
-                    window.dispatchEvent(new CustomEvent('r59:unauthorized', {
-                        detail: {
-                            message: (responseData && responseData.error && responseData.error.message) || 'Session expired. Please sign in again.'
-                        }
-                    }));
-                }
-                const error = new Error((responseData && responseData.error && responseData.error.message) ||
-                    (responseData && responseData.message) ||
-                    `HTTP Error ${response.status}: ${response.statusText}`);
-                error.status = response.status;
-                error.data = responseData;
-                error.isHttpError = true;
-                throw error;
-            }
             return responseData;
         }
         catch (err) {
             if (err.isHttpError) {
                 throw err;
             }
-            // Network or connection failure
             const networkError = new Error("Can't reach the server. Check your connection and try again.");
             networkError.url = url;
             networkError.isNetworkError = true;
@@ -140,7 +407,6 @@
     }
     /**
      * Fetches the admin authentication configuration (e.g. Google Client ID).
-     * @returns {Promise<{ googleClientId?: string }>}
      */
     async function fetchAuthConfig() {
         try {
@@ -155,8 +421,6 @@
     }
     /**
      * Authenticates with Google Identity Services ID token.
-     * @param {string} idToken
-     * @returns {Promise<{ ok: boolean; email?: string; error?: string }>}
      */
     async function loginWithGoogle(idToken) {
         try {
@@ -166,8 +430,11 @@
                 suppressUnauthorized: true
             });
             if (data && (data.ok !== false && !data.error)) {
+                if (data.token) {
+                    setAuthToken(data.token);
+                }
                 setSessionHint(true);
-                return { ok: true, email: data.email };
+                return { ok: true, email: data.email, token: data.token };
             }
             return {
                 ok: false,
@@ -206,66 +473,113 @@
         throw new Error('Recovery email is deprecated.');
     }
     /**
-     * Asks the server whether the session cookie is valid. Never fires `r59:unauthorized`.
+     * Asks the server whether the session token is valid. Never fires `r59:unauthorized`.
      * Resolves true (signed in) or false (not signed in). Rejects when the server can't be reached
-     * (err.isNetworkError) or answers with a server error (err.status >= 500), so the caller can
-     * offer Retry instead of treating the user as signed out.
+     * (err.isNetworkError) or answers with a server error (err.status >= 500).
      */
     async function verifySession() {
-        // No sign-in recorded in this browser: skip the request so a first visit shows the login
-        // screen at once and doesn't log an expected 401. The hint is shared by every tab.
-        if (!hasSessionHint())
+        if (isWorkerMode && workerPort) {
+            try {
+                const checkRes = await sendWorkerMessage('CHECK_AUTH');
+                if (!checkRes || !checkRes.authenticated) {
+                    isWorkerAuthenticated = false;
+                    return false;
+                }
+                const res = await request('/admin/verify', { suppressUnauthorized: true });
+                const ok = !!(res && (res.authenticated || res.status === 'success'));
+                if (!ok) {
+                    clearAuthToken();
+                }
+                else {
+                    isWorkerAuthenticated = true;
+                }
+                return ok;
+            }
+            catch (err) {
+                if (err.isNetworkError || (err.status && err.status >= 500))
+                    throw err;
+                clearAuthToken();
+                return false;
+            }
+        }
+        // Fallback path (iOS Safari)
+        if (!closureToken && fallbackChannel) {
+            // Allow brief window for PROVIDE_AUTH from another tab
+            await new Promise((r) => setTimeout(r, 60));
+        }
+        if (!closureToken) {
             return false;
+        }
         try {
             const res = await request('/admin/verify', { suppressUnauthorized: true });
             const ok = !!(res && (res.authenticated || res.status === 'success'));
-            if (!ok)
-                setSessionHint(false);
+            if (!ok) {
+                clearAuthToken();
+            }
             return ok;
         }
         catch (err) {
             if (err.isNetworkError || (err.status && err.status >= 500))
                 throw err;
-            setSessionHint(false);
+            clearAuthToken();
             return false;
         }
     }
-    /** Explicit user logout only: revokes the shared session cookie for every tab. Resolves true on 2xx. */
+    /** Explicit user logout: revokes the token on the server and clears it. Resolves true on 2xx. */
     async function logout() {
         try {
             await request('/admin/logout', { method: 'POST', body: {}, suppressUnauthorized: true });
-            setSessionHint(false);
+            clearAuthToken();
             return true;
         }
         catch {
+            clearAuthToken();
             return false;
         }
     }
-    // "This browser may hold a session cookie" — not a credential (the cookie is HttpOnly and is
-    // what the server checks); it only decides whether the startup check is worth a request.
-    const SESSION_HINT_KEY = 'r59_admin_session_hint';
+    // Fast check: whether an active session hint exists (in-memory only, purged storage calls)
     function hasSessionHint() {
-        try {
-            return sessionStorage.getItem(SESSION_HINT_KEY) === '1';
-        }
-        catch {
-            return true;
-        }
+        return Boolean(closureToken || isWorkerAuthenticated);
     }
     function setSessionHint(on) {
-        try {
-            if (on) {
-                sessionStorage.setItem(SESSION_HINT_KEY, '1');
-            }
-            else {
-                sessionStorage.removeItem(SESSION_HINT_KEY);
-            }
-            // Clear any lingering legacy localStorage item
-            localStorage.removeItem(SESSION_HINT_KEY);
+        if (on) {
+            isWorkerAuthenticated = true;
         }
-        catch {
-            // ignore storage errors
+        else {
+            isWorkerAuthenticated = false;
         }
+    }
+    /**
+     * Fetches protected binary data via apiClient.request, wraps it in a Blob,
+     * and generates an ephemeral Object URL.
+     */
+    async function fetchProtectedObjectUrl(endpoint, mimeType = 'application/octet-stream') {
+        const buffer = await apiClient.request(endpoint, {
+            method: 'GET',
+            responseType: 'arraybuffer'
+        });
+        const blob = new Blob([buffer], { type: mimeType });
+        return URL.createObjectURL(blob);
+    }
+    /**
+     * Triggers an authenticated signed asset download via short-lived media token.
+     */
+    async function triggerSignedDownload(fileKey, filename) {
+        const res = await apiClient.request('/api/admin/media-token', {
+            method: 'POST',
+            body: JSON.stringify({ file_key: fileKey })
+        });
+        const signedUrl = res?.url;
+        if (!signedUrl) {
+            throw new Error('Failed to obtain signed URL for download');
+        }
+        const a = document.createElement('a');
+        a.href = signedUrl;
+        a.download = filename;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
     }
     // HTTP method convenience helpers
     const apiClient = {
@@ -283,7 +597,11 @@
         updateRecoveryEmail,
         verifySession,
         logout,
+        hasSessionHint,
+        setSessionHint,
         request,
+        fetchProtectedObjectUrl,
+        triggerSignedDownload,
         get: (endpoint, params = null, headers = {}) => request(endpoint, { method: 'GET', params, headers }),
         post: (endpoint, body = null, headers = {}) => request(endpoint, { method: 'POST', body, headers }),
         put: (endpoint, body = null, headers = {}) => request(endpoint, { method: 'PUT', body, headers }),

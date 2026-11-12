@@ -11,13 +11,15 @@ import { BookingSection } from './sections/booking/BookingSection'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
-import type { BookingService } from './types/booking'
+import type { BookingReviewDraft, BookingService } from './types/booking'
+import { DepositCheckoutModal } from './sections/booking/DepositCheckoutModal'
 import { LegalPage } from './pages/legal/LegalPage'
 
 function App() {
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
   const [bookingServices, setBookingServices] = useState<readonly BookingService[]>(previewBookingServices)
   const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
+  const [depositDraft, setDepositDraft] = useState<BookingReviewDraft | null>(null)
   const baseUrl = import.meta.env.BASE_URL
   const path = window.location.pathname.replace(/\/$/, '')
   const cleanBase = baseUrl.replace(/\/$/, '')
@@ -155,10 +157,23 @@ function App() {
       </div>
       <AboutToRecent />
       <PortfolioGallery />
-      <BookingSection services={bookingServices} status={bookingStatus} onRetry={loadBookingServices} inquiryHref="#contact" />
+      <BookingSection
+        services={bookingServices}
+        status={bookingStatus}
+        onRetry={loadBookingServices}
+        inquiryHref="#contact"
+        onProceedToDeposit={draft => setDepositDraft(draft)}
+      />
       <ContactSection />
     </main>
     <SiteFooter />
+    {depositDraft && (
+      <DepositCheckoutModal
+        draft={depositDraft}
+        service={bookingServices.find(s => s.id === depositDraft.serviceId) || null}
+        onClose={() => setDepositDraft(null)}
+      />
+    )}
   </div>
 }
 

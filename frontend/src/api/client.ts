@@ -56,7 +56,14 @@ export interface CheckoutPayload {
   slot_id: number
   customer_name: string
   customer_email: string
+  customer_phone?: string
+  notes?: string
+  attendees?: number
   coupon_code?: string
+  photoPermissions?: {
+    websitePortfolio?: boolean
+    socialMedia?: boolean
+  }
 }
 
 export interface ApiResponse<T = unknown> {
@@ -78,6 +85,7 @@ async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T | null> 
     const res = await fetch(`${API_BASE}${path}`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
+      credentials: 'omit',
       signal,
     })
     if (!res.ok) return null
@@ -313,6 +321,7 @@ export async function submitContactLead(payload: ContactLeadPayload): Promise<Ap
       body: JSON.stringify(payload),
       signal: controller.signal,
       cache: 'no-store',
+      credentials: 'omit',
     })
     const retry = Number(res.headers.get('Retry-After'))
     if (res.status === 429) return { status: 'error', code: 'TOO_MANY_REQUESTS', retryAfterSeconds: Number.isFinite(retry) && retry > 0 ? Math.min(retry, 3600) : 60, message: 'Too many requests. Please wait before trying again. Your details are still here.' }
@@ -330,12 +339,17 @@ export async function submitContactLead(payload: ContactLeadPayload): Promise<Ap
   }
 }
 
-export async function submitCheckout(payload: CheckoutPayload): Promise<ApiResponse<{ booking_id?: number; payment_id?: string; order_id?: string }>> {
+export async function submitCheckout(
+  payload: CheckoutPayload,
+  options?: { credentials?: RequestCredentials; signal?: AbortSignal }
+): Promise<ApiResponse<{ booking_id?: number; payment_id?: string; order_id?: string }>> {
   try {
     const res = await fetch(`${API_BASE}/checkout`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(payload),
+      credentials: options?.credentials ?? 'omit',
+      signal: options?.signal,
     })
     return (await res.json()) as ApiResponse<{ booking_id?: number; payment_id?: string; order_id?: string }>
   } catch {

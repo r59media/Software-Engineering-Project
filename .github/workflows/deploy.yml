@@ -30,6 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir admin install --frozen-lockfile
           pnpm --dir backend install --frozen-lockfile
 
       - name: Build frontend & backend
