@@ -9,7 +9,7 @@
  *   never leaking the bearer token to the window DOM context.
  * - Fallback Path (iOS Safari): Private module closure (`closureToken`) synchronized
  *   across tabs via BroadcastChannel('r59_admin_sync').
- * - All sessionStorage and localStorage token storage is completely purged.
+ * - All client token storage is completely in-memory (no web storage).
  */
 
 (function () {
@@ -159,7 +159,7 @@
     }
   });
 
-  // Token accessors (purged of all localStorage / sessionStorage calls)
+  // Token accessors (in-memory closure)
   function getAuthToken() {
     return closureToken || '';
   }

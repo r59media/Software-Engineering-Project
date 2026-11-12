@@ -670,13 +670,6 @@
                 if (res.token) {
                     R().apiClient?.setAuthToken?.(res.token);
                 }
-                try {
-                    sessionStorage.setItem('r59_admin_session_hint', '1');
-                    localStorage.removeItem('r59_admin_session_hint');
-                }
-                catch {
-                    // ignore storage error
-                }
                 await initDashboard();
             }
             else {
