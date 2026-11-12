@@ -7,7 +7,8 @@
     "build:frontend": "pnpm --dir frontend run build",
     "build:backend": "pnpm --dir backend run build",
     "build": "pnpm run build:frontend && pnpm run build:backend",
-    "typecheck": "pnpm --dir frontend run typecheck && pnpm --dir backend run typecheck",
+    "typecheck": "pnpm --dir frontend run typecheck && pnpm --dir backend run typecheck && pnpm --dir admin exec tsc -p tsconfig.json --noEmit",
+    "optimize:assets": "node scripts/reencode-pristine-assets.js",
     "test": "pnpm --dir backend run test"
   }
 }

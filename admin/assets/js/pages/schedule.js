@@ -240,9 +240,10 @@
         const time = bookingTimeText(b);
         const aria = `${time}, ${name}, ${pkg}, ${b.status || 'Pending'}`;
         if (detailed) {
+            const consentIcon = (b.photo_permission_portfolio || b.photo_permission_social || b.photoPermissionPortfolio || b.photoPermissionSocial) ? ' 📸' : '';
             return `<button type="button" class="cal-ev cal-ev--block${key === 'cancelled' ? ' is-cancelled' : ''}" ${attr} aria-label="${esc(aria)}">
           <span class="cal-ev__time num">${esc(time)}</span>
-          <strong class="cal-ev__name">${esc(name)}</strong>
+          <strong class="cal-ev__name">${esc(name)}${consentIcon}</strong>
           <span class="cal-ev__pkg">${esc(pkg)}</span>
           ${statusTagHTML(b)}
         </button>`;
@@ -386,10 +387,11 @@
     }
     function dayBookingHTML(b) {
         const m = st().balanceOf(b);
+        const consentIcon = (b.photo_permission_portfolio || b.photo_permission_social || b.photoPermissionPortfolio || b.photoPermissionSocial) ? ' 📸' : '';
         return `
       <div class="tl-booking${statusKey(b) === 'cancelled' ? ' is-cancelled' : ''}">
         <div class="tl-booking__main">
-          <p class="tl-booking__title"><strong>${esc(b.customer || 'Unknown Client')}</strong> — ${esc(b.package || st().NO_PACKAGE)}</p>
+          <p class="tl-booking__title"><strong>${esc(b.customer || 'Unknown Client')}</strong>${consentIcon} — ${esc(b.package || st().NO_PACKAGE)}</p>
           <p class="sub num">${esc(bookingTimeText(b))} · Total ${esc(fmtCents(m.totalCents))} · Paid ${esc(fmtCents(m.paidCents))} · ${esc(dueOf(b).text)}</p>
         </div>
         ${statusTagHTML(b)}
@@ -738,6 +740,10 @@
         const due = dueOf(b);
         const isCancelled = statusKey(b) === 'cancelled';
         const name = b.customer || 'Unknown Client';
+        const hasPhotoConsent = Boolean(b.photo_permission_portfolio || b.photoPermissionPortfolio || b.photo_permission_social || b.photoPermissionSocial);
+        const photoConsentBadge = hasPhotoConsent
+            ? ` <span class="tag" style="background: rgba(34, 197, 94, 0.12); color: #15803d; border-color: rgba(34, 197, 94, 0.3);" title="Photo Sharing Consent Granted">📸 Consent</span>`
+            : '';
         const contact = [b.email, b.phone].filter(Boolean).map(esc).join(' · ');
         const extra = [];
         if (b.attendees)
@@ -750,7 +756,7 @@
       <li class="row bk${isCancelled ? ' is-cancelled' : ''}">
         <div class="row__main">
           <p class="bk__when num">${esc(bookingTimeText(b))}</p>
-          <p class="bk__who"><strong>${esc(name)}</strong> ${statusTagHTML(b)}</p>
+          <p class="bk__who"><strong>${esc(name)}</strong> ${statusTagHTML(b)}${photoConsentBadge}</p>
           <p class="sub">${esc(b.package || st().NO_PACKAGE)}</p>
           ${contact ? `<p class="sub">${contact}</p>` : ''}
           ${b.location ? `<p class="sub">Location: ${esc(b.location)}</p>` : ''}
@@ -983,6 +989,31 @@
         $('#bkRefundNote').hidden = true;
         $('#bkSave').disabled = false;
         clearInvalid('#bookingModal');
+        const portfolioGranted = Boolean(b.photo_permission_portfolio || b.photoPermissionPortfolio);
+        const socialGranted = Boolean(b.photo_permission_social || b.photoPermissionSocial);
+        const acceptedAt = b.photo_permission_accepted_at || b.photoPermissionAcceptedAt;
+        const version = b.photo_permission_version || b.photoPermissionVersion || 'v1';
+        const badgesEl = $('#bkPhotoConsentBadges');
+        if (badgesEl) {
+            const greenStyle = 'display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: rgba(34, 197, 94, 0.12); color: #15803d; border: 1px solid rgba(34, 197, 94, 0.3);';
+            const neutralStyle = 'display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; background: var(--ink-4, #f3f4f6); color: var(--ink-2, #6b7280); border: 1px solid var(--rule, #d1d5db);';
+            const portfolioBadge = portfolioGranted
+                ? `<span style="${greenStyle}">✓ Allowed for Website / Portfolio</span>`
+                : `<span style="${neutralStyle}">✕ Declined for Website / Portfolio</span>`;
+            const socialBadge = socialGranted
+                ? `<span style="${greenStyle}">✓ Allowed for Social Media</span>`
+                : `<span style="${neutralStyle}">✕ Declined for Social Media</span>`;
+            badgesEl.innerHTML = `${portfolioBadge} ${socialBadge}`;
+        }
+        const metaEl = $('#bkPhotoConsentMeta');
+        if (metaEl) {
+            if (acceptedAt) {
+                metaEl.textContent = `Consent recorded at ${acceptedAt} · Policy ${version}`;
+            }
+            else {
+                metaEl.textContent = `No consent timestamp recorded · Policy ${version}`;
+            }
+        }
         openPayments(b);
         if (!isOpen('#bookingModal'))
             lastFocus = document.activeElement;

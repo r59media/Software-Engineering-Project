@@ -439,50 +439,15 @@ export function isTokenRevoked(token: string): boolean {
 }
 
 /**
- * Parses a named cookie from the Cookie header.
+ * Extracts the session token strictly from Authorization: Bearer <token>.
  */
-export function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
-  if (!cookieHeader) return null
-  const parts = cookieHeader.split(';')
-  for (const part of parts) {
-    const eqIdx = part.indexOf('=')
-    if (eqIdx === -1) continue
-    const k = part.substring(0, eqIdx).trim()
-    if (k === name) {
-      const val = part.substring(eqIdx + 1).trim()
-      if (val) {
-        try {
-          return decodeURIComponent(val)
-        } catch {
-          return val
-        }
-      }
-    }
-  }
-  return null
-}
-
-/**
- * Extracts the session token from:
- * 1. Authorization: Bearer <token> (source: 'header'), OR
- * 2. Cookie __Host-r59_session, fallback to r59_session (source: 'cookie').
- */
-export function extractSessionToken(c: Context): { token: string | null; source: 'header' | 'cookie' | null } {
+export function extractSessionToken(c: Context): { token: string | null; source: 'header' | null } {
   const auth = c.req.header('Authorization')
   if (auth && auth.startsWith('Bearer ')) {
     const token = auth.substring(7).trim()
     if (token && token !== 'cookie') {
       return { token, source: 'header' }
     }
-  }
-  const cookieHeader = c.req.header('Cookie')
-  const hostCookie = getCookieValue(cookieHeader, '__Host-r59_session')
-  if (hostCookie) {
-    return { token: hostCookie, source: 'cookie' }
-  }
-  const legacyCookie = getCookieValue(cookieHeader, 'r59_session')
-  if (legacyCookie) {
-    return { token: legacyCookie, source: 'cookie' }
   }
   return { token: null, source: null }
 }
@@ -689,7 +654,7 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }, 500)
   }
 
-  const { token, source } = extractSessionToken(c)
+  const { token } = extractSessionToken(c)
   if (!token) {
     return c.json({
       error: {
@@ -752,27 +717,6 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
       }
     } catch (err) {
       console.warn('[auth] DB sessions_valid_after check warning:', err)
-    }
-  }
-
-  const method = c.req.method.toUpperCase()
-  if (source === 'cookie' && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
-    const xrw = c.req.header('X-Requested-With')
-    const secFetchSite = c.req.header('Sec-Fetch-Site')
-    const origin = c.req.header('Origin')
-    const reqOrigin = new URL(c.req.url).origin
-    const csrfSafe =
-      xrw === 'XMLHttpRequest' ||
-      secFetchSite === 'same-origin' ||
-      (origin && origin === reqOrigin)
-    if (!csrfSafe) {
-      return c.json({
-        error: {
-          code: 'FORBIDDEN',
-          message: 'CSRF validation failed for cookie-authenticated request.',
-          details: []
-        }
-      }, 403)
     }
   }
 

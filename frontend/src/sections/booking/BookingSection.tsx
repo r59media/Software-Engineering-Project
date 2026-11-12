@@ -1,6 +1,6 @@
 import { AnimatePresence, LayoutGroup, motion, useIsPresent, useReducedMotion } from 'motion/react'
 import type { ReactNode } from 'react'
-import { forwardRef, useEffect, useMemo, useState } from 'react'
+import { forwardRef, useMemo, useState } from 'react'
 import { previewBookingServices } from '../../config/booking'
 import type {
   BookingCustomerInfo,
@@ -16,8 +16,6 @@ import { validateBookingInfo } from './bookingValidation'
 import { BookingYourInfo } from './BookingYourInfo'
 import { BookingSummary } from './BookingSummary'
 import './BookingSection.css'
-
-const STORAGE_KEY = 'r59_booking_session'
 
 export function BookingSection(props: BookingSectionProps) {
   return <LayoutGroup><BookingFlow {...props} /></LayoutGroup>
@@ -105,10 +103,6 @@ function BookingFlow({
   } else if (step === 'summary' && (!selectedServiceId || !dateTime || !customerInfo)) {
     effectiveStep = 'services'
   }
-
-  useEffect(() => {
-    try { sessionStorage.removeItem(STORAGE_KEY) } catch { /* Storage may be unavailable. */ }
-  }, [])
 
   const handleServicesContinue = (selection: ServiceSelection) => {
     if (selection.serviceId !== selectedServiceId || selection.people !== attendees) setDateTime(null)

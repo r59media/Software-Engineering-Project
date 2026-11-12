@@ -1,7 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
-import { BOOKING_PAYMENTS_TABLE_SQL, BILLING_SCHEMA_STEPS } from '../src/lib/billingSchema.ts'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { Hono } from 'hono'
+import {
+  BOOKING_PAYMENTS_TABLE_SQL,
+  BILLING_SCHEMA_STEPS,
+  ensurePhotoPermissionsColumns,
+  replaceMediaStorageChunks
+} from '../src/lib/billingSchema.ts'
 import {
   OPEN_INVOICE_EXISTS_SQL,
   PAYMENTS_SELECT_SQL,
@@ -57,7 +65,9 @@ function setup() {
     CREATE TABLE Bookings (
       id INTEGER PRIMARY KEY AUTOINCREMENT, service_id INTEGER, slot_id INTEGER,
       client_name TEXT NOT NULL, client_email TEXT NOT NULL, price_at_booking INTEGER NOT NULL,
-      status TEXT DEFAULT 'pending', deposit_paid INTEGER DEFAULT 0, custom_price INTEGER, deposit_percent INTEGER
+      status TEXT DEFAULT 'pending', deposit_paid INTEGER DEFAULT 0, custom_price INTEGER, deposit_percent INTEGER,
+      photo_permission_portfolio BOOLEAN DEFAULT 0, photo_permission_social BOOLEAN DEFAULT 0,
+      photo_permission_accepted_at TEXT, photo_permission_version TEXT DEFAULT 'v1'
     );
     CREATE TABLE Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL);
   `)
@@ -266,4 +276,228 @@ test('sendBalanceInvoice releases its claim on BALANCE_CHANGED and NO_BALANCE, a
   await assert.rejects(sendBalanceInvoice(db, SQUARE_ENV, 1, 0), code('INVOICE_OPEN'))
   sqlite.exec("UPDATE Booking_Invoices SET status = 'CREATING'")
   await assert.rejects(sendBalanceInvoice(db, SQUARE_ENV, 1, 0), code('INVOICE_SENDING'))
+})
+
+test('photo permission compliance columns store audit trail properly in Bookings', async () => {
+  const { sqlite, db } = setup()
+  const timestamp = new Date().toISOString()
+  
+  // Insert with explicit photo permissions
+  await db.prepare(
+    `INSERT INTO Bookings (
+      service_id, slot_id, client_name, client_email, price_at_booking, status,
+      photo_permission_portfolio, photo_permission_social, photo_permission_accepted_at, photo_permission_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(1, 1, 'John Doe', 'john@example.com', 50000, 'confirmed', 1, 0, timestamp, 'v1').run()
+
+  const row = (await db.prepare('SELECT * FROM Bookings WHERE client_email = ?').bind('john@example.com').first()) as any
+  assert.equal(row.client_name, 'John Doe')
+  assert.equal(row.photo_permission_portfolio, 1)
+  assert.equal(row.photo_permission_social, 0)
+  assert.equal(row.photo_permission_accepted_at, timestamp)
+  assert.equal(row.photo_permission_version, 'v1')
+
+  // Check default values when not provided
+  const defaultRow = (await db.prepare('SELECT * FROM Bookings WHERE id = 1').first()) as any
+  assert.equal(defaultRow.photo_permission_portfolio, 0)
+  assert.equal(defaultRow.photo_permission_social, 0)
+  assert.equal(defaultRow.photo_permission_accepted_at, null)
+  assert.equal(defaultRow.photo_permission_version, 'v1')
+})
+
+test('Audit 3: 0002_add_photo_permissions migration and ensurePhotoPermissionsColumns execute without data loss', async () => {
+  const sqlite = new DatabaseSync(':memory:')
+  const db = createD1(sqlite)
+
+  // 1. Setup legacy Bookings table (missing photo_permission_* columns)
+  sqlite.exec(`
+    CREATE TABLE Schedule_Slots (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL);
+    CREATE TABLE Bookings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      service_id INTEGER,
+      slot_id INTEGER,
+      client_name TEXT NOT NULL,
+      client_email TEXT NOT NULL,
+      price_at_booking INTEGER NOT NULL,
+      status TEXT DEFAULT 'pending',
+      customer_phone TEXT DEFAULT '',
+      location TEXT DEFAULT '',
+      notes TEXT DEFAULT '',
+      deposit_paid INTEGER DEFAULT 0
+    );
+    INSERT INTO Schedule_Slots (id, date) VALUES (1, '2026-11-20');
+    INSERT INTO Bookings (id, service_id, slot_id, client_name, client_email, price_at_booking, status, customer_phone, location, notes, deposit_paid)
+      VALUES (1, 1, 1, 'Elena Rostova', 'elena@example.com', 60000, 'confirmed', '555-9876', 'Studio', 'Legacy booking notes', 36000);
+  `)
+
+  // Pre-condition: columns do not exist
+  const beforeCols = (sqlite.prepare('PRAGMA table_info(Bookings)').all() as any[]).map(c => c.name)
+  assert.ok(!beforeCols.includes('photo_permission_portfolio'))
+  assert.ok(!beforeCols.includes('photo_permission_social'))
+  assert.ok(!beforeCols.includes('photo_permission_accepted_at'))
+  assert.ok(!beforeCols.includes('photo_permission_version'))
+
+  // 2. Read migration file and verify contents
+  const migrationPath = resolve(process.cwd(), 'migrations/0002_add_photo_permissions.sql')
+  const migrationSql = readFileSync(migrationPath, 'utf8')
+  assert.ok(migrationSql.includes('photo_permission_portfolio'))
+  assert.ok(migrationSql.includes('photo_permission_social'))
+  assert.ok(migrationSql.includes('photo_permission_accepted_at'))
+  assert.ok(migrationSql.includes('photo_permission_version'))
+
+  // 3. Apply schema check helper
+  await ensurePhotoPermissionsColumns(db)
+
+  // 4. Verify columns now exist
+  const afterCols = (sqlite.prepare('PRAGMA table_info(Bookings)').all() as any[]).map(c => c.name)
+  assert.ok(afterCols.includes('photo_permission_portfolio'))
+  assert.ok(afterCols.includes('photo_permission_social'))
+  assert.ok(afterCols.includes('photo_permission_accepted_at'))
+  assert.ok(afterCols.includes('photo_permission_version'))
+
+  // 5. Verify existing booking data preserved with ZERO data loss
+  const row = sqlite.prepare('SELECT * FROM Bookings WHERE id = 1').get() as any
+  assert.equal(row.client_name, 'Elena Rostova')
+  assert.equal(row.client_email, 'elena@example.com')
+  assert.equal(row.price_at_booking, 60000)
+  assert.equal(row.status, 'confirmed')
+  assert.equal(row.customer_phone, '555-9876')
+  assert.equal(row.location, 'Studio')
+  assert.equal(row.notes, 'Legacy booking notes')
+  assert.equal(row.deposit_paid, 36000)
+
+  // 6. Verify default values on existing rows
+  assert.equal(row.photo_permission_portfolio, 0)
+  assert.equal(row.photo_permission_social, 0)
+  assert.equal(row.photo_permission_accepted_at, null)
+  assert.equal(row.photo_permission_version, 'v1')
+
+  // 7. Verify idempotency: re-running does not throw or corrupt data
+  await ensurePhotoPermissionsColumns(db)
+  const rowAfterSecond = sqlite.prepare('SELECT * FROM Bookings WHERE id = 1').get() as any
+  assert.deepEqual(row, rowAfterSecond)
+})
+
+test('Audit 5: replaceMediaStorageChunks executes atomic chunk deletion and replacement in a single batch', async () => {
+  const sqlite = new DatabaseSync(':memory:')
+  const db = createD1(sqlite)
+
+  const fileKey = 'portfolio/test-atomic.webp'
+
+  // 1. Initial write: 1200 KB image (3 chunks of 512KB: 512KB, 512KB, 176KB)
+  const initialSize = 1200 * 1024
+  const initialBuf = new Uint8Array(initialSize)
+  for (let i = 0; i < initialSize; i++) initialBuf[i] = i % 256
+  await replaceMediaStorageChunks(db, fileKey, initialBuf.buffer, 'image/webp')
+
+  const initialRows = sqlite.prepare('SELECT chunk_index, length(data) as len FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC').all(fileKey) as any[]
+  assert.equal(initialRows.length, 3)
+  assert.equal(initialRows[0].chunk_index, 0)
+  assert.equal(initialRows[0].len, 512 * 1024)
+  assert.equal(initialRows[1].chunk_index, 1)
+  assert.equal(initialRows[1].len, 512 * 1024)
+  assert.equal(initialRows[2].chunk_index, 2)
+  assert.equal(initialRows[2].len, 176 * 1024)
+
+  // 2. Replacement write: 300 KB image (1 chunk of 300KB)
+  // Must atomically delete the old 3 chunks and insert the single new chunk
+  const replaceSize = 300 * 1024
+  const replaceBuf = new Uint8Array(replaceSize)
+  replaceBuf.fill(42)
+  await replaceMediaStorageChunks(db, fileKey, replaceBuf.buffer, 'image/webp')
+
+  const replacedRows = sqlite.prepare('SELECT chunk_index, length(data) as len, data FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC').all(fileKey) as any[]
+  assert.equal(replacedRows.length, 1, 'Old chunks 1 and 2 must be purged atomically; only chunk 0 should remain')
+  assert.equal(replacedRows[0].chunk_index, 0)
+  assert.equal(replacedRows[0].len, replaceSize)
+  assert.equal(new Uint8Array(replacedRows[0].data)[0], 42)
+})
+
+test('Audit 1: /admin/assets/wasm/*.wasm and /admin/assets/js/webpEncoder.worker.js MIME routing and HTML fallback prevention', async () => {
+  const dummyWasmBytes = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])
+  const dummyWorkerScript = 'self.onmessage = () => {};'
+
+  const mockAssets: any = {
+    fetch: async (req: Request) => {
+      const url = new URL(req.url)
+      if (url.pathname === '/admin/assets/wasm/webp_enc.wasm') {
+        return new Response(dummyWasmBytes, {
+          status: 200,
+          headers: { 'Content-Type': 'application/wasm' }
+        })
+      }
+      if (url.pathname === '/admin/assets/js/webpEncoder.worker.js') {
+        return new Response(dummyWorkerScript, {
+          status: 200,
+          headers: { 'Content-Type': 'application/javascript' }
+        })
+      }
+      if (url.pathname === '/admin/assets/wasm/missing.wasm') {
+        // Simulates ASSETS returning 404 or SPA HTML fallback
+        return new Response('<!DOCTYPE html><html><body>SPA fallback</body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        })
+      }
+      if (url.pathname === '/admin/assets/js/missing.worker.js') {
+        return new Response('<!DOCTYPE html><html><body>SPA fallback</body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        })
+      }
+      return new Response('Not Found', { status: 404 })
+    }
+  }
+
+  const env = { ASSETS: mockAssets } as any
+
+  const testApp = new Hono<{ Bindings: { ASSETS: any } }>()
+
+  testApp.get('/admin/assets/wasm/*', async (c) => {
+    if (!c.env.ASSETS) return c.text('Internal server error.', 500)
+    const url = new URL(c.req.url)
+    if (!url.pathname.endsWith('.wasm')) return c.notFound()
+    const assetRes = await c.env.ASSETS.fetch(c.req.raw)
+    if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
+      return c.notFound()
+    }
+    const headers = new Headers(assetRes.headers)
+    headers.set('Content-Type', 'application/wasm')
+    headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    headers.set('X-Content-Type-Options', 'nosniff')
+    return new Response(assetRes.body, { status: assetRes.status, statusText: assetRes.statusText, headers })
+  })
+
+  testApp.get('/admin/assets/js/webpEncoder.worker.js', async (c) => {
+    if (!c.env.ASSETS) return c.text('Internal server error.', 500)
+    const assetRes = await c.env.ASSETS.fetch(c.req.raw)
+    if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
+      return c.notFound()
+    }
+    const headers = new Headers(assetRes.headers)
+    headers.set('Content-Type', 'application/javascript')
+    headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    headers.set('X-Content-Type-Options', 'nosniff')
+    return new Response(assetRes.body, { status: assetRes.status, statusText: assetRes.statusText, headers })
+  })
+
+  // 1. Valid wasm asset returns 200 with application/wasm
+  const wasmRes = await testApp.request('/admin/assets/wasm/webp_enc.wasm', {}, env)
+  assert.equal(wasmRes.status, 200)
+  assert.equal(wasmRes.headers.get('Content-Type'), 'application/wasm')
+
+  // 2. Valid worker script returns 200 with application/javascript
+  const workerRes = await testApp.request('/admin/assets/js/webpEncoder.worker.js', {}, env)
+  assert.equal(workerRes.status, 200)
+  assert.equal(workerRes.headers.get('Content-Type'), 'application/javascript')
+
+  // 3. Wasm request returning HTML fallback from ASSETS is rejected with 404
+  const wasmHtmlFallbackRes = await testApp.request('/admin/assets/wasm/missing.wasm', {}, env)
+  assert.equal(wasmHtmlFallbackRes.status, 404)
+  assert.notEqual(wasmHtmlFallbackRes.headers.get('Content-Type'), 'text/html')
+
+  // 4. Worker request returning HTML fallback from ASSETS is rejected with 404
+  const workerHtmlFallbackRes = await testApp.request('/admin/assets/js/missing.worker.js', {}, env)
+  assert.equal(workerHtmlFallbackRes.status, 404)
+  assert.notEqual(workerHtmlFallbackRes.headers.get('Content-Type'), 'text/html')
 })

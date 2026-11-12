@@ -90,12 +90,28 @@ checkoutRouter.post('/', async (c) => {
     const rawPhone = body.customer_phone ?? body.customerPhone ?? body.phone
     const customerPhone = typeof rawPhone === 'string' ? rawPhone.trim().slice(0, 50) : ''
     const rawNotes = body.notes ?? body.message ?? body.clientNotes
-    const notes = typeof rawNotes === 'string' ? rawNotes.trim().slice(0, 2000) : ''
+    let notes = typeof rawNotes === 'string' ? rawNotes.trim().slice(0, 2000) : ''
     const rawAttendees = body.attendees ?? body.party_size ?? body.people
     const attendees = Number.isInteger(Number(rawAttendees)) && Number(rawAttendees) > 0 ? Number(rawAttendees) : 1
     const idempotencyKey = body.idempotencyKey ?? body.idempotency_key
     slotId = body.slotId ?? body.slot_id
     const couponCode = typeof (body.coupon_code ?? body.couponCode) === 'string' ? (body.coupon_code ?? body.couponCode).trim().toUpperCase() : ''
+
+    const photoPermissions = body.photoPermissions ?? body.photo_permissions
+    let photoPermissionPortfolio = 0
+    let photoPermissionSocial = 0
+    let photoPermissionAcceptedAt: string | null = null
+    const photoPermissionVersion = 'v1'
+
+    if (photoPermissions && typeof photoPermissions === 'object') {
+      photoPermissionPortfolio = (photoPermissions.websitePortfolio ?? photoPermissions.website_portfolio) ? 1 : 0
+      photoPermissionSocial = (photoPermissions.socialMedia ?? photoPermissions.social_media) ? 1 : 0
+      photoPermissionAcceptedAt = new Date().toISOString()
+    }
+    const consentSummary = `Photo Consent: Portfolio=[${photoPermissionPortfolio ? 'YES' : 'NO'}], Social=[${photoPermissionSocial ? 'YES' : 'NO'}]`
+    if (photoPermissions && typeof photoPermissions === 'object') {
+      notes = notes ? `${notes}\n\n${consentSummary}` : consentSummary
+    }
 
     const errors = []
     if (!sourceId || typeof sourceId !== 'string') {
@@ -296,8 +312,12 @@ checkoutRouter.post('/', async (c) => {
       const bookingInsert = await c.env.DB.prepare(
         // Online checkout charges only the deposit: price_at_booking is the total after coupon,
         // deposit_paid is the amount charged now, and deposit_percent is the percent that produced it
-        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, customer_phone, notes, attendees, price_at_booking, square_payment_id, status, coupon_code, deposit_paid, deposit_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)"
-      ).bind(service.id, slotId, clientName, clientEmail, customerPhone, notes, attendees, finalPriceCents, paymentId, couponCode, deposit.cents, deposit.percent).run()
+        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, customer_phone, notes, attendees, price_at_booking, square_payment_id, status, coupon_code, deposit_paid, deposit_percent, photo_permission_portfolio, photo_permission_social, photo_permission_accepted_at, photo_permission_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?)"
+      ).bind(
+        service.id, slotId, clientName, clientEmail, customerPhone, notes, attendees,
+        finalPriceCents, paymentId, couponCode, deposit.cents, deposit.percent,
+        photoPermissionPortfolio, photoPermissionSocial, photoPermissionAcceptedAt, photoPermissionVersion
+      ).run()
       bookingId = bookingInsert.meta?.last_row_id
     } catch (bookingErr) {
       console.error('CRITICAL: Payment succeeded but booking insert failed:', {
@@ -353,6 +373,13 @@ checkoutRouter.post('/', async (c) => {
       deposit_percent: deposit.percent,
       total_cents: finalPriceCents,
       balance_cents: balanceCents,
+      photo_consent: {
+        portfolio: photoPermissionPortfolio === 1,
+        social: photoPermissionSocial === 1,
+        accepted_at: photoPermissionAcceptedAt,
+        version: photoPermissionVersion
+      },
+      consent_summary: consentSummary,
       data: {
         booking_id: bookingId,
         payment_id: paymentId,
@@ -360,7 +387,12 @@ checkoutRouter.post('/', async (c) => {
         deposit_cents: deposit.cents,
         deposit_percent: deposit.percent,
         total_cents: finalPriceCents,
-        balance_cents: balanceCents
+        balance_cents: balanceCents,
+        photo_permission_portfolio: photoPermissionPortfolio,
+        photo_permission_social: photoPermissionSocial,
+        photo_permission_accepted_at: photoPermissionAcceptedAt,
+        photo_permission_version: photoPermissionVersion,
+        consent_summary: consentSummary
       }
     })
   } catch (e: any) {

@@ -122,7 +122,7 @@ test('createSessionToken and verifySessionToken include issuedAt and validate si
   assert.equal(expiredSession.valid, false)
 })
 
-test('extractSessionToken extracts tokens from headers and cookies with correct precedence', () => {
+test('extractSessionToken strictly extracts tokens from Authorization Bearer header', () => {
   const app = new Hono()
 
   let extracted: any = null
@@ -135,37 +135,28 @@ test('extractSessionToken extracts tokens from headers and cookies with correct 
   app.request('/test', { headers: { Authorization: 'Bearer token_from_header' } })
   assert.deepEqual(extracted, { token: 'token_from_header', source: 'header' })
 
-  // Bearer cookie is ignored and falls back to cookies
+  // Bearer cookie sentinel is ignored
   app.request('/test', {
     headers: {
-      Authorization: 'Bearer cookie',
-      Cookie: '__Host-r59_session=token_from_host_cookie'
+      Authorization: 'Bearer cookie'
     }
   })
-  assert.deepEqual(extracted, { token: 'token_from_host_cookie', source: 'cookie' })
+  assert.deepEqual(extracted, { token: null, source: null })
 
-  // __Host-r59_session takes precedence over r59_session
+  // Cookies are completely ignored
   app.request('/test', {
     headers: {
       Cookie: '__Host-r59_session=host_tok; r59_session=legacy_tok'
     }
   })
-  assert.deepEqual(extracted, { token: 'host_tok', source: 'cookie' })
-
-  // Fallback to r59_session
-  app.request('/test', {
-    headers: {
-      Cookie: 'r59_session=legacy_tok'
-    }
-  })
-  assert.deepEqual(extracted, { token: 'legacy_tok', source: 'cookie' })
+  assert.deepEqual(extracted, { token: null, source: null })
 
   // No token
   app.request('/test')
   assert.deepEqual(extracted, { token: null, source: null })
 })
 
-test('adminAuth middleware enforces signing secret, email match, revocation, and CSRF', async () => {
+test('adminAuth middleware enforces signing secret, email match, revocation, and header auth', async () => {
   const db = setupDb()
   const app = new Hono<{ Bindings: Bindings }>()
   app.use('*', adminAuth)
@@ -208,37 +199,24 @@ test('adminAuth middleware enforces signing secret, email match, revocation, and
   // Reset sessions_valid_after to past
   await db.prepare("UPDATE Admin_Settings SET setting_value = ? WHERE setting_key = 'sessions_valid_after'").bind('0').run()
 
-  // 5. CSRF validation on cookie-authenticated mutating requests
-  // Cookie auth with POST and no CSRF header -> 403
-  const resCookieCsrfFail = await app.request('http://localhost/admin/action', {
+  // 5. Cookie-only request is rejected (cookieless architecture) -> 401
+  const resCookieOnly = await app.request('http://localhost/admin/action', {
     method: 'POST',
     headers: {
       Cookie: `__Host-r59_session=${validToken}`
     }
   }, { DB: db, SESSION_SECRET: VALID_SECRET, ADMIN_EMAIL } as any)
-  assert.equal(resCookieCsrfFail.status, 403)
+  assert.equal(resCookieOnly.status, 401)
 
-  // Cookie auth with POST and Authorization: Bearer cookie (bypass attempt) -> must STILL be 403!
-  const resBypassAttempt = await app.request('http://localhost/admin/action', {
-    method: 'POST',
+  // 6. Header auth with GET and POST passes without requiring CSRF cookies
+  const resHeaderGet = await app.request('http://localhost/admin/action', {
+    method: 'GET',
     headers: {
-      Authorization: 'Bearer cookie',
-      Cookie: `__Host-r59_session=${validToken}`
+      Authorization: `Bearer ${validToken}`
     }
   }, { DB: db, SESSION_SECRET: VALID_SECRET, ADMIN_EMAIL } as any)
-  assert.equal(resBypassAttempt.status, 403)
+  assert.equal(resHeaderGet.status, 200)
 
-  // Cookie auth with POST and X-Requested-With -> 200
-  const resCookieCsrfPass = await app.request('http://localhost/admin/action', {
-    method: 'POST',
-    headers: {
-      Cookie: `__Host-r59_session=${validToken}`,
-      'X-Requested-With': 'XMLHttpRequest'
-    }
-  }, { DB: db, SESSION_SECRET: VALID_SECRET, ADMIN_EMAIL } as any)
-  assert.equal(resCookieCsrfPass.status, 200)
-
-  // Header auth with POST (API/CLI client) -> does not require CSRF
   const resHeaderPost = await app.request('http://localhost/admin/action', {
     method: 'POST',
     headers: {

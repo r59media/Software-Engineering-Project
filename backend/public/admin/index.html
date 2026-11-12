@@ -480,6 +480,9 @@
             <div class="photo-panel" id="photoPanel" role="tabpanel" aria-labelledby="tab-main">
               <div class="photo-toolbar">
                 <div class="chips" id="filters" role="group" aria-label="Filter gallery by category" hidden></div>
+                <button class="btn btn--sm" id="btnReoptimizeGallery" type="button" title="Re-optimize gallery media using C-Wasm libwebp (method 6, quality 92)" hidden>
+                  <svg class="ico" aria-hidden="true"><use href="#i-swap"/></svg><span>Re-optimize Gallery Media</span>
+                </button>
                 <p class="hint" id="imgHint"></p>
                 <a class="link-out" id="imgSiteLink" href="/#recent-photoshoot" target="_blank" rel="noopener">View on site <svg class="ico" aria-hidden="true"><use href="#i-out"/></svg><span class="sr-only"> (opens in a new tab)</span></a>
               </div>
@@ -1078,6 +1081,17 @@
             <div class="field__control"><textarea class="field__input" id="bkNotes" rows="3" maxlength="1000"></textarea></div>
           </div>
         </div>
+
+        <!-- Photo Sharing Consent (Compliance) Section -->
+        <section class="photo-consent-section" id="bkPhotoConsentSection" aria-labelledby="bkPhotoConsentTitle" style="margin: 1.25rem 0; padding: 1rem; border: 1px solid var(--rule, #e5e7eb); border-radius: 6px; background: var(--paper, #f9fafb);">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+            <h4 id="bkPhotoConsentTitle" style="margin: 0; font-size: 0.85rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink, #111827); display: flex; align-items: center; gap: 0.5rem;">
+              <span>📸 Photo Sharing Consent (Compliance)</span>
+            </h4>
+          </div>
+          <div id="bkPhotoConsentBadges" style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;"></div>
+          <p id="bkPhotoConsentMeta" style="margin: 0; font-size: 0.78rem; color: var(--ink-2, #6b7280);"></p>
+        </section>
 
         <!-- Payments: record actions, saved on their own (not part of Save changes) -->
         <section class="pay" id="paySection" aria-labelledby="payTitle">

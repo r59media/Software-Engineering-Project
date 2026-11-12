@@ -40,7 +40,7 @@ export function GalleryEmptyState() {
         const rect = e.currentTarget.getBoundingClientRect()
         target.current = { x: -.08 + (e.clientY - rect.top - rect.height / 2) / rect.height * .35, y: -.28 + (e.clientX - rect.left - rect.width / 2) / rect.width * .7 }
       }} onPointerUp={e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); reset() }} onPointerCancel={reset} onLostPointerCapture={reset} onPointerLeave={() => { if (!drag.current) reset() }}>
-      <img className="gallery-empty__fallback" data-hidden={loaded && !failed && !reduced} src="/models/r59-memory-card-preview.png" alt="" />
+      <img className="gallery-empty__fallback" data-hidden={loaded && !failed && !reduced} src="/models/r59-memory-card-preview.webp" alt="" />
       {!reduced && !failed && <SceneBoundary><Suspense fallback={null}><Scene target={target} automatic={!interactive} reduced={reduced} active={visible} ready={ready} fail={fail} /></Suspense></SceneBoundary>}
     </div>
     <div className="gallery-empty__message" role="status"><h3>Oops!</h3><p>No photographs found in this category.</p></div>

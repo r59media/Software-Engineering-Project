@@ -9,7 +9,7 @@
 .booking-review__intro p { margin-top: 4px; }
 .booking-review__ticket-layout { position: relative; width: min(100%, 1126px); margin-inline: auto; }
 .booking-review__ticket { position: relative; isolation: isolate; padding: 28px clamp(24px, 4vw, 54px); border-radius: 12px; background: var(--color-white); color: var(--color-brand-black); }
-.booking-review__ticket::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: url('../../assets/booking/session-paper.jpeg') center / cover; filter: grayscale(1); opacity: .11; pointer-events: none; }
+.booking-review__ticket::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: url('../../assets/booking/session-paper.webp') center / cover; filter: grayscale(1); opacity: .11; pointer-events: none; }
 .booking-review__ticket-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .booking-review__ticket-heading h3 { font-size: 48px; line-height: .85; }
 .booking-review__ticket-heading em { display: block; }

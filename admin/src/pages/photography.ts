@@ -519,6 +519,11 @@
         : '';
     }
 
+    const btnReopt = $('#btnReoptimizeGallery');
+    if (btnReopt) {
+      btnReopt.hidden = !(currentTab === 'gallery' && status === 'loaded');
+    }
+
     const fileAdd = $('#fileAdd');
     if (fileAdd) fileAdd.multiple = currentTab !== 'about';
   }
@@ -1146,6 +1151,35 @@
       if (!c) return;
       currentFilter = c.dataset.filter;
       renderImages();
+    });
+
+    let reoptimizing = false;
+    $('#btnReoptimizeGallery')?.addEventListener('click', async () => {
+      if (reoptimizing || uploading) return;
+      const btn = $('#btnReoptimizeGallery');
+      const span = btn?.querySelector('span');
+      const originalText = span ? span.textContent : 'Re-optimize Gallery Media';
+
+      reoptimizing = true;
+      if (btn) btn.disabled = true;
+
+      try {
+        toast('Starting gallery media re-optimization...', { type: 'info' });
+        const res = await api().reoptimizeGalleryMedia(progress => {
+          if (span && progress && progress.status) {
+            span.textContent = progress.status;
+          }
+        });
+        toast(`Re-optimization complete: ${res.optimized} photos optimized, ${res.failed} skipped.`, { type: 'success' });
+        await window.R59.app?.reloadArea?.('images');
+      } catch (err) {
+        console.error('Re-optimization failed:', err);
+        toast(`Re-optimization failed: ${err.message}`, { type: 'error' });
+      } finally {
+        reoptimizing = false;
+        if (btn) btn.disabled = false;
+        if (span) span.textContent = originalText;
+      }
     });
 
     const grid = $('#imgGrid');

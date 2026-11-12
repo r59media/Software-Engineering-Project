@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 
 export interface ProtectedCanvasImageProps {
   src: string
@@ -11,80 +11,6 @@ export interface ProtectedCanvasImageProps {
   height?: number
   onError?: () => void
   onLoad?: () => void
-}
-
-const MAX_CACHE_SIZE = 50
-const bitmapCache = new Map<string, ImageBitmap>()
-const inFlightRequests = new Map<string, Promise<ImageBitmap>>()
-
-function getCachedBitmap(url: string): ImageBitmap | undefined {
-  const bitmap = bitmapCache.get(url)
-  if (bitmap) {
-    // Refresh LRU order
-    bitmapCache.delete(url)
-    bitmapCache.set(url, bitmap)
-  }
-  return bitmap
-}
-
-function setCachedBitmap(url: string, bitmap: ImageBitmap): void {
-  if (bitmapCache.has(url)) {
-    bitmapCache.delete(url)
-  } else if (bitmapCache.size >= MAX_CACHE_SIZE) {
-    const oldestKey = bitmapCache.keys().next().value
-    if (oldestKey !== undefined) {
-      const evicted = bitmapCache.get(oldestKey)
-      bitmapCache.delete(oldestKey)
-      evicted?.close?.()
-    }
-  }
-  bitmapCache.set(url, bitmap)
-}
-
-async function fetchAndCacheBitmap(url: string): Promise<ImageBitmap> {
-  const cached = getCachedBitmap(url)
-  if (cached) return cached
-
-  const inFlight = inFlightRequests.get(url)
-  if (inFlight) return inFlight
-
-  const request = (async () => {
-    try {
-      const response = await fetch(url, {
-        headers: {
-          'X-R59-Client': 'media-viewer',
-        },
-      })
-      if (!response.ok) {
-        throw new Error(`Failed to load protected media: ${response.status}`)
-      }
-      const blob = await response.blob()
-      let bitmap: ImageBitmap
-      if (typeof createImageBitmap === 'function') {
-        bitmap = await createImageBitmap(blob)
-      } else {
-        const img = new Image()
-        const blobUrl = URL.createObjectURL(blob)
-        try {
-          await new Promise<void>((resolve, reject) => {
-            img.onload = () => resolve()
-            img.onerror = () => reject(new Error('Failed to load image'))
-            img.src = blobUrl
-          })
-          bitmap = await createImageBitmap(img)
-        } finally {
-          URL.revokeObjectURL(blobUrl)
-        }
-      }
-      setCachedBitmap(url, bitmap)
-      return bitmap
-    } finally {
-      inFlightRequests.delete(url)
-    }
-  })()
-
-  inFlightRequests.set(url, request)
-  return request
 }
 
 function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): boolean {
@@ -101,8 +27,6 @@ function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): boo
   return false
 }
 
-const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect
-
 export function ProtectedCanvasImage({
   src,
   alt,
@@ -118,47 +42,84 @@ export function ProtectedCanvasImage({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const onErrorRef = useRef(onError)
   const onLoadRef = useRef(onLoad)
-  useIsomorphicLayoutEffect(() => {
-    onLoadRef.current = onLoad
-  }, [onLoad])
 
   useEffect(() => {
     onErrorRef.current = onError
   }, [onError])
 
-  const [hasError, setHasError] = useState(false)
+  useEffect(() => {
+    onLoadRef.current = onLoad
+  }, [onLoad])
 
-  useIsomorphicLayoutEffect(() => {
+  const [errorSrc, setErrorSrc] = useState<string | null>(null)
+  const hasError = Boolean(src && errorSrc === src)
+
+  useEffect(() => {
     if (!src) return
 
-    setHasError(false)
-    let isMounted = true
+    const abortController = new AbortController()
+    const { signal } = abortController
 
-    // Check LRU cache first for instant synchronous render
-    const cached = getCachedBitmap(src)
-    if (cached) {
-      if (canvasRef.current) {
-        if (drawBitmapToCanvas(canvasRef.current, cached)) onLoadRef.current?.()
+    async function loadImage() {
+      try {
+        const response = await fetch(src, {
+          credentials: 'omit',
+          signal,
+          headers: {
+            'X-R59-Client': 'media-viewer',
+          },
+        })
+
+        if (!response.ok) {
+          throw new Error(`Failed to load protected media: ${response.status}`)
+        }
+
+        const blob = await response.blob()
+        if (signal.aborted) return
+
+        let bitmap: ImageBitmap
+        if (typeof createImageBitmap === 'function') {
+          bitmap = await createImageBitmap(blob)
+        } else {
+          const img = new Image()
+          const blobUrl = URL.createObjectURL(blob)
+          try {
+            await new Promise<void>((resolve, reject) => {
+              img.onload = () => resolve()
+              img.onerror = () => reject(new Error('Failed to load image'))
+              img.src = blobUrl
+            })
+            bitmap = await createImageBitmap(img)
+          } finally {
+            URL.revokeObjectURL(blobUrl)
+          }
+        }
+
+        try {
+          if (signal.aborted) return
+          const canvas = canvasRef.current
+          if (canvas) {
+            if (drawBitmapToCanvas(canvas, bitmap)) {
+              onLoadRef.current?.()
+            }
+          }
+        } finally {
+          bitmap.close?.()
+        }
+      } catch (err: unknown) {
+        if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+          return
+        }
+        console.error('ProtectedCanvasImage load error:', err)
+        setErrorSrc(src)
+        onErrorRef.current?.()
       }
-      return
     }
 
-    fetchAndCacheBitmap(src)
-      .then((bitmap) => {
-        if (!isMounted) return
-        if (canvasRef.current) {
-          if (drawBitmapToCanvas(canvasRef.current, bitmap)) onLoadRef.current?.()
-        }
-      })
-      .catch((err) => {
-        if (!isMounted) return
-        console.error('ProtectedCanvasImage load error:', err)
-        setHasError(true)
-        onErrorRef.current?.()
-      })
+    loadImage()
 
     return () => {
-      isMounted = false
+      abortController.abort()
     }
   }, [src])
 

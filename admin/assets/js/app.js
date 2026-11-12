@@ -58,23 +58,27 @@
             }
         }
     }
-    function loadScriptSequential(src) {
-        return new Promise((resolve, reject) => {
-            if (document.querySelector(`script[data-gated-src="${src}"]`)) {
-                resolve();
-                return;
-            }
-            const s = document.createElement('script');
-            s.src = src;
-            s.async = false;
-            s.setAttribute('data-gated-src', src);
-            s.addEventListener('load', () => resolve());
-            s.addEventListener('error', () => {
-                s.remove(); // allow a later retry to request it again
-                reject(new Error(`Failed to load ${src}`));
-            });
-            document.body.appendChild(s);
+    async function loadScriptSequential(src) {
+        if (document.querySelector(`script[data-gated-src="${src}"]`)) {
+            return;
+        }
+        const token = R().apiClient?.getAuthToken?.();
+        const headers = { 'X-Requested-With': 'XMLHttpRequest' };
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+        const res = await fetch(src, {
+            headers,
+            credentials: 'omit'
         });
+        if (!res.ok) {
+            throw new Error(`Failed to load ${src} (${res.status})`);
+        }
+        const code = await res.text();
+        const s = document.createElement('script');
+        s.setAttribute('data-gated-src', src);
+        s.textContent = `${code}\n//# sourceURL=${src}`;
+        document.body.appendChild(s);
     }
     async function ensureAdminModulesLoaded() {
         if (adminModulesLoaded)
@@ -243,6 +247,14 @@
             paymentsTotal: wholeCents(b.payments_total) ?? 0,
             paymentsCount: wholeCents(b.payments_count) ?? 0,
             squarePaymentId: b.square_payment_id ? String(b.square_payment_id) : '',
+            photo_permission_portfolio: b.photo_permission_portfolio ?? 0,
+            photo_permission_social: b.photo_permission_social ?? 0,
+            photo_permission_accepted_at: b.photo_permission_accepted_at || null,
+            photo_permission_version: b.photo_permission_version || 'v1',
+            photoPermissionPortfolio: Boolean(b.photo_permission_portfolio),
+            photoPermissionSocial: Boolean(b.photo_permission_social),
+            photoPermissionAcceptedAt: b.photo_permission_accepted_at || null,
+            photoPermissionVersion: b.photo_permission_version || 'v1',
             status: b.status ? (b.status.charAt(0).toUpperCase() + b.status.slice(1).toLowerCase()) : 'Confirmed'
         };
     }
@@ -655,6 +667,9 @@
         try {
             const res = await R().apiClient.loginWithGoogle(response.credential);
             if (res && res.ok) {
+                if (res.token) {
+                    R().apiClient?.setAuthToken?.(res.token);
+                }
                 try {
                     sessionStorage.setItem('r59_admin_session_hint', '1');
                     localStorage.removeItem('r59_admin_session_hint');

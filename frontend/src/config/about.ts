@@ -27,7 +27,7 @@ export const aboutImages = {
   portrait: { id: 'portrait', imageUrl: portrait, alt: 'Kevin D Gonzalez holding his camera at an event.', width: 1199, height: 1318 },
   portraitFrame: { id: 'portrait-frame', imageUrl: portraitFrame, alt: '', width: 1158, height: 1358 },
   signature: { id: 'signature-seal', imageUrl: signature, alt: '', width: 1030, height: 1034 },
-  paper: { id: 'paper-background', imageUrl: paper, alt: '', width: 2926, height: 4096 },
+  paper: { id: 'paper-background', imageUrl: paper, alt: '', width: 1829, height: 2560 },
 } satisfies Record<string, AboutImage>
 
 export const aboutDecorations: readonly AboutImage[] = [

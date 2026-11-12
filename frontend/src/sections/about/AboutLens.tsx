@@ -35,7 +35,7 @@ export function AboutLens() {
   const url = mobile ? aboutLens.mobileUrl : aboutLens.desktopUrl
 
   useEffect(() => {
-    fetch(url).catch(() => {})
+    fetch(url, { credentials: 'omit' }).catch(() => {})
   }, [url])
 
   return <div ref={host} className="about__lens" data-about-part="lens-transition" aria-hidden="true">

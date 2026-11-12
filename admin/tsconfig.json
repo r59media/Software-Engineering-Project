@@ -1,12 +1,13 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "None",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "strict": false,
     "noEmit": false,
     "outDir": "assets/js",
     "rootDir": "src",
-    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "lib": ["DOM", "DOM.Iterable", "ESNext", "WebWorker"],
     "skipLibCheck": true,
     "allowJs": true
   },
