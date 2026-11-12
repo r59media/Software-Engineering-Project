@@ -12,8 +12,8 @@
     const $$ = s => [...document.querySelectorAll(s)];
     const R = () => window.R59;
     const toast = (msg, opts) => window.R59.notifications?.toast?.(msg, opts);
-    // Served only to a signed-in session (GATED_ADMIN_SCRIPT_REGEX in backend/src/index.ts);
-    // index.html does not load these directly.
+    // Loaded dynamically upon confirmed session authentication;
+    // index.html does not load these directly on boot.
     const GATED_ADMIN_SCRIPTS = [
         'assets/js/api/bookingsApi.js',
         'assets/js/api/packagesApi.js',

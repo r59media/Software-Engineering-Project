@@ -41,6 +41,7 @@ app.use('*', logger())
 
 // Global Security Headers
 app.use('*', async (c, next) => {
+  c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   await next()
   c.header(
     'Content-Security-Policy',
@@ -222,6 +223,7 @@ app.use('*', async (c, next) => {
 
 // Route /admin and /admin/* to Admin Dashboard static assets
 app.get('/admin', (c) => {
+  c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   return c.redirect('/admin/', 301)
 })
 
@@ -241,6 +243,7 @@ app.get('/admin/assets/wasm/*', async (c) => {
   const headers = new Headers(assetRes.headers)
   headers.set('Content-Type', 'application/wasm')
   headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   headers.set('X-Content-Type-Options', 'nosniff')
   return new Response(assetRes.body, {
     status: assetRes.status,
@@ -261,6 +264,7 @@ app.get('/admin/assets/js/webpEncoder.worker.js', async (c) => {
   const headers = new Headers(assetRes.headers)
   headers.set('Content-Type', 'application/javascript')
   headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   headers.set('X-Content-Type-Options', 'nosniff')
   return new Response(assetRes.body, {
     status: assetRes.status,
@@ -280,6 +284,7 @@ app.get('/admin/assets/js/utils/webpEncoder.worker.js', async (c) => {
   const headers = new Headers(assetRes.headers)
   headers.set('Content-Type', 'application/javascript')
   headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   headers.set('X-Content-Type-Options', 'nosniff')
   return new Response(assetRes.body, {
     status: assetRes.status,
@@ -289,7 +294,6 @@ app.get('/admin/assets/js/utils/webpEncoder.worker.js', async (c) => {
 })
 
 const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb|wasm)$/i
-const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|utils\/webpConverter\.js|api\/(bookingsApi|dashboardApi|packagesApi|paymentsApi|personalApi|photographyApi|scheduleApi)\.js)/i
 
 app.get('/admin/*', async (c) => {
   if (!c.env.ASSETS) {
@@ -306,27 +310,6 @@ app.get('/admin/*', async (c) => {
   // Block sourcemap files (.map)
   if (url.pathname.endsWith('.map')) {
     return c.notFound()
-  }
-
-  // Gate sensitive admin scripts behind valid authentication
-  if (GATED_ADMIN_SCRIPT_REGEX.test(url.pathname)) {
-    const { token } = extractSessionToken(c)
-    const signingSecret = getSigningSecret(c.env)
-    const isAuthed = Boolean(
-      token &&
-      signingSecret &&
-      !(await isTokenRevokedInDb(c.env.DB, token)) &&
-      (await verifySessionToken(token, signingSecret)).valid
-    )
-    if (!isAuthed) {
-      return new Response('Not Found', {
-        status: 404,
-        headers: {
-          'Content-Type': 'text/plain; charset=utf-8',
-          'Cache-Control': 'no-store, no-cache, must-revalidate'
-        }
-      })
-    }
   }
 
   let assetRes: Response
@@ -374,6 +357,7 @@ app.get('/admin/*', async (c) => {
   // Clone with mutable headers so global security header middleware attaches headers cleanly
   const headers = new Headers(assetRes.headers)
   headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   if (url.pathname.endsWith('.wasm')) {
     headers.set('Content-Type', 'application/wasm')
   } else if (url.pathname.endsWith('/webpEncoder.worker.js') || url.pathname.endsWith('.js')) {
@@ -715,6 +699,7 @@ app.get('*', async (c) => {
   }
 
   const headers = new Headers(assetRes.headers)
+  headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   if (isProtectedAsset) {
     headers.set('Cross-Origin-Resource-Policy', 'same-origin')
     headers.set('Content-Disposition', 'inline')

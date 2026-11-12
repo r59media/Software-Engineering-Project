@@ -315,16 +315,83 @@ test('adminAuth rejects tokens revoked in D1 Revoked_Sessions table', async () =
   assert.equal(resRevoked.status, 401)
 })
 
-test('gated admin script /admin/assets/js/api/bookingsApi.js requires auth, returns 200, and sets same-origin-allow-popups COOP', async () => {
+test('/admin/ response has Cross-Origin-Opener-Policy: same-origin-allow-popups (never same-origin)', async () => {
   const db = setupDb()
-  const token = await createSessionToken(VALID_SECRET, ADMIN_EMAIL)
+  const mockAssets: any = {
+    fetch: async (req: Request) => {
+      const url = new URL(req.url)
+      if (url.pathname === '/admin/' || url.pathname === '/admin/index.html') {
+        return new Response('<!DOCTYPE html><html><head><title>Admin</title></head><body>Admin</body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        })
+      }
+      return new Response('Not Found', { status: 404 })
+    }
+  }
+
+  const testApp = new Hono<{ Bindings: Bindings }>()
+
+  // Global Security Headers (matches backend/src/index.ts)
+  testApp.use('*', async (c, next) => {
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    await next()
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  })
+
+  testApp.get('/admin', (c) => {
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    return c.redirect('/admin/', 301)
+  })
+
+  testApp.get('/admin/*', async (c) => {
+    const url = new URL(c.req.url)
+    const canonicalAdminUrl = new URL('/admin/', url.origin)
+    const assetRes = await c.env.ASSETS.fetch(
+      new Request(canonicalAdminUrl.toString(), {
+        method: 'GET',
+        headers: c.req.raw.headers
+      })
+    )
+    const headers = new Headers(assetRes.headers)
+    headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+    headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+    return new Response(assetRes.body, {
+      status: assetRes.status,
+      statusText: assetRes.statusText,
+      headers
+    })
+  })
+
+  const env = {
+    DB: db,
+    SESSION_SECRET: VALID_SECRET,
+    ADMIN_EMAIL,
+    ASSETS: mockAssets
+  } as any
+
+  // 1. /admin redirect response has same-origin-allow-popups
+  const resRedirect = await testApp.request('/admin', {}, env)
+  assert.equal(resRedirect.status, 301)
+  assert.equal(resRedirect.headers.get('Location'), '/admin/')
+  assert.equal(resRedirect.headers.get('Cross-Origin-Opener-Policy'), 'same-origin-allow-popups')
+  assert.notEqual(resRedirect.headers.get('Cross-Origin-Opener-Policy'), 'same-origin')
+
+  // 2. /admin/ page response has same-origin-allow-popups and never same-origin
+  const resAdmin = await testApp.request('/admin/', {}, env)
+  assert.equal(resAdmin.status, 200)
+  assert.equal(resAdmin.headers.get('Cross-Origin-Opener-Policy'), 'same-origin-allow-popups')
+  assert.notEqual(resAdmin.headers.get('Cross-Origin-Opener-Policy'), 'same-origin')
+})
+
+test('/admin/assets/js/api/bookingsApi.js is present in backend/public/admin/assets/js/api/ after build and is served cleanly (not 404)', async () => {
+  const db = setupDb()
   const bookingsApiFile = resolve(import.meta.dirname, '../public/admin/assets/js/api/bookingsApi.js')
-  assert.equal(existsSync(bookingsApiFile), true, 'bookingsApi.js must exist on disk')
+  assert.equal(existsSync(bookingsApiFile), true, 'bookingsApi.js must exist on disk in public/admin/assets/js/api/')
 
   const bookingsApiContent = readFileSync(bookingsApiFile, 'utf8')
   assert.ok(bookingsApiContent.includes('bookingsApi'), 'bookingsApi.js must define bookingsApi')
 
-  const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|utils\/webpConverter\.js|api\/(bookingsApi|dashboardApi|packagesApi|paymentsApi|personalApi|photographyApi|scheduleApi)\.js)/i
   const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb|wasm)$/i
 
   const mockAssets: any = {
@@ -344,31 +411,13 @@ test('gated admin script /admin/assets/js/api/bookingsApi.js requires auth, retu
 
   // Global Security Headers (matches backend/src/index.ts)
   testApp.use('*', async (c, next) => {
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
     await next()
     c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   })
 
   testApp.get('/admin/*', async (c) => {
     const url = new URL(c.req.url)
-    if (GATED_ADMIN_SCRIPT_REGEX.test(url.pathname)) {
-      const { token } = extractSessionToken(c)
-      const signingSecret = getSigningSecret(c.env)
-      const isAuthed = Boolean(
-        token &&
-        signingSecret &&
-        !(await isTokenRevokedInDb(c.env.DB, token)) &&
-        (await verifySessionToken(token, signingSecret)).valid
-      )
-      if (!isAuthed) {
-        return new Response('Not Found', {
-          status: 404,
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Cache-Control': 'no-store, no-cache, must-revalidate'
-          }
-        })
-      }
-    }
 
     if (STATIC_EXT_REGEX.test(url.pathname)) {
       const assetRes = await c.env.ASSETS.fetch(c.req.raw)
@@ -377,6 +426,7 @@ test('gated admin script /admin/assets/js/api/bookingsApi.js requires auth, retu
       }
       const headers = new Headers(assetRes.headers)
       headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+      headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
       if (url.pathname.endsWith('.js')) {
         headers.set('Content-Type', 'application/javascript')
       }
@@ -396,11 +446,17 @@ test('gated admin script /admin/assets/js/api/bookingsApi.js requires auth, retu
     ASSETS: mockAssets
   } as any
 
-  // 1. Unauthenticated request -> 404
+  // Unauthenticated request must succeed with 200 (served cleanly as a static module, NOT 404)
   const resUnauth = await testApp.request('/admin/assets/js/api/bookingsApi.js', {}, env)
-  assert.equal(resUnauth.status, 404)
+  assert.equal(resUnauth.status, 200, 'Unauthenticated request must return 200 OK, never 404')
+  assert.equal(resUnauth.headers.get('Content-Type'), 'application/javascript')
+  assert.equal(resUnauth.headers.get('Cross-Origin-Opener-Policy'), 'same-origin-allow-popups')
+  assert.notEqual(resUnauth.headers.get('Cross-Origin-Opener-Policy'), 'same-origin')
+  const bodyText = await resUnauth.text()
+  assert.ok(bodyText.includes('bookingsApi'), 'Delivered script body must contain bookingsApi')
 
-  // 2. Authenticated request -> 200 with application/javascript and COOP same-origin-allow-popups
+  // Authenticated request also succeeds with 200 OK and same-origin-allow-popups COOP
+  const token = await createSessionToken(VALID_SECRET, ADMIN_EMAIL)
   const resAuth = await testApp.request('/admin/assets/js/api/bookingsApi.js', {
     headers: { Authorization: `Bearer ${token}` }
   }, env)
