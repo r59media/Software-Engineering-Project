@@ -1,6 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { Hono } from 'hono'
 import {
   getSigningSecret,
@@ -12,6 +14,7 @@ import {
   verifyPassword,
   timingSafeEqual,
   revokeTokenInDb,
+  isTokenRevokedInDb,
   normalizeIpBucket,
   checkAndRecordLoginAttempt,
   clearLoginAttempts
@@ -310,4 +313,98 @@ test('adminAuth rejects tokens revoked in D1 Revoked_Sessions table', async () =
     headers: { Authorization: `Bearer ${token}` }
   }, { DB: db, SESSION_SECRET: VALID_SECRET, ADMIN_EMAIL } as any)
   assert.equal(resRevoked.status, 401)
+})
+
+test('gated admin script /admin/assets/js/api/bookingsApi.js requires auth, returns 200, and sets same-origin-allow-popups COOP', async () => {
+  const db = setupDb()
+  const token = await createSessionToken(VALID_SECRET, ADMIN_EMAIL)
+  const bookingsApiFile = resolve(import.meta.dirname, '../public/admin/assets/js/api/bookingsApi.js')
+  assert.equal(existsSync(bookingsApiFile), true, 'bookingsApi.js must exist on disk')
+
+  const bookingsApiContent = readFileSync(bookingsApiFile, 'utf8')
+  assert.ok(bookingsApiContent.includes('bookingsApi'), 'bookingsApi.js must define bookingsApi')
+
+  const GATED_ADMIN_SCRIPT_REGEX = /^\/admin\/assets\/js\/(pages\/|utils\/webpConverter\.js|api\/(bookingsApi|dashboardApi|packagesApi|paymentsApi|personalApi|photographyApi|scheduleApi)\.js)/i
+  const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb|wasm)$/i
+
+  const mockAssets: any = {
+    fetch: async (req: Request) => {
+      const url = new URL(req.url)
+      if (url.pathname === '/admin/assets/js/api/bookingsApi.js') {
+        return new Response(bookingsApiContent, {
+          status: 200,
+          headers: { 'Content-Type': 'application/javascript' }
+        })
+      }
+      return new Response('Not Found', { status: 404 })
+    }
+  }
+
+  const testApp = new Hono<{ Bindings: Bindings }>()
+
+  // Global Security Headers (matches backend/src/index.ts)
+  testApp.use('*', async (c, next) => {
+    await next()
+    c.header('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+  })
+
+  testApp.get('/admin/*', async (c) => {
+    const url = new URL(c.req.url)
+    if (GATED_ADMIN_SCRIPT_REGEX.test(url.pathname)) {
+      const { token } = extractSessionToken(c)
+      const signingSecret = getSigningSecret(c.env)
+      const isAuthed = Boolean(
+        token &&
+        signingSecret &&
+        !(await isTokenRevokedInDb(c.env.DB, token)) &&
+        (await verifySessionToken(token, signingSecret)).valid
+      )
+      if (!isAuthed) {
+        return new Response('Not Found', {
+          status: 404,
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache, must-revalidate'
+          }
+        })
+      }
+    }
+
+    if (STATIC_EXT_REGEX.test(url.pathname)) {
+      const assetRes = await c.env.ASSETS.fetch(c.req.raw)
+      if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
+        return c.notFound()
+      }
+      const headers = new Headers(assetRes.headers)
+      headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+      if (url.pathname.endsWith('.js')) {
+        headers.set('Content-Type', 'application/javascript')
+      }
+      return new Response(assetRes.body, {
+        status: assetRes.status,
+        statusText: assetRes.statusText,
+        headers
+      })
+    }
+    return c.notFound()
+  })
+
+  const env = {
+    DB: db,
+    SESSION_SECRET: VALID_SECRET,
+    ADMIN_EMAIL,
+    ASSETS: mockAssets
+  } as any
+
+  // 1. Unauthenticated request -> 404
+  const resUnauth = await testApp.request('/admin/assets/js/api/bookingsApi.js', {}, env)
+  assert.equal(resUnauth.status, 404)
+
+  // 2. Authenticated request -> 200 with application/javascript and COOP same-origin-allow-popups
+  const resAuth = await testApp.request('/admin/assets/js/api/bookingsApi.js', {
+    headers: { Authorization: `Bearer ${token}` }
+  }, env)
+  assert.equal(resAuth.status, 200)
+  assert.equal(resAuth.headers.get('Content-Type'), 'application/javascript')
+  assert.equal(resAuth.headers.get('Cross-Origin-Opener-Policy'), 'same-origin-allow-popups')
 })

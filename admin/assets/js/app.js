@@ -680,6 +680,7 @@
             setLoginStatus(err?.message || 'Access denied: Account not authorized for admin access.');
         }
     }
+    let gsiInitialized = false;
     async function initGoogleSignIn() {
         const btn = document.getElementById('googleSignInBtn');
         if (!btn)
@@ -696,10 +697,13 @@
                     setTimeout(setupGsi, 100);
                     return;
                 }
-                google.accounts.id.initialize({
-                    client_id: googleClientId,
-                    callback: handleCredentialResponse
-                });
+                if (!gsiInitialized) {
+                    google.accounts.id.initialize({
+                        client_id: googleClientId,
+                        callback: handleCredentialResponse
+                    });
+                    gsiInitialized = true;
+                }
                 const targetBtn = document.getElementById('googleSignInBtn');
                 if (targetBtn) {
                     targetBtn.innerHTML = '';

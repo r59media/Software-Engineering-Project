@@ -39,7 +39,7 @@ export function AboutLens() {
   }, [url])
 
   return <div ref={host} className="about__lens" data-about-part="lens-transition" aria-hidden="true">
-    <link rel="preload" as="fetch" crossOrigin="anonymous" href={url} />
+    <link rel="preload" as="fetch" type="model/gltf-binary" crossOrigin="anonymous" href={url} />
     <div className="about__motion" data-about-motion="lens-transition">
       <LensBoundary key={url} onFailure={transition?.fail}>
         <Suspense fallback={<LensFallback />}>
