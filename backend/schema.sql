@@ -7,6 +7,7 @@ DROP TABLE IF EXISTS Bookings;
 DROP TABLE IF EXISTS Leads;
 DROP TABLE IF EXISTS Schedule_Slots;
 DROP TABLE IF EXISTS Revoked_Sessions;
+DROP TABLE IF EXISTS Login_Attempts;
 
 -- =============================================================================
 -- CRITICAL SECURITY WARNING:
@@ -175,6 +176,12 @@ CREATE TABLE IF NOT EXISTS Revoked_Sessions (
   expires_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON Revoked_Sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS Login_Attempts (
+  bucket TEXT PRIMARY KEY,
+  attempts INTEGER NOT NULL,
+  window_start INTEGER NOT NULL
+);
 
 -- Performance Indexes
 CREATE INDEX IF NOT EXISTS idx_slots_availability ON Schedule_Slots(is_booked, date, start_time);

@@ -26,7 +26,7 @@ export function BookingSummary({ service, people, dateTime, customerInfo, photoP
     lock.current = true
     setBusy(true)
     setError(null)
-    try { await onProceedToDeposit({ serviceId: service.id, people, dateTime, customerInfo, photoPermissions: { ...photoPermissions }, photoPermissionTextVersion: '2026-11-11-v1' }) }
+    try { await onProceedToDeposit({ serviceId: service.id, people, dateTime, customerInfo, photoPermissions: { ...photoPermissions }, photoPermissionTextVersion: '2026-11-11-v1', slotId: dateTime.slotId, slot_id: dateTime.slotId }) }
     catch { setError('We couldn’t continue to the deposit. Your details are still here. Please try again.') }
     finally { lock.current = false; setBusy(false) }
   }

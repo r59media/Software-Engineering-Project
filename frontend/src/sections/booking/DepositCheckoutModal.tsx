@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { BookingReviewDraft, BookingService } from '../../types/booking'
-import { submitCheckout } from '../../api/client'
-import { previewBookingDepositPercent } from '../../config/booking'
+import { submitCheckout, fetchPricing, validateCoupon, type PricingData } from '../../api/client'
+import { fallbackBookingDepositPercent } from '../../config/booking'
 
 declare global {
   interface Window {
@@ -78,6 +78,15 @@ export function DepositCheckoutModal({
   const [error, setError] = useState<string | null>(null)
   const [cardLoading, setCardLoading] = useState(true)
   const [cardError, setCardError] = useState<string | null>(null)
+  const [pricing, setPricing] = useState<PricingData | null>(null)
+  const [couponCodeInput, setCouponCodeInput] = useState('')
+  const [couponLoading, setCouponLoading] = useState(false)
+  const [couponError, setCouponError] = useState<string | null>(null)
+  const [appliedCoupon, setAppliedCoupon] = useState<{
+    code: string
+    type?: 'percent' | 'fixed'
+    amount?: number
+  } | null>(null)
   const [confirmedResult, setConfirmedResult] = useState<{
     bookingId?: number
     paymentId?: string
@@ -96,6 +105,16 @@ export function DepositCheckoutModal({
     locationId ||
     import.meta.env.VITE_SQUARE_LOCATION_ID ||
     'sandbox-location-placeholder'
+
+  useEffect(() => {
+    let active = true
+    void fetchPricing().then(p => {
+      if (active && p) setPricing(p)
+    }).catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -157,16 +176,70 @@ export function DepositCheckoutModal({
     }
   }, [resolvedAppId, resolvedLocationId, confirmedResult])
 
-  const basePriceCents = service?.priceMinor ?? 0
-  const depositCents = Math.round(basePriceCents * (previewBookingDepositPercent / 100))
+  const slotId = draft.dateTime?.slotId ?? draft.slotId ?? draft.slot_id
+
+  const depositPercent = pricing?.depositPercent ?? fallbackBookingDepositPercent
+  const currency = pricing?.currency || service?.currency || 'USD'
+  const formatCurrency = (val: number) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(val)
+
+  const pkgPriceDollars = (service?.priceMinor ?? 0) / 100
+  const baseFeeDollars = Number(pricing?.baseFee) || 0
+  const perPersonDollars = Number(pricing?.perPerson) || 0
+  const attendees = draft.people || 1
+  const attendeeFeeDollars = perPersonDollars * attendees
+  const subtotalDollars = pkgPriceDollars + baseFeeDollars + attendeeFeeDollars
+
+  let discountDollars = 0
+  if (appliedCoupon && subtotalDollars > 0) {
+    if (appliedCoupon.type === 'percent') {
+      const pct = Math.min(100, Math.max(0, appliedCoupon.amount ?? 0))
+      discountDollars = subtotalDollars * (pct / 100)
+    } else {
+      const amt = Math.max(0, appliedCoupon.amount ?? 0)
+      discountDollars = Math.min(amt, subtotalDollars)
+    }
+  }
+
+  const estimatedTotalDollars = Math.max(0, subtotalDollars - discountDollars)
+  const estimatedDepositDollars = Math.round(estimatedTotalDollars * (depositPercent / 100) * 100) / 100
+
   const depositFormatted =
-    basePriceCents > 0
-      ? new Intl.NumberFormat('en-US', { style: 'currency', currency: service?.currency || 'USD' }).format(
-          depositCents / 100
-        )
+    subtotalDollars > 0
+      ? formatCurrency(estimatedDepositDollars)
       : 'Custom quote'
 
+  const handleApplyCoupon = async () => {
+    const code = couponCodeInput.trim()
+    if (!code) return
+    setCouponLoading(true)
+    setCouponError(null)
+    try {
+      const res = await validateCoupon(code)
+      if (res.valid) {
+        setAppliedCoupon({
+          code: code.toUpperCase(),
+          type: res.type,
+          amount: res.amount,
+        })
+        setCouponError(null)
+      } else {
+        setAppliedCoupon(null)
+        setCouponError(res.message || 'Invalid or expired coupon code.')
+      }
+    } catch {
+      setCouponError('Unable to validate coupon code.')
+    } finally {
+      setCouponLoading(false)
+    }
+  }
+
   const handlePayDeposit = async () => {
+    if (!slotId) {
+      setError('Please select an available appointment time slot to continue.')
+      return
+    }
+
     if (!cardRef.current) {
       setError('Payment card form is not ready yet. Please wait a moment and try again.')
       return
@@ -194,12 +267,13 @@ export function DepositCheckoutModal({
           sourceId,
           idempotencyKey: crypto.randomUUID(),
           service_id: Number(draft.serviceId) || (service ? Number(service.id) : 1),
-          slot_id: 1,
+          slot_id: Number(slotId),
           customer_name: `${draft.customerInfo.firstName} ${draft.customerInfo.lastName}`.trim(),
           customer_email: draft.customerInfo.email.trim(),
           customer_phone: draft.customerInfo.phone?.trim() || '',
           notes: draft.customerInfo.notes?.trim() || '',
           attendees: draft.people,
+          coupon_code: appliedCoupon ? appliedCoupon.code : undefined,
           photoPermissions: {
             websitePortfolio: Boolean(draft.photoPermissions?.websitePortfolio),
             socialMedia: Boolean(draft.photoPermissions?.socialMedia),
@@ -389,11 +463,36 @@ export function DepositCheckoutModal({
                   {draft.people} {draft.people === 1 ? 'person' : 'people'}
                 </span>
               </div>
+              {baseFeeDollars > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
+                  <span style={{ color: '#6b7280' }}>Base Fee</span>
+                  <span>{formatCurrency(baseFeeDollars)}</span>
+                </div>
+              )}
+              {attendeeFeeDollars > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
+                  <span style={{ color: '#6b7280' }}>Attendees Fee</span>
+                  <span>{formatCurrency(attendeeFeeDollars)}</span>
+                </div>
+              )}
+              {discountDollars > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px', color: '#15803d' }}>
+                  <span>Discount ({appliedCoupon?.code})</span>
+                  <span>-{formatCurrency(discountDollars)}</span>
+                </div>
+              )}
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <span style={{ color: '#4b5563' }}>Estimated Total</span>
+                <strong>{subtotalDollars > 0 ? formatCurrency(estimatedTotalDollars) : 'Custom quote'}</strong>
+              </div>
               <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '12px 0' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '16px', fontWeight: 700 }}>
-                <span>Deposit Due Today</span>
+                <span>Estimated Deposit Due Today ({depositPercent}%)</span>
                 <span>{depositFormatted}</span>
               </div>
+              <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#6b7280', fontStyle: 'italic' }}>
+                * Estimated breakdown; final charge is calculated by the server.
+              </p>
             </div>
 
             <div
@@ -442,6 +541,105 @@ export function DepositCheckoutModal({
 
             <div style={{ marginBottom: '16px' }}>
               <label
+                htmlFor="coupon-code-input"
+                style={{
+                  display: 'block',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  color: '#374151',
+                  marginBottom: '6px',
+                }}
+              >
+                Coupon Code
+              </label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  id="coupon-code-input"
+                  type="text"
+                  placeholder="Enter coupon code"
+                  value={couponCodeInput}
+                  onChange={e => {
+                    setCouponCodeInput(e.target.value)
+                    setCouponError(null)
+                  }}
+                  disabled={busy || couponLoading}
+                  style={{
+                    flex: 1,
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #d1d5db',
+                    fontSize: '14px',
+                    textTransform: 'uppercase',
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={handleApplyCoupon}
+                  disabled={busy || couponLoading || !couponCodeInput.trim()}
+                  style={{
+                    padding: '8px 16px',
+                    borderRadius: '6px',
+                    background: busy || couponLoading || !couponCodeInput.trim() ? '#9ca3af' : '#1f2937',
+                    color: '#ffffff',
+                    border: 'none',
+                    fontWeight: 600,
+                    fontSize: '13px',
+                    cursor: busy || couponLoading || !couponCodeInput.trim() ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {couponLoading ? 'Checking…' : 'Apply'}
+                </button>
+              </div>
+              {appliedCoupon && (
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    marginTop: '8px',
+                    padding: '6px 10px',
+                    background: '#ecfdf5',
+                    borderRadius: '6px',
+                    color: '#065f46',
+                    fontSize: '13px',
+                  }}
+                >
+                  <span>
+                    ✓ Coupon <strong>{appliedCoupon.code}</strong> applied (
+                    {appliedCoupon.type === 'percent'
+                      ? `${appliedCoupon.amount}% off`
+                      : `${formatCurrency(appliedCoupon.amount ?? 0)} off`}
+                    )
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAppliedCoupon(null)
+                      setCouponCodeInput('')
+                    }}
+                    disabled={busy}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#065f46',
+                      cursor: 'pointer',
+                      fontSize: '12px',
+                      textDecoration: 'underline',
+                    }}
+                  >
+                    Remove
+                  </button>
+                </div>
+              )}
+              {couponError && (
+                <p role="alert" style={{ color: '#dc2626', fontSize: '13px', margin: '6px 0 0 0' }}>
+                  {couponError}
+                </p>
+              )}
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label
                 htmlFor="card-container"
                 style={{
                   display: 'block',
@@ -469,6 +667,12 @@ export function DepositCheckoutModal({
                 </p>
               )}
             </div>
+
+            {!slotId && (
+              <p role="alert" style={{ color: '#dc2626', fontSize: '14px', margin: '0 0 12px 0' }}>
+                Please select an available appointment time slot to continue.
+              </p>
+            )}
 
             {(cardError || error) && (
               <p role="alert" style={{ color: '#dc2626', fontSize: '14px', margin: '0 0 12px 0' }}>
@@ -498,23 +702,25 @@ export function DepositCheckoutModal({
               <button
                 type="button"
                 onClick={handlePayDeposit}
-                disabled={busy || cardLoading || Boolean(cardError)}
+                disabled={busy || cardLoading || Boolean(cardError) || !slotId}
                 style={{
                   flex: 2,
                   padding: '12px',
                   borderRadius: '8px',
-                  background: busy || cardLoading || Boolean(cardError) ? '#9ca3af' : '#dc2626',
+                  background: busy || cardLoading || Boolean(cardError) || !slotId ? '#9ca3af' : '#dc2626',
                   color: '#ffffff',
                   border: 'none',
                   fontWeight: 600,
                   fontSize: '14px',
-                  cursor: busy || cardLoading || Boolean(cardError) ? 'not-allowed' : 'pointer',
+                  cursor: busy || cardLoading || Boolean(cardError) || !slotId ? 'not-allowed' : 'pointer',
                 }}
               >
                 {busy
                   ? 'Processing Deposit…'
                   : cardLoading
                   ? 'Loading Card Form…'
+                  : !slotId
+                  ? 'Select a Slot to Continue'
                   : `Pay ${depositFormatted} Deposit`}
               </button>
             </div>

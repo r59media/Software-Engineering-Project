@@ -8,14 +8,15 @@ import { useAboutData } from './useAboutData'
 import './About.css'
 
 export function About({ content = aboutContent }: { content?: AboutContent }) {
-  const { portrait, paragraphs } = useAboutData()
+  const { portrait, paragraphs, profile } = useAboutData()
+  const travel = typeof profile?.travel === 'string' ? profile.travel.trim() : profile?.travel ? 'Available for travel' : ''
 
   return (
     <section id="about" className="about" aria-labelledby="about-heading">
       <AboutArtwork image={aboutImages.paper} className="about__paper" />
       <AboutDecorations />
       <div className="about__layout">
-        <AboutPortrait portrait={portrait} />
+        {portrait ? <AboutPortrait portrait={portrait} /> : <div className="about__collage" data-about-part="portrait-collage" aria-hidden="true" />}
         <div className="about__content">
           <p className="about__eyebrow" data-about-part="eyebrow">
             <span aria-hidden="true" />
@@ -34,6 +35,11 @@ export function About({ content = aboutContent }: { content?: AboutContent }) {
               </p>
             ))}
           </div>
+          {travel ? (
+            <p className="about__paragraph about__travel" style={{ fontStyle: 'italic', marginTop: '1rem' }}>
+              {travel}
+            </p>
+          ) : null}
           <AboutLens />
         </div>
       </div>

@@ -24,6 +24,7 @@ export interface BookingDateTimeSelection {
   date: string
   timeSlot: string
   timezone: string
+  slotId?: number
 }
 
 export interface BookingCustomerInfo {
@@ -107,6 +108,8 @@ export interface BookingReviewDraft {
   people: number
   dateTime: BookingDateTimeSelection
   customerInfo: BookingCustomerInfo
+  slotId?: number
+  slot_id?: number
 }
 
 export interface BookingPhotoPermissions {

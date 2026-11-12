@@ -213,8 +213,10 @@ servicesRouter.get('/', async (c) => {
     const { results } = await c.env.DB.prepare(query).all()
     const services = (results || []).map(mapServiceRow)
 
+    c.header('Cache-Control', 'no-store')
     return c.json({ services, status: 'success', data: services })
   } catch (e: any) {
+    c.header('Cache-Control', 'no-store')
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
@@ -409,6 +411,53 @@ servicesRouter.post('/', adminAuth, async (c) => {
     })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not create service.', details: [] } }, 500)
+  }
+})
+
+// PUT /order: Admin — update display_order for services in a batch
+servicesRouter.put('/order', adminAuth, async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}))
+    const ids = body?.ids
+    if (!Array.isArray(ids)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Expected { ids: number[] }.',
+          details: [{ field: 'ids', message: 'ids must be an array of numbers.', code: 'INVALID_TYPE' }]
+        }
+      }, 400)
+    }
+
+    if (ids.some((id: any) => typeof id !== 'number' || !Number.isInteger(id) || id <= 0)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'All ids in array must be positive integers.',
+          details: [{ field: 'ids', message: 'Each id must be a positive integer.', code: 'INVALID_VALUE' }]
+        }
+      }, 400)
+    }
+
+    await ensureServicesSchemaAndDefaults(c.env.DB)
+
+    const statements = ids.map((id: number, index: number) =>
+      c.env.DB.prepare('UPDATE Services SET display_order = ? WHERE id = ?').bind(index + 1, id)
+    )
+
+    if (statements.length > 0) {
+      await c.env.DB.batch(statements)
+    }
+
+    return c.json({ success: true, status: 'success' })
+  } catch (e: any) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Could not reorder services.',
+        details: []
+      }
+    }, 500)
   }
 })
 

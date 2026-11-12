@@ -3,6 +3,7 @@ import { useMemo } from 'react'
 import './BookingTimeSlots.css'
 
 export interface TimeSlotItem {
+  id?: number
   time: string
   period: 'morning' | 'afternoon'
   available?: boolean
@@ -11,7 +12,7 @@ export interface TimeSlotItem {
 export interface BookingTimeSlotsProps {
   selectedDate: string
   selectedSlot?: string | null
-  onSelectSlot: (slot: string) => void
+  onSelectSlot: (slot: string, slotId?: number) => void
   slots?: readonly string[] | readonly TimeSlotItem[]
   durationMinutes?: number | null
   inquiryHref?: string
@@ -103,11 +104,11 @@ export function BookingTimeSlots({
               const isSelected = selectedSlot === slot.time
               return (
                 <button
-                  key={slot.time}
+                  key={slot.id !== undefined ? `slot-${slot.id}` : slot.time}
                   type="button"
                   className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
                   aria-pressed={isSelected}
-                  onClick={() => onSelectSlot(slot.time)}
+                  onClick={() => onSelectSlot(slot.time, slot.id)}
                 >
                   {slot.time}
                 </button>
@@ -124,11 +125,11 @@ export function BookingTimeSlots({
               const isSelected = selectedSlot === slot.time
               return (
                 <button
-                  key={slot.time}
+                  key={slot.id !== undefined ? `slot-${slot.id}` : slot.time}
                   type="button"
                   className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
                   aria-pressed={isSelected}
-                  onClick={() => onSelectSlot(slot.time)}
+                  onClick={() => onSelectSlot(slot.time, slot.id)}
                 >
                   {slot.time}
                 </button>

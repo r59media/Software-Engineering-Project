@@ -90,6 +90,9 @@ async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T | null> 
     })
     if (!res.ok) return null
     const json = (await res.json()) as Record<string, unknown>
+    if (json.status === 'error') {
+      return null
+    }
     if (json.status === 'success' && json.data !== undefined) {
       return json.data as T
     }
@@ -108,7 +111,7 @@ async function apiGet<T>(path: string, signal?: AbortSignal): Promise<T | null> 
     if (json.data !== undefined) {
       return json.data as T
     }
-    return null
+    return json as unknown as T
   } catch {
     return null
   }
@@ -145,14 +148,11 @@ function portfolioImageUrl(item: PortfolioImageRecord): string {
  */
 export async function fetchRecentPhotos(fallbackPhotos: readonly PhotoshootPhoto[], signal?: AbortSignal): Promise<readonly PhotoshootPhoto[]> {
   try {
-    let items = await fetchPortfolioSection('recent', signal)
-    if (!items || items.length === 0) {
-      const galleryItems = await fetchPortfolioSection('gallery', signal)
-      if (galleryItems && galleryItems.length > 0) {
-        items = galleryItems.filter(item => item.category?.toLowerCase() !== 'hero')
-      }
+    const items = await fetchPortfolioSection('recent', signal)
+    if (items === null) {
+      return fallbackPhotos
     }
-    const photos = (items ?? [])
+    const photos = items
       .map(item => ({ item, imageUrl: portfolioImageUrl(item) }))
       .filter(({ imageUrl }) => imageUrl)
       .map(({ item, imageUrl }) => ({
@@ -163,7 +163,7 @@ export async function fetchRecentPhotos(fallbackPhotos: readonly PhotoshootPhoto
         width: 720,
         height: 1020,
       }))
-    return photos.length > 0 ? photos : fallbackPhotos
+    return photos
   } catch {
     return fallbackPhotos
   }
@@ -188,15 +188,8 @@ export async function fetchGalleryPhotos(fallbackPhotos: readonly PhotoshootPhot
     }))
 
   try {
-    let items = await fetchPortfolioSection('gallery', signal)
-    if (!items || items.length === 0) {
-      const recentItems = await fetchPortfolioSection('recent', signal)
-      if (recentItems && recentItems.length > 0) {
-        items = recentItems.filter(item => item.category?.toLowerCase() !== 'hero')
-      }
-    }
-
-    if (!items || items.length === 0) {
+    const items = await fetchPortfolioSection('gallery', signal)
+    if (items === null) {
       return mapFallback()
     }
 
@@ -216,7 +209,7 @@ export async function fetchGalleryPhotos(fallbackPhotos: readonly PhotoshootPhot
       })
       .filter(photo => Boolean(photo.src))
 
-    return photos.length > 0 ? photos : mapFallback()
+    return photos
   } catch {
     return mapFallback()
   }
@@ -234,6 +227,8 @@ export interface PublicProfileData {
 export interface AboutData {
   portrait: { src: string; alt: string } | null
   profile: PublicProfileData | null
+  portraitError?: boolean
+  profileError?: boolean
 }
 
 export async function fetchAboutData(signal?: AbortSignal): Promise<AboutData> {
@@ -243,51 +238,67 @@ export async function fetchAboutData(signal?: AbortSignal): Promise<AboutData> {
   ])
 
   let portrait: { src: string; alt: string } | null = null
-  if (aboutRes.status === 'fulfilled' && Array.isArray(aboutRes.value) && aboutRes.value.length > 0) {
-    const active = aboutRes.value.find(item => item.is_active !== 0) || aboutRes.value[0]
-    const src = portfolioImageUrl(active) || resolveMediaUrl(active.media_key)
-    if (src) {
-      portrait = {
-        src,
-        alt: active.alt_text?.trim() || active.title?.trim() || 'Portrait of the photographer',
+  let portraitError = false
+  if (aboutRes.status === 'fulfilled' && aboutRes.value !== null) {
+    if (Array.isArray(aboutRes.value) && aboutRes.value.length > 0) {
+      const active = aboutRes.value.find(item => item.is_active !== 0) || aboutRes.value[0]
+      const src = portfolioImageUrl(active) || resolveMediaUrl(active.media_key)
+      if (src) {
+        portrait = {
+          src,
+          alt: active.alt_text?.trim() || active.title?.trim() || 'Portrait of the photographer',
+        }
       }
+    } else {
+      portrait = null
     }
+  } else {
+    portraitError = true
   }
 
   let profile: PublicProfileData | null = null
-  if (profileRes.status === 'fulfilled' && profileRes.value) {
+  let profileError = false
+  if (profileRes.status === 'fulfilled' && profileRes.value !== null) {
     const val = profileRes.value
     if ('profile' in val && val.profile && typeof val.profile === 'object') {
       profile = val.profile as PublicProfileData
     } else if (typeof val === 'object') {
       profile = val as PublicProfileData
     }
+  } else {
+    profileError = true
   }
 
-  return { portrait, profile }
+  return { portrait, profile, portraitError, profileError }
 }
 
 export async function fetchHeroSlides(fallbackSlides: readonly HeroSlide[], signal?: AbortSignal): Promise<readonly HeroSlide[]> {
-  const items = await fetchPortfolio('hero', signal)
-  const validItems = items
-    .map(item => {
-      const rawUrl = item.url || item.public_url || (item.media_key ? resolveMediaUrl(item.media_key) : '')
-      return { item, rawUrl }
-    })
-    .filter(
-      ({ rawUrl }) => typeof rawUrl === 'string' && (rawUrl.startsWith('https://') || rawUrl.startsWith('/'))
-    )
-  if (validItems.length === 0) return fallbackSlides
-  return validItems.map(({ item, rawUrl }, index) => ({
-    id: `api-hero-${item.id ?? index}`,
-    imageUrl: rawUrl,
-    alt: item.alt_text?.trim() || 'R59 Media featured photography',
-    width: 1440,
-    height: 528,
-    objectPosition: '50% 50%',
-    mobileObjectPosition: '50% 50%',
-    hasEmbeddedOverlay: false,
-  }))
+  try {
+    const items = await apiGet<PortfolioApiItem[]>(`/portfolio?category=hero`, signal)
+    if (items === null) {
+      return fallbackSlides
+    }
+    const validItems = items
+      .map(item => {
+        const rawUrl = item.url || item.public_url || (item.media_key ? resolveMediaUrl(item.media_key) : '')
+        return { item, rawUrl }
+      })
+      .filter(
+        ({ rawUrl }) => typeof rawUrl === 'string' && (rawUrl.startsWith('https://') || rawUrl.startsWith('/'))
+      )
+    return validItems.map(({ item, rawUrl }, index) => ({
+      id: `api-hero-${item.id ?? index}`,
+      imageUrl: rawUrl,
+      alt: item.alt_text?.trim() || 'R59 Media featured photography',
+      width: 1440,
+      height: 528,
+      objectPosition: '50% 50%',
+      mobileObjectPosition: '50% 50%',
+      hasEmbeddedOverlay: false,
+    }))
+  } catch {
+    return fallbackSlides
+  }
 }
 
 export async function fetchBookingServices(signal?: AbortSignal): Promise<readonly BookingService[]> {
@@ -360,3 +371,72 @@ export async function submitCheckout(
     }
   }
 }
+
+export interface PricingData {
+  depositPercent: number
+  baseFee: number
+  perPerson: number
+  currency: string
+}
+
+export async function fetchPricing(signal?: AbortSignal): Promise<PricingData | null> {
+  try {
+    const data = await apiGet<PricingData | { pricing?: PricingData; data?: PricingData }>('/pricing', signal)
+    if (!data) return null
+    if ('depositPercent' in data && typeof data.depositPercent === 'number') {
+      return data as PricingData
+    }
+    if ('pricing' in data && data.pricing && typeof data.pricing.depositPercent === 'number') {
+      return data.pricing
+    }
+    if ('data' in data && data.data && typeof data.data.depositPercent === 'number') {
+      return data.data
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export interface CouponValidationResult {
+  valid: boolean
+  type?: 'percent' | 'fixed'
+  amount?: number
+  message?: string
+}
+
+export async function validateCoupon(code: string, signal?: AbortSignal): Promise<CouponValidationResult> {
+  try {
+    const res = await fetch(`${API_BASE}/coupons/validate?code=${encodeURIComponent(code)}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      credentials: 'omit',
+      signal,
+    })
+    let data: Record<string, unknown> = {}
+    try {
+      const json = (await res.json()) as Record<string, unknown>
+      data = (json.data !== undefined ? json.data : json) as Record<string, unknown>
+    } catch {
+      // ignore JSON parse error
+    }
+    if (!res.ok && !('valid' in data)) {
+      return {
+        valid: false,
+        message: typeof data.message === 'string' ? data.message : 'Invalid coupon code.',
+      }
+    }
+    return {
+      valid: Boolean(data.valid),
+      type: (data.type as 'percent' | 'fixed') || undefined,
+      amount: typeof data.amount === 'number' ? data.amount : undefined,
+      message: typeof data.message === 'string' ? data.message : undefined,
+    }
+  } catch {
+    return {
+      valid: false,
+      message: 'Unable to validate coupon. Please check your network connection.',
+    }
+  }
+}
+

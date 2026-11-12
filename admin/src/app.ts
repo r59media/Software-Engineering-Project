@@ -65,9 +65,9 @@
     }
   }
 
-  async function loadScriptSequential(src) {
+  async function fetchGatedScript(src) {
     if (document.querySelector(`script[data-gated-src="${src}"]`)) {
-      return;
+      return { src, code: null };
     }
     const token = R().apiClient?.getAuthToken?.();
     const headers = { 'X-Requested-With': 'XMLHttpRequest' };
@@ -82,10 +82,17 @@
       throw new Error(`Failed to load ${src} (${res.status})`);
     }
     const code = await res.text();
-    const s = document.createElement('script');
-    s.setAttribute('data-gated-src', src);
-    s.textContent = `${code}\n//# sourceURL=${src}`;
-    document.body.appendChild(s);
+    return { src, code };
+  }
+
+  async function loadScriptSequential(src) {
+    const item = await fetchGatedScript(src);
+    if (item.code !== null && !document.querySelector(`script[data-gated-src="${item.src}"]`)) {
+      const s = document.createElement('script');
+      s.setAttribute('data-gated-src', item.src);
+      s.textContent = `${item.code}\n//# sourceURL=${item.src}`;
+      document.body.appendChild(s);
+    }
   }
 
   async function ensureAdminModulesLoaded() {
@@ -93,8 +100,17 @@
     if (adminModulesPromise) return adminModulesPromise;
     adminModulesPromise = (async () => {
       try {
-        for (const src of GATED_ADMIN_SCRIPTS) {
-          await loadScriptSequential(src);
+        // Fetch all gated scripts in parallel, preserving sequential execution order
+        const loadedScripts = await Promise.all(
+          GATED_ADMIN_SCRIPTS.map(src => fetchGatedScript(src))
+        );
+        for (const item of loadedScripts) {
+          if (item.code !== null && !document.querySelector(`script[data-gated-src="${item.src}"]`)) {
+            const s = document.createElement('script');
+            s.setAttribute('data-gated-src', item.src);
+            s.textContent = `${item.code}\n//# sourceURL=${item.src}`;
+            document.body.appendChild(s);
+          }
         }
 
         // Pages namespace & event aliases for compatibility
@@ -673,14 +689,133 @@
     }
   }
 
-  async function handleCredentialResponse(response) {
+  // --- Google Identity Services & Auth State ---
+  let currentNonce: string | null = null;
+  let cachedGoogleClientId = '';
+  let gsiReady = typeof google !== 'undefined' && Boolean(google?.accounts?.id);
+  const gsiReadyCallbacks: Array<() => void> = [];
+
+  function onGsiReady() {
+    gsiReady = true;
+    while (gsiReadyCallbacks.length) {
+      const cb = gsiReadyCallbacks.shift();
+      if (cb) {
+        try { cb(); } catch {}
+      }
+    }
+  }
+
+  // Global callback invoked by <script src="https://accounts.google.com/gsi/client?onload=__gsiReady">
+  (window as any).__gsiReady = function () {
+    onGsiReady();
+  };
+
+  // Fallback: also listen to script load event
+  const gsiScriptEl = document.querySelector('script[src*="accounts.google.com/gsi/client"]');
+  if (gsiScriptEl) {
+    gsiScriptEl.addEventListener('load', onGsiReady, { once: true });
+  }
+
+  function whenGsiReady(): Promise<void> {
+    if (typeof google !== 'undefined' && google?.accounts?.id) {
+      gsiReady = true;
+      return Promise.resolve();
+    }
+    if (gsiReady) {
+      return Promise.resolve();
+    }
+    return new Promise<void>(resolve => {
+      gsiReadyCallbacks.push(resolve);
+    });
+  }
+
+  function generateNonce(): string {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) {
+      bin += String.fromCharCode(bytes[i]);
+    }
+    return btoa(bin)
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+  }
+
+  function getBuildTimeGoogleClientId(): string {
+    const meta = document.querySelector('meta[name="google-client-id"], meta[name="google-signin-client_id"]');
+    const metaVal = meta?.getAttribute('content')?.trim();
+    if (metaVal && !metaVal.startsWith('%')) {
+      return metaVal;
+    }
+    const win = window as any;
+    if (win.VITE_GOOGLE_CLIENT_ID) return win.VITE_GOOGLE_CLIENT_ID;
+    if (win.__GOOGLE_CLIENT_ID__) return win.__GOOGLE_CLIENT_ID__;
+    if (win.APP_CONFIG?.googleClientId) return win.APP_CONFIG.googleClientId;
+    try {
+      const viteEnv = (new Function('try { return import.meta.env.VITE_GOOGLE_CLIENT_ID; } catch { return ""; }'))();
+      if (viteEnv) return viteEnv;
+    } catch {}
+    return '';
+  }
+
+  async function resolveGoogleClientId(): Promise<string> {
+    if (cachedGoogleClientId) return cachedGoogleClientId;
+    const buildVal = getBuildTimeGoogleClientId();
+    if (buildVal) {
+      cachedGoogleClientId = buildVal;
+      return cachedGoogleClientId;
+    }
+    // Fallback: network roundtrip only if build-time client ID is missing
+    const config = await R().apiClient?.fetchAuthConfig?.();
+    const id = config?.googleClientId;
+    if (id) {
+      cachedGoogleClientId = id;
+      return cachedGoogleClientId;
+    }
+    return '';
+  }
+
+  function renderGsiButton(clientId: string) {
+    if (!clientId || typeof google === 'undefined' || !google.accounts?.id) return;
+    currentNonce = generateNonce();
+    google.accounts.id.initialize({
+      client_id: clientId,
+      callback: handleCredentialResponse,
+      nonce: currentNonce
+    });
+    const targetBtn = document.getElementById('googleSignInBtn');
+    if (targetBtn) {
+      targetBtn.innerHTML = '';
+      google.accounts.id.renderButton(targetBtn, {
+        theme: 'filled_black',
+        size: 'large',
+        text: 'signin_with',
+        shape: 'rectangular',
+        width: 280,
+        logo_alignment: 'left'
+      });
+    }
+  }
+
+  async function handleCredentialResponse(response: any) {
     setLoginStatus('');
+    const nonceToSend = currentNonce;
+
+    // Regenerate nonce and re-initialize GIS after each login attempt
+    if (cachedGoogleClientId && typeof google !== 'undefined' && google?.accounts?.id) {
+      renderGsiButton(cachedGoogleClientId);
+    }
+
     if (!response || !response.credential) {
       setLoginStatus('Access denied: Account not authorized for admin access.');
       return;
     }
     try {
-      const res = await R().apiClient.loginWithGoogle(response.credential);
+      const res = await R().apiClient.loginWithGoogle({
+        idToken: response.credential,
+        nonce: nonceToSend
+      });
       if (res && res.ok) {
         if (res.token) {
           R().apiClient?.setAuthToken?.(res.token);
@@ -689,51 +824,22 @@
       } else {
         setLoginStatus(res?.error || 'Access denied: Account not authorized for admin access.');
       }
-    } catch (err) {
+    } catch (err: any) {
       setLoginStatus(err?.message || 'Access denied: Account not authorized for admin access.');
     }
   }
-
-  let gsiInitialized = false;
 
   async function initGoogleSignIn() {
     const btn = document.getElementById('googleSignInBtn');
     if (!btn) return;
     try {
-      const config = await R().apiClient.fetchAuthConfig();
-      const googleClientId = config?.googleClientId;
-      if (!googleClientId) {
+      const clientId = await resolveGoogleClientId();
+      if (!clientId) {
         console.error('[R59 Admin] Google client ID not found in auth config');
         return;
       }
-
-      function setupGsi() {
-        if (typeof google === 'undefined' || !google.accounts?.id) {
-          setTimeout(setupGsi, 100);
-          return;
-        }
-        if (!gsiInitialized) {
-          google.accounts.id.initialize({
-            client_id: googleClientId,
-            callback: handleCredentialResponse
-          });
-          gsiInitialized = true;
-        }
-        const targetBtn = document.getElementById('googleSignInBtn');
-        if (targetBtn) {
-          targetBtn.innerHTML = '';
-          google.accounts.id.renderButton(targetBtn, {
-            theme: 'filled_black',
-            size: 'large',
-            text: 'signin_with',
-            shape: 'rectangular',
-            width: 280,
-            logo_alignment: 'left'
-          });
-        }
-      }
-
-      setupGsi();
+      await whenGsiReady();
+      renderGsiButton(clientId);
     } catch (err) {
       console.error('[R59 Admin] Failed to initialize Google Sign-In:', err);
     }

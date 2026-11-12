@@ -97,8 +97,9 @@ export function BookingDateTime({
         const formatted = formatSlotTime(slot.start_time)
         const hour = parseInt(slot.start_time.split(':')[0], 10)
         return {
+          id: slot.id,
           time: formatted,
-          period: hour < 12 ? 'morning' : 'afternoon',
+          period: (hour < 12 ? 'morning' : 'afternoon') as 'morning' | 'afternoon',
           available: true,
         }
       })
@@ -107,33 +108,48 @@ export function BookingDateTime({
     return [...previewBookingTimeSlots]
   }, [scheduleSlots, currentDate])
 
+  const resolveSlotId = (date: string, time: string | null): number | undefined => {
+    if (!time || !scheduleSlots.length) return undefined
+    const found = scheduleSlots.find(
+      s => s.date === date && (formatSlotTime(s.start_time) === time || s.start_time === time) && s.is_booked === 0
+    )
+    return found?.id
+  }
+
   const handleSelectDate = (date: string) => {
     setSelectedDate(date)
     const slot = currentTimeSlot || '03:00 PM'
     setCurrentTimeSlot(slot)
+    const slotId = resolveSlotId(date, slot)
     const nextSelection: BookingDateTimeSelection = {
       date,
       timeSlot: slot,
       timezone: 'Eastern Time (ET)',
+      slotId,
     }
     onSelectDateTime(nextSelection)
   }
 
-  const handleSelectSlot = (slot: string) => {
+  const handleSelectSlot = (slot: string, explicitSlotId?: number) => {
     setCurrentTimeSlot(slot)
+    const slotId = explicitSlotId ?? resolveSlotId(currentDate, slot)
     const nextSelection: BookingDateTimeSelection = {
       date: currentDate,
       timeSlot: slot,
       timezone: 'Eastern Time (ET)',
+      slotId,
     }
     onSelectDateTime(nextSelection)
   }
 
-  const liveSelection =
-    selection ||
-    (currentTimeSlot
-      ? { date: currentDate, timeSlot: currentTimeSlot, timezone: 'Eastern Time (ET)' }
-      : null)
+  const liveSlotId = selection?.slotId ?? resolveSlotId(currentDate, currentTimeSlot)
+
+  const liveSelection: BookingDateTimeSelection | null =
+    selection
+      ? { ...selection, slotId: selection.slotId ?? liveSlotId }
+      : currentTimeSlot
+      ? { date: currentDate, timeSlot: currentTimeSlot, timezone: 'Eastern Time (ET)', slotId: liveSlotId }
+      : null
 
   const isContinueEnabled = Boolean(liveSelection && liveSelection.date && liveSelection.timeSlot)
 
@@ -150,6 +166,13 @@ export function BookingDateTime({
     } catch {
       return dateStr
     }
+  }
+
+  const handleContinue = () => {
+    if (liveSelection) {
+      onSelectDateTime(liveSelection)
+    }
+    onContinue()
   }
 
   return (
@@ -266,7 +289,7 @@ export function BookingDateTime({
             people={people}
             dateTime={liveSelection}
             continueText="Continue to your information →"
-            onContinue={onContinue}
+            onContinue={handleContinue}
             isContinueDisabled={!isContinueEnabled}
           />
         </div>
@@ -286,7 +309,7 @@ export function BookingDateTime({
             type="button"
             className="booking-datetime__continue-btn"
             disabled={!isContinueEnabled}
-            onClick={onContinue}
+            onClick={handleContinue}
           >
             Continue to your information →
           </button>

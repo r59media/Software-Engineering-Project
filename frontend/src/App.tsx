@@ -32,7 +32,7 @@ function App() {
   const loadBookingServices = useCallback(async () => {
     try {
       const services = await fetchBookingServices()
-      if (services && services.length >= 5) {
+      if (services && services.length > 0) {
         setBookingServices(services)
       } else {
         setBookingServices(previewBookingServices)
@@ -59,13 +59,11 @@ function App() {
       void fetchHeroSlides(heroSlides, current.signal)
         .then(remoteSlides => {
           if (current.signal.aborted) return
-          if (remoteSlides && remoteSlides.length > 0) {
-            setSlides(prev => {
-              const prevSig = JSON.stringify(prev)
-              const nextSig = JSON.stringify(remoteSlides)
-              return prevSig === nextSig ? prev : remoteSlides
-            })
-          }
+          setSlides(prev => {
+            const prevSig = JSON.stringify(prev)
+            const nextSig = JSON.stringify(remoteSlides)
+            return prevSig === nextSig ? prev : remoteSlides
+          })
         })
         .catch(() => {})
     }
