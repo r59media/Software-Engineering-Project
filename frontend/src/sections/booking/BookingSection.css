@@ -1,9 +1,14 @@
 .booking-stage { position: relative; overflow: clip; overflow-clip-margin: 8px; background: var(--color-brand-white); }
 .booking-stage:has(> [data-exiting="true"]) > .booking-stage__panel { position: relative; z-index: 1; }
 .booking-stage:has(> [data-exiting="true"]) > .booking-stage__panel[data-exiting="true"] { z-index: 0; pointer-events: none; }
+.booking__title-group { display: flex; flex-direction: column; }
+.booking__eyebrow { display: flex; align-items: center; gap: 12px; margin: 0 0 10px; font-size: var(--text-caption); font-weight: var(--font-weight-light); line-height: 1; color: var(--color-brand-black); }
+.booking__eyebrow > span { display: inline-block; width: 9px; height: 11px; background: var(--color-brand-red); flex: none; }
 .booking-review .booking-progress { margin-block: 16px; }
-.booking-review__header, .booking-review__intro { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.booking-review__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.booking-review__intro { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .booking-review__header h2 { font-size: clamp(24px, 3.4vw, 48px); }
+.booking-review__subtitle { margin: 0 0 4px 0; color: var(--color-gray); }
 .booking-review__intro { margin-bottom: 16px; }
 .booking-review__intro h3 { font-size: 24px; }
 .booking-review__intro p { margin-top: 4px; }
@@ -27,7 +32,7 @@
 .booking-review__contact { display: grid; gap: 6px; margin: 0; }
 .booking-review dt, .booking-review__price span { font-size: 12px; }
 .booking-review dd { margin: 2px 0 0; font-weight: 700; overflow-wrap: anywhere; }
-.booking-review__edit { color: #b51616; background: transparent; border: 0; padding: 8px 0; min-height: 44px; font: inherit; font-size: 14px; text-align: right; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.booking-review__edit { color: var(--color-brand-red); background: transparent; border: 0; padding: 8px 0; min-height: 44px; font: inherit; font-size: 14px; font-weight: 700; text-align: right; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .booking-review__intro .booking-review__edit { color: var(--color-brand-black); font-weight: 700; text-decoration: none; }
 .booking-review__edit:disabled { opacity: .6; cursor: not-allowed; }
 .booking-review__notes { grid-column: 1 / -1; }
@@ -48,6 +53,7 @@
 }
 @media (max-width: 1100px) and (min-width: 768px) { .booking-review__footer { padding-right: calc(30% + 16px); } .booking-review__price { padding-inline: 12px; gap: 12px; } }
 @media (max-width: 767px) {
+  .booking__eyebrow { margin-bottom: 8px; }
   .booking-review__header, .booking-review__intro { align-items: flex-start; flex-direction: column; gap: 4px; }
   .booking-review__intro > div { display: none; }
   .booking-review__intro { margin-bottom: 4px; }
@@ -63,7 +69,7 @@
   .booking-review h4 { font-size: 18px; }
   .booking-review__service h4 { font-size: 24px; }
   .booking-review__block-heading { margin-bottom: 0; }
-  .booking-review__edit { font-size: 12px; }
+  .booking-review__edit { font-size: 12px; color: var(--color-brand-black); }
   .booking-review__contact { gap: 0; }
   .booking-review__contact dt { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .booking-review__contact dd { font-weight: 400; }
@@ -82,6 +88,6 @@
 .booking-review__permissions legend span { font-weight: 400; }
 .booking-review__permissions p { margin: 0 0 10px; font-size: .875rem; line-height: 1.5; }
 .booking-review__permissions label { display: flex; align-items: flex-start; gap: 12px; min-height: 44px; padding: 10px 0; font-size: .9375rem; line-height: 1.5; cursor: pointer; }
-.booking-review__permissions input { flex: 0 0 20px; width: 20px; height: 20px; margin: 2px 0 0; accent-color: #111; }
-.booking-review__permissions input:focus-visible { outline: 2px solid #b00000; outline-offset: 3px; }
+.booking-review__permissions input { flex: 0 0 20px; width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--color-brand-black); }
+.booking-review__permissions input:focus-visible { outline: 2px solid var(--color-brand-red); outline-offset: 3px; }
 .booking-review__permissions:disabled label { cursor: default; opacity: .65; }

@@ -97,8 +97,14 @@ export function BookingServices({
     <section id="booking" className="booking" aria-labelledby="booking-title">
       <div className="booking__inner">
         <header className="booking__header">
-          <h2 id="booking-title">BOOK YOUR SESSION</h2>
-          <p>Your next great photo starts here. Choose a session to get started.</p>
+          <div className="booking__title-group">
+            <p className="booking__eyebrow">
+              <span aria-hidden="true" />
+              Booking
+            </p>
+            <h2 id="booking-title">BOOK YOUR SESSION</h2>
+          </div>
+          <p className="booking__subtitle">Your next great photo starts here. Choose a session to get started.</p>
         </header>
 
         <BookingProgressBar currentStep="services" />
