@@ -4,6 +4,8 @@ import type { FormEvent } from 'react'
 import type { BookingCustomerInfo, BookingYourInfoProps } from '../../types/booking'
 import { BookingProgressBar } from './BookingProgressBar'
 import { BookingSessionCard } from './BookingSessionCard'
+import { FormField, FormHeader } from '../../components/FormField'
+import '../../components/FormField.css'
 import './BookingYourInfo.css'
 
 import { bookingFieldLimits, normalizeBookingInfo, validateBookingInfo } from './bookingValidation'
@@ -93,7 +95,13 @@ export function BookingYourInfo({
     <div className="booking-your-info">
       {/* Top Header */}
       <header className="booking-your-info__top-header">
-        <h2 className="booking-your-info__main-title">BOOK YOUR SESSION</h2>
+        <div className="booking__title-group">
+          <p className="booking__eyebrow">
+            <span aria-hidden="true" />
+            Booking
+          </p>
+          <h2 className="booking-your-info__main-title">BOOK YOUR SESSION</h2>
+        </div>
         <p className="booking-your-info__subtitle">Share your details to book your session.</p>
       </header>
 
@@ -131,13 +139,13 @@ export function BookingYourInfo({
       {/* 2-Column Grid */}
       <div className="booking-your-info__grid">
         <div className="booking-your-info__form-col">
-          <BookingPanelMotion className="booking-your-info__card" entersRightward>
-            <div className="booking-your-info__card-header">
-              <h4 className="booking-your-info__card-title">Contact details</h4>
-              <span className="booking-your-info__required-notice">
-                <span className="booking-your-info__star">*</span> Required fields
-              </span>
-            </div>
+          <BookingPanelMotion className="booking-your-info__card r59-form r59-form--light" entersRightward>
+            <FormHeader
+              title="Contact details"
+              as="h4"
+              titleClassName="booking-your-info__card-title"
+              className="booking-your-info__card-header"
+            />
 
             <form
               id="booking-info-form"
@@ -148,10 +156,13 @@ export function BookingYourInfo({
             >
               {/* Row 1: First and Last Name */}
               <div className="booking-your-info__row booking-your-info__row--names">
-                <div className="booking-your-info__field">
-                  <label htmlFor="field-firstName" className="booking-your-info__label">
-                    First name <span className="booking-your-info__star">*</span>
-                  </label>
+                <FormField
+                  htmlFor="field-firstName"
+                  label="First name"
+                  required
+                  error={errors.firstName}
+                  errorId="field-firstName-error"
+                >
                   <input
                     id="field-firstName"
                     name="firstName"
@@ -160,7 +171,7 @@ export function BookingYourInfo({
                     type="text"
                     autoComplete="given-name"
                     placeholder="Alex"
-                    className={`booking-your-info__input ${errors.firstName ? 'booking-your-info__input--error' : ''}`}
+                    className={`r59-form__control ${errors.firstName ? 'r59-form__control--error' : ''}`}
                     value={formData.firstName}
                     onChange={e => handleChange('firstName', e.target.value)}
                     onBlur={() => handleBlur('firstName')}
@@ -169,15 +180,15 @@ export function BookingYourInfo({
                     aria-required="true"
                     disabled={busy}
                   />
-                  {errors.firstName && (
-                    <span id="field-firstName-error" className="booking-your-info__field-err" aria-live="polite">{errors.firstName}</span>
-                  )}
-                </div>
+                </FormField>
 
-                <div className="booking-your-info__field">
-                  <label htmlFor="field-lastName" className="booking-your-info__label">
-                    Last name <span className="booking-your-info__star">*</span>
-                  </label>
+                <FormField
+                  htmlFor="field-lastName"
+                  label="Last name"
+                  required
+                  error={errors.lastName}
+                  errorId="field-lastName-error"
+                >
                   <input
                     id="field-lastName"
                     name="lastName"
@@ -186,7 +197,7 @@ export function BookingYourInfo({
                     type="text"
                     autoComplete="family-name"
                     placeholder="Morgan"
-                    className={`booking-your-info__input ${errors.lastName ? 'booking-your-info__input--error' : ''}`}
+                    className={`r59-form__control ${errors.lastName ? 'r59-form__control--error' : ''}`}
                     value={formData.lastName}
                     onChange={e => handleChange('lastName', e.target.value)}
                     onBlur={() => handleBlur('lastName')}
@@ -195,18 +206,18 @@ export function BookingYourInfo({
                     aria-required="true"
                     disabled={busy}
                   />
-                  {errors.lastName && (
-                    <span id="field-lastName-error" className="booking-your-info__field-err" aria-live="polite">{errors.lastName}</span>
-                  )}
-                </div>
+                </FormField>
               </div>
 
               {/* Row 2: Email and Phone */}
               <div className="booking-your-info__row">
-                <div className="booking-your-info__field">
-                  <label htmlFor="field-email" className="booking-your-info__label">
-                    Email address <span className="booking-your-info__star">*</span>
-                  </label>
+                <FormField
+                  htmlFor="field-email"
+                  label="Email address"
+                  required
+                  error={errors.email}
+                  errorId="field-email-error"
+                >
                   <input
                     id="field-email"
                     name="email"
@@ -220,22 +231,22 @@ export function BookingYourInfo({
                     aria-invalid={Boolean(errors.email)}
                     aria-describedby={errors.email ? 'field-email-error' : undefined}
                     placeholder="alex.morgan@example.com"
-                    className={`booking-your-info__input ${errors.email ? 'booking-your-info__input--error' : ''}`}
+                    className={`r59-form__control ${errors.email ? 'r59-form__control--error' : ''}`}
                     value={formData.email}
                     onChange={e => handleChange('email', e.target.value)}
                     onBlur={() => handleBlur('email')}
                     aria-required="true"
                     disabled={busy}
                   />
-                  {errors.email && (
-                    <span id="field-email-error" className="booking-your-info__field-err" aria-live="polite">{errors.email}</span>
-                  )}
-                </div>
+                </FormField>
 
-                <div className="booking-your-info__field">
-                  <label htmlFor="field-phone" className="booking-your-info__label">
-                    Phone number <span className="booking-your-info__star">*</span>
-                  </label>
+                <FormField
+                  htmlFor="field-phone"
+                  label="Phone number"
+                  required
+                  error={errors.phone}
+                  errorId="field-phone-error"
+                >
                   <input
                     id="field-phone"
                     name="phone"
@@ -244,7 +255,7 @@ export function BookingYourInfo({
                     type="tel"
                     autoComplete="tel"
                     placeholder="+1 (212) 555-0148"
-                    className={`booking-your-info__input ${errors.phone ? 'booking-your-info__input--error' : ''}`}
+                    className={`r59-form__control ${errors.phone ? 'r59-form__control--error' : ''}`}
                     value={formData.phone}
                     onChange={e => handleChange('phone', e.target.value)}
                     onBlur={() => handleBlur('phone')}
@@ -253,17 +264,19 @@ export function BookingYourInfo({
                     aria-required="true"
                     disabled={busy}
                   />
-                  {errors.phone && (
-                    <span id="field-phone-error" className="booking-your-info__field-err" aria-live="polite">{errors.phone}</span>
-                  )}
-                </div>
+                </FormField>
               </div>
 
               {/* Row 3: Anything we should know? */}
-              <div className="booking-your-info__field booking-your-info__field--full">
-                <label htmlFor="field-notes" className="booking-your-info__label">
-                  Anything we should know? (optional)
-                </label>
+              <FormField
+                htmlFor="field-notes"
+                label="Anything we should know?"
+                optional
+                fullWidth
+                className="booking-your-info__field--full"
+                error={errors.notes}
+                errorId="field-notes-error"
+              >
                 <textarea
                   id="field-notes"
                   name="notes"
@@ -272,14 +285,13 @@ export function BookingYourInfo({
                   aria-invalid={Boolean(errors.notes)}
                   aria-describedby={errors.notes ? 'field-notes-error' : undefined}
                   rows={3}
-                  className="booking-your-info__textarea"
+                  className="r59-form__textarea"
                   placeholder="Share any ideas, preferences, or accessibility needs for your session."
                   value={formData.notes || ''}
                   onChange={e => handleChange('notes', e.target.value)}
                   disabled={busy}
                 />
-                {errors.notes && <span id="field-notes-error" className="booking-your-info__field-err" aria-live="polite">{errors.notes}</span>}
-              </div>
+              </FormField>
 
               <div className="booking-your-info__note">
                 A little detail helps us make your session feel like you.

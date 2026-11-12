@@ -32,7 +32,16 @@ export function BookingSummary({ service, people, dateTime, customerInfo, photoP
   }
 
   return <div className="booking-review">
-    <header className="booking-review__header"><h2 id="booking-title">BOOK YOUR SESSION</h2><p>Review your details before continuing to your deposit.</p></header>
+    <header className="booking-review__header">
+      <div className="booking__title-group">
+        <p className="booking__eyebrow">
+          <span aria-hidden="true" />
+          Booking
+        </p>
+        <h2 id="booking-title">BOOK YOUR SESSION</h2>
+      </div>
+      <p className="booking-review__subtitle">Review your details before continuing to your deposit.</p>
+    </header>
     <BookingProgressBar currentStep="summary" onStepClick={step => { if (!busy && (step === 'services' || step === 'datetime' || step === 'info')) onEdit(step) }} />
     <div className="booking-review__intro"><div><h3>Everything look right?</h3><p>Check your session and contact details below.</p></div><button className="booking-review__edit" disabled={busy} onClick={() => onEdit('info')}>← Back to your information</button></div>
     <div className="booking-review__ticket-layout">

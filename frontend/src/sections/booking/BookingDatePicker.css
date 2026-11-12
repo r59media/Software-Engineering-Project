@@ -1,5 +1,5 @@
 .booking-date-picker {
-  background: #ffffff;
+  background: var(--color-white);
   border-radius: 7px;
   padding: 18px 20px;
   width: 100%;
@@ -14,7 +14,7 @@
   font-size: 24px;
   font-weight: 700;
   line-height: 32px;
-  color: #111111;
+  color: var(--color-brand-black);
   margin: 0 0 10px 0;
 }
 
@@ -28,7 +28,7 @@
 .booking-date-picker__month-title {
   font-size: 16px;
   font-weight: 700;
-  color: #111111;
+  color: var(--color-brand-black);
   text-align: center;
 }
 
@@ -38,7 +38,7 @@
   justify-content: center;
   background: transparent;
   border: none;
-  color: #111111;
+  color: var(--color-brand-black);
   cursor: pointer;
   padding: 6px 10px;
   transition: opacity 0.15s ease;
@@ -64,7 +64,7 @@
 .booking-date-picker__weekday {
   font-size: 15px;
   font-weight: 400;
-  color: #666666;
+  color: var(--color-gray);
   text-align: center;
   padding-bottom: 6px;
 }
@@ -84,7 +84,7 @@
   border-radius: 7px;
   border: none;
   background: rgba(17, 17, 17, 0.08);
-  color: #111111;
+  color: var(--color-brand-black);
   font-size: 15px;
   font-weight: 500;
   cursor: pointer;
@@ -94,28 +94,28 @@
 
 /* Hover: Brand Yellow from Figma System Design */
 .booking-date-picker__day-btn:hover:not(:disabled):not(.booking-date-picker__day-btn--selected) {
-  background: #ffcc00;
-  color: #111111;
+  background: var(--color-brand-yellow);
+  color: var(--color-brand-black);
 }
 
 /* Selected: Brand Red with white text from Figma System Design */
 .booking-date-picker__day-btn--selected {
-  background: var(--color-brand-red, #ff2626) !important;
-  color: #ffffff !important;
+  background: var(--color-brand-red) !important;
+  color: var(--color-white) !important;
   font-weight: 700;
 }
 
 /* Focus */
 .booking-date-picker__day-btn:focus-visible {
-  background: #ffffff;
-  outline: 2px solid var(--color-brand-red, #ff2626);
-  color: #111111;
+  background: var(--color-white);
+  outline: 2px solid var(--color-brand-red);
+  color: var(--color-brand-black);
 }
 
 /* Disabled */
 .booking-date-picker__day-btn--disabled {
   background: rgba(17, 17, 17, 0.04);
-  color: #666666;
+  color: var(--color-gray);
   opacity: 0.35;
   cursor: not-allowed;
 }
