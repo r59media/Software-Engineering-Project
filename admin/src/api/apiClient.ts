@@ -456,13 +456,26 @@
   }
 
   /**
-   * Authenticates with Google Identity Services ID token.
+   * Authenticates with Google Identity Services ID token and nonce.
    */
-  async function loginWithGoogle(idToken) {
+  async function loginWithGoogle(tokenOrPayload, maybeNonce) {
+    let idToken = '';
+    let nonce = '';
+    if (tokenOrPayload && typeof tokenOrPayload === 'object') {
+      idToken = tokenOrPayload.idToken;
+      nonce = tokenOrPayload.nonce;
+    } else {
+      idToken = tokenOrPayload;
+      nonce = maybeNonce;
+    }
     try {
+      const body: { idToken: string; nonce?: string } = { idToken };
+      if (nonce) {
+        body.nonce = nonce;
+      }
       const data = await request('/admin/google-login', {
         method: 'POST',
-        body: { idToken },
+        body,
         suppressUnauthorized: true
       });
       if (data && (data.ok !== false && !data.error)) {

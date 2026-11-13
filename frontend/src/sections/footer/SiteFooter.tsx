@@ -24,29 +24,32 @@ function publicSocialUrl(href?: string) {
   }
 }
 
-function extractSocialUrl(profileSocial: unknown, platform: string): string | undefined {
-  if (!profileSocial) return undefined
+function getSocialLinks(profileSocial: unknown): Array<{ platform: string; href: string }> {
+  if (!profileSocial) return []
   if (Array.isArray(profileSocial)) {
-    const item = profileSocial.find(
-      (s: unknown) =>
-        s &&
-        typeof s === 'object' &&
-        'platform' in s &&
-        typeof s.platform === 'string' &&
-        s.platform.trim().toLowerCase() === platform.toLowerCase()
-    )
-    if (item && typeof item === 'object') {
-      const url = 'url' in item ? item.url : 'href' in item ? item.href : undefined
-      if (typeof url === 'string' && /^https?:\/\//i.test(url)) return url
-    }
-  } else if (typeof profileSocial === 'object') {
-    const rec = profileSocial as Record<string, unknown>
-    const matchKey = Object.keys(rec).find(k => k.toLowerCase() === platform.toLowerCase())
-    if (matchKey && typeof rec[matchKey] === 'string' && /^https?:\/\//i.test(rec[matchKey] as string)) {
-      return rec[matchKey] as string
-    }
+    return profileSocial
+      .map((item: unknown) => {
+        if (!item || typeof item !== 'object') return null
+        const p = 'platform' in item && typeof item.platform === 'string' ? item.platform.trim() : ''
+        const h =
+          'url' in item && typeof item.url === 'string'
+            ? item.url.trim()
+            : 'href' in item && typeof (item as { href?: unknown }).href === 'string'
+            ? ((item as { href: string }).href).trim()
+            : ''
+        return p && h ? { platform: p, href: h } : null
+      })
+      .filter((x): x is { platform: string; href: string } => Boolean(x))
   }
-  return undefined
+  if (typeof profileSocial === 'object') {
+    return Object.entries(profileSocial as Record<string, unknown>)
+      .map(([platform, url]) => {
+        const href = typeof url === 'string' ? url.trim() : ''
+        return platform && href ? { platform, href } : null
+      })
+      .filter((x): x is { platform: string; href: string } => Boolean(x))
+  }
+  return []
 }
 
 const facebookIcon = (
@@ -62,11 +65,12 @@ const pinterestIcon = (
 )
 
 function renderSocialIcon(platform: string) {
-  if (platform === 'Instagram') return <span className="site-footer__social-icon site-footer__social-icon--instagram" aria-hidden="true" />
-  if (platform === 'Threads') return <span className="site-footer__social-icon site-footer__social-icon--threads" aria-hidden="true" />
-  if (platform === 'X') return <span className="site-footer__social-icon site-footer__social-icon--x" aria-hidden="true" />
-  if (platform === 'Facebook') return facebookIcon
-  if (platform === 'Pinterest') return pinterestIcon
+  const p = platform.toLowerCase()
+  if (p === 'instagram') return <span className="site-footer__social-icon site-footer__social-icon--instagram" aria-hidden="true" />
+  if (p === 'threads') return <span className="site-footer__social-icon site-footer__social-icon--threads" aria-hidden="true" />
+  if (p === 'x' || p === 'twitter') return <span className="site-footer__social-icon site-footer__social-icon--x" aria-hidden="true" />
+  if (p === 'facebook') return facebookIcon
+  if (p === 'pinterest') return pinterestIcon
   return null
 }
 
@@ -83,10 +87,10 @@ export function SiteFooter({
   socialLinks = footerSocialLinks,
   homeHref = '#top',
 }: SiteFooterProps) {
-  const { profile } = usePublicProfile()
+  const { profile, error } = usePublicProfile()
 
-  const liveEmail = profile?.email?.trim() || footerContent.email
-  const livePhone = profile?.phone?.trim() || footerContent.phone
+  const liveEmail = profile?.email?.trim() || (error ? footerContent.email : '')
+  const livePhone = profile?.phone?.trim() || (error ? footerContent.phone : '')
 
   const links = [
     ['About Me', destinations.about],
@@ -97,20 +101,11 @@ export function SiteFooter({
   ] as const
 
   const resolvedSocials = useMemo(() => {
-    const standardPlatforms = ['Instagram', 'Threads', 'X', 'Facebook', 'Pinterest']
-
-    return standardPlatforms
-      .map(name => {
-        const staticLink = socialLinks.find(s => s.platform.toLowerCase() === name.toLowerCase())
-        const remoteUrl = extractSocialUrl(profile?.social, name)
-        const href = remoteUrl || staticLink?.href
-        return { platform: name, href }
-      })
-      .filter(item => {
-        if (['Instagram', 'Threads', 'X'].includes(item.platform)) return true
-        return Boolean(item.href)
-      })
-  }, [profile?.social, socialLinks])
+    if (!profile) {
+      return error ? socialLinks : []
+    }
+    return getSocialLinks(profile.social)
+  }, [profile, error, socialLinks])
 
   return (
     <footer id="footer" className="site-footer" aria-label="R59 Media footer">
@@ -162,65 +157,71 @@ export function SiteFooter({
             ))}
           </div>
         </nav>
-        <div className="site-footer__connect" data-footer-part="connect">
-          <h2 id="footer-connect">CONNECT</h2>
-          <div className="site-footer__contact" data-footer-part="contact">
-            <div className="site-footer__contact-links">
-              {liveEmail && (
-                <a
-                  href={`mailto:${liveEmail}`}
-                  className="site-footer__contact-link"
-                  aria-label={`Email ${liveEmail}`}
-                >
-                  {liveEmail}
-                </a>
-              )}
-              {liveEmail && livePhone && (
-                <span className="site-footer__contact-sep" aria-hidden="true">
-                  ·
-                </span>
-              )}
-              {livePhone && (
-                <a
-                  href={`tel:${livePhone.replace(/[^\d+]/g, '')}`}
-                  className="site-footer__contact-link"
-                  aria-label={`Call ${livePhone}`}
-                >
-                  {livePhone}
-                </a>
-              )}
-            </div>
-          </div>
-          <ul className="site-footer__social" aria-labelledby="footer-connect">
-            {resolvedSocials.map(({ platform, href }) => {
-              const url = publicSocialUrl(href)
-              const icon = renderSocialIcon(platform)
-              return (
-                <li key={platform}>
-                  {url ? (
+        {(liveEmail || livePhone || resolvedSocials.length > 0) && (
+          <div className="site-footer__connect" data-footer-part="connect">
+            <h2 id="footer-connect">CONNECT</h2>
+            {(liveEmail || livePhone) && (
+              <div className="site-footer__contact" data-footer-part="contact">
+                <div className="site-footer__contact-links">
+                  {liveEmail && (
                     <a
-                      href={url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label={`${platform} (opens in a new tab)`}
+                      href={`mailto:${liveEmail}`}
+                      className="site-footer__contact-link"
+                      aria-label={`Email ${liveEmail}`}
                     >
-                      {icon}
+                      {liveEmail}
                     </a>
-                  ) : (
-                    <span
-                      role="link"
-                      aria-disabled="true"
-                      aria-label={`${platform} — link coming soon`}
-                      title="Link coming soon"
-                    >
-                      {icon}
+                  )}
+                  {liveEmail && livePhone && (
+                    <span className="site-footer__contact-sep" aria-hidden="true">
+                      ·
                     </span>
                   )}
-                </li>
-              )
-            })}
-          </ul>
-        </div>
+                  {livePhone && (
+                    <a
+                      href={`tel:${livePhone.replace(/[^\d+]/g, '')}`}
+                      className="site-footer__contact-link"
+                      aria-label={`Call ${livePhone}`}
+                    >
+                      {livePhone}
+                    </a>
+                  )}
+                </div>
+              </div>
+            )}
+            {resolvedSocials.length > 0 && (
+              <ul className="site-footer__social" aria-labelledby="footer-connect">
+                {resolvedSocials.map(({ platform, href }) => {
+                  const url = publicSocialUrl(href)
+                  const icon = renderSocialIcon(platform)
+                  return (
+                    <li key={platform}>
+                      {url ? (
+                        <a
+                          href={url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={`${platform} (opens in a new tab)`}
+                        >
+                          {icon}
+                        </a>
+                      ) : (
+                        <span
+                          role="link"
+                          aria-disabled="true"
+                          aria-label={`${platform} — link coming soon`}
+                          title="Link coming soon"
+                        >
+                          {icon}
+                        </span>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        )}
         <img className="site-footer__rule" src={divider} alt="" width="712.003" height="1" />
         <nav className="site-footer__legal" aria-label="Legal">
           <a href={`${import.meta.env.BASE_URL}terms-and-conditions`}>Terms and conditions</a>

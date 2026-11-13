@@ -319,16 +319,175 @@
     // ticking clears any message; unticking re-checks quietly (a message shows again on blur or review)
     revalidateSession(els, off);
   }
+  function showFieldError(input, message) {
+    if (!input) return;
+    input.setAttribute('aria-invalid', 'true');
+    const errEl = document.getElementById(`${input.id}-error`);
+    if (errEl) {
+      const span = errEl.querySelector('span');
+      if (span) span.textContent = message;
+      errEl.hidden = false;
+    }
+  }
+
+  function clearFieldError(input) {
+    if (!input) return;
+    input.removeAttribute('aria-invalid');
+    const errEl = document.getElementById(`${input.id}-error`);
+    if (errEl) {
+      const span = errEl.querySelector('span');
+      if (span) span.textContent = '';
+      errEl.hidden = true;
+    }
+  }
+
+  function validatePhotoCount(val) {
+    if (val === '' || val === null || val === undefined) return { valid: true };
+    const num = Number(val);
+    if (!Number.isInteger(num) || num < 0) {
+      return { valid: false, message: 'Photo count must be a whole number >= 0.' };
+    }
+    return { valid: true, value: num };
+  }
+
+  function validateAdditionalPeople(val) {
+    if (!val || String(val).trim() === '') return { valid: true, parsed: null };
+    const s = String(val).trim();
+    try {
+      const parsed = JSON.parse(s);
+      if (typeof parsed !== 'object' || parsed === null) {
+        return { valid: false, message: 'Must be a valid JSON object, e.g. {"includedPeople": 1}.' };
+      }
+      return { valid: true, parsed };
+    } catch {
+      const num = Number(s);
+      if (Number.isInteger(num) && num >= 0) {
+        return { valid: true, parsed: { includedPeople: num } };
+      }
+      return { valid: false, message: 'Must be valid JSON, e.g. {"includedPeople": 1} or leave blank.' };
+    }
+  }
+
   const findPkg = id => (cur().packages || []).find(p => sameId(p.id, id));
   const savedPkg = id => (st().getSaved?.().packages || {})[id] || null;
+  const getRawSavedPkg = id => R().packagesApi?.getRawPackage?.(id) || null;
 
-  function packageSlotHtml(pkg) {
+  function enrichPackage(pkg) {
+    if (!pkg) return pkg;
+    const raw = getRawSavedPkg(pkg.id);
+    if (raw) {
+      if (pkg.best_for === undefined && pkg.bestFor === undefined) {
+        pkg.best_for = raw.best_for ?? raw.bestFor ?? '';
+        pkg.bestFor = pkg.best_for;
+      }
+      if (pkg.booking_mode === undefined && pkg.bookingMode === undefined) {
+        pkg.booking_mode = raw.booking_mode ?? raw.bookingMode ?? 'direct';
+        pkg.bookingMode = pkg.booking_mode;
+      }
+      if (pkg.photo_count === undefined && pkg.photoCount === undefined) {
+        pkg.photo_count = raw.photo_count !== null && raw.photo_count !== undefined
+          ? raw.photo_count
+          : (raw.photoCount !== null && raw.photoCount !== undefined ? raw.photoCount : '');
+        pkg.photoCount = pkg.photo_count;
+      }
+      if (pkg.image_url === undefined && pkg.imageUrl === undefined) {
+        pkg.image_url = raw.image_url ?? raw.imageUrl ?? raw.image?.url ?? '';
+        pkg.imageUrl = pkg.image_url;
+        pkg.image_alt = raw.image_alt ?? raw.imageAlt ?? raw.image?.alt ?? '';
+        pkg.imageAlt = pkg.image_alt;
+        if (pkg.image_url && !pkg.image) {
+          pkg.image = { url: pkg.image_url, alt: pkg.image_alt || pkg.name || '' };
+        }
+      }
+      if (pkg.additional_people === undefined && pkg.additionalPeople === undefined) {
+        const ap = raw.additional_people !== undefined ? raw.additional_people : raw.additionalPeople;
+        pkg.additional_people = ap !== undefined && ap !== null ? (typeof ap === 'object' ? JSON.stringify(ap) : String(ap)) : '';
+        pkg.additionalPeople = ap;
+      }
+      if (pkg.display_order === undefined && pkg.displayOrder === undefined) {
+        pkg.display_order = raw.display_order !== undefined ? Number(raw.display_order) : (raw.displayOrder !== undefined ? Number(raw.displayOrder) : 0);
+        pkg.displayOrder = pkg.display_order;
+      }
+    }
+    return pkg;
+  }
+
+  function byDisplayOrder(a, b) {
+    const orderA = a.display_order !== undefined ? Number(a.display_order) : (a.displayOrder !== undefined ? Number(a.displayOrder) : 0);
+    const orderB = b.display_order !== undefined ? Number(b.display_order) : (b.displayOrder !== undefined ? Number(b.displayOrder) : 0);
+    if (orderA !== orderB) return orderA - orderB;
+    return Number(a.id || 0) - Number(b.id || 0);
+  }
+
+  let reordering = false;
+
+  async function movePackage(id, direction) {
+    if (reordering) return;
+    const packages = (cur().packages || []).slice().sort(byDisplayOrder);
+    const idx = packages.findIndex(p => sameId(p.id, id));
+    if (idx === -1) return;
+    const targetIdx = idx + (direction === 'up' ? -1 : 1);
+    if (targetIdx < 0 || targetIdx >= packages.length) return;
+
+    const moved = packages[idx];
+    const target = packages[targetIdx];
+    packages[idx] = target;
+    packages[targetIdx] = moved;
+
+    packages.forEach((p, i) => {
+      p.display_order = i;
+      p.displayOrder = i;
+    });
+
+    const ids = packages.map(p => Number(p.id)).filter(n => Number.isFinite(n));
+
+    reordering = true;
+    renderPackages();
+
+    try {
+      await R().packagesApi.reorder(ids);
+      cur().packages = packages;
+      packages.forEach(p => {
+        const raw = R().packagesApi?._rawPackagesById?.get?.(String(p.id));
+        if (raw) {
+          raw.display_order = p.display_order;
+          raw.displayOrder = p.display_order;
+        }
+      });
+      toast(`“${moved.name || 'Package'}” moved ${direction}.`, { type: 'success' });
+    } catch (err) {
+      failToast("Couldn't update package order.", err);
+      // Revert swap on failure:
+      packages[targetIdx] = target;
+      packages[idx] = moved;
+      packages.forEach((p, i) => {
+        p.display_order = i;
+        p.displayOrder = i;
+      });
+    } finally {
+      reordering = false;
+      renderPackages();
+    }
+  }
+
+  function packageSlotHtml(pkg, index = 0, total = 1) {
     const id = esc(pkg.id);
     const active = pkg.active !== false;
     const name = String(pkg.name ?? '');
     const sp = savedPkg(pkg.id);
     const priceEdited = sp && String(sp.price ?? '') !== String(pkg.price ?? '');
     const priceVal = pkg.price === '' || pkg.price === null || pkg.price === undefined ? '' : Number(pkg.price);
+    const isFirst = index === 0;
+    const isLast = index === total - 1;
+
+    const bestFor = pkg.best_for ?? pkg.bestFor ?? '';
+    const bookingMode = pkg.booking_mode ?? pkg.bookingMode ?? 'direct';
+    const photoCount = pkg.photo_count !== undefined && pkg.photo_count !== null ? pkg.photo_count : (pkg.photoCount !== undefined && pkg.photoCount !== null ? pkg.photoCount : '');
+    const imgUrl = pkg.image_url ?? pkg.imageUrl ?? pkg.image?.url ?? '';
+    const apVal = pkg.additional_people !== undefined && pkg.additional_people !== null
+      ? (typeof pkg.additional_people === 'object' ? JSON.stringify(pkg.additional_people) : String(pkg.additional_people))
+      : (pkg.additionalPeople !== undefined && pkg.additionalPeople !== null ? (typeof pkg.additionalPeople === 'object' ? JSON.stringify(pkg.additionalPeople) : String(pkg.additionalPeople)) : '');
+
     return `
       <div class="slot">
         <div class="edge caps" aria-hidden="true"><span><svg class="tri"><use href="#i-tri"/></svg><span data-frame-no>Frame</span></span><span data-frame-code></span></div>
@@ -338,11 +497,21 @@
               <h3 id="pkg-${id}-title" data-pkg-title>${esc(name.trim() || 'Package')}</h3>
               ${active ? '' : '<p class="pay-tags"><span class="tag tag--muted">Inactive</span></p>'}
             </div>
-            <label class="switch">
-              <input type="checkbox" role="switch" data-pkg-toggle="${id}" ${active ? 'checked' : ''} aria-describedby="pkg-${id}-title">
-              <span class="switch__track" aria-hidden="true"></span>
-              <span class="switch__label">Available</span>
-            </label>
+            <div style="display:flex;align-items:center;gap:var(--s2, 0.5rem);flex-wrap:wrap;">
+              <div class="pay-order-controls" role="group" aria-label="Reorder package" style="display:inline-flex;align-items:center;gap:2px;">
+                <button type="button" class="btn btn--icon btn--sm btn--ghost" data-pkg-move="up" data-pkg-id="${id}" title="Move package up" aria-label="Move package “${esc(name)}” up" ${isFirst || reordering ? 'disabled' : ''}>
+                  <svg class="ico" aria-hidden="true"><use href="#i-up"/></svg>
+                </button>
+                <button type="button" class="btn btn--icon btn--sm btn--ghost" data-pkg-move="down" data-pkg-id="${id}" title="Move package down" aria-label="Move package “${esc(name)}” down" ${isLast || reordering ? 'disabled' : ''}>
+                  <svg class="ico" aria-hidden="true"><use href="#i-down"/></svg>
+                </button>
+              </div>
+              <label class="switch">
+                <input type="checkbox" role="switch" data-pkg-toggle="${id}" ${active ? 'checked' : ''} aria-describedby="pkg-${id}-title">
+                <span class="switch__track" aria-hidden="true"></span>
+                <span class="switch__label">Available</span>
+              </label>
+            </div>
           </div>
           <div class="fields">
             <div class="field">
@@ -360,6 +529,30 @@
                 <input class="field__input num" id="${pkgField(id, 'price')}" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(priceVal)}" ${priceEdited ? '' : 'readonly'} data-pkg-input="price">
               </div>
             </div>
+            <div class="field">
+              <label class="field__label" for="${pkgField(id, 'best_for')}">Best for</label>
+              <div class="field__control">
+                <input class="field__input" id="${pkgField(id, 'best_for')}" type="text" maxlength="200" value="${esc(bestFor)}" data-pkg-input="best_for" placeholder="e.g. LinkedIn, resumes & personal branding">
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label class="field__label" for="${pkgField(id, 'booking_mode')}">Booking mode</label>
+                <div class="field__control">
+                  <select class="field__input" id="${pkgField(id, 'booking_mode')}" data-pkg-input="booking_mode">
+                    <option value="direct"${bookingMode === 'direct' ? ' selected' : ''}>Direct booking</option>
+                    <option value="inquiry"${bookingMode === 'inquiry' ? ' selected' : ''}>Inquiry only</option>
+                  </select>
+                </div>
+              </div>
+              <div class="field">
+                <label class="field__label" for="${pkgField(id, 'photo_count')}">Photo count</label>
+                <div class="field__control">
+                  <input class="field__input num" id="${pkgField(id, 'photo_count')}" type="number" inputmode="numeric" min="0" step="1" value="${esc(numValue(photoCount))}" data-pkg-input="photo_count" placeholder="e.g. 10">
+                </div>
+                ${errorHtml(pkgField(id, 'photo_count'))}
+              </div>
+            </div>
             <div class="field pay-outfits">
               <label class="field__label" for="${pkgField(id, 'outfits')}">Number of outfits</label>
               <div class="field__control">
@@ -367,6 +560,26 @@
               </div>
             </div>
             ${sessionFieldHtml(sessionIds(id), pkg)}
+            <div class="field">
+              <label class="field__label" for="${pkgField(id, 'image_url')}">Package image</label>
+              <div class="field__control" style="display:flex;gap:var(--s2, 0.5rem);align-items:center;">
+                <input class="field__input" id="${pkgField(id, 'image_url')}" type="text" value="${esc(imgUrl)}" data-pkg-input="image_url" placeholder="https://... or /api/media/..." style="flex:1;">
+                <label class="btn btn--ghost btn--sm" style="margin:0;cursor:pointer;white-space:nowrap;display:inline-flex;align-items:center;gap:var(--s1, 0.25rem);" title="Upload image file">
+                  <svg class="ico" aria-hidden="true"><use href="#i-upload"/></svg>
+                  <span>Upload</span>
+                  <input type="file" accept="image/*" class="sr-only" data-pkg-image-file="${id}">
+                </label>
+              </div>
+              ${imgUrl ? `<div class="pay-pkg-img-preview" style="margin-top:0.5rem;"><img src="${esc(imgUrl)}" alt="${esc(name || 'Package')} preview" style="max-height:80px;border-radius:2px;object-fit:cover;" onerror="this.parentElement.hidden=true"></div>` : ''}
+            </div>
+            <div class="field">
+              <label class="field__label" for="${pkgField(id, 'additional_people')}">Additional people</label>
+              <div class="field__control">
+                <input class="field__input" id="${pkgField(id, 'additional_people')}" type="text" value="${esc(apVal)}" data-pkg-input="additional_people" placeholder='e.g. {"includedPeople": 1}'>
+              </div>
+              <p class="field__hint">JSON configuration for group bookings (e.g. {"includedPeople": 1, "maxPeople": 5}).</p>
+              ${errorHtml(pkgField(id, 'additional_people'))}
+            </div>
             <div class="field">
               <label class="field__label" for="${pkgField(id, 'description')}">Short description</label>
               <div class="field__control">
@@ -419,12 +632,17 @@
       return;
     }
 
-    container.innerHTML = packages.map(packageSlotHtml).join('');
+    packages.forEach(enrichPackage);
+    packages.sort(byDisplayOrder);
+
+    container.innerHTML = packages.map((pkg, idx) => packageSlotHtml(pkg, idx, packages.length)).join('');
     const fv = R().formValidation;
     packages.forEach(pkg => {
       const name = document.getElementById(pkgField(pkg.id, 'name'));
       const price = document.getElementById(pkgField(pkg.id, 'price'));
       const outfits = document.getElementById(pkgField(pkg.id, 'outfits'));
+      const photoCount = document.getElementById(pkgField(pkg.id, 'photo_count'));
+      const additionalPeople = document.getElementById(pkgField(pkg.id, 'additional_people'));
       const session = sessionEls(sessionIds(pkg.id));
       fv?.bind?.(name, fv.rules?.packageName);
       fv?.bind?.(price, fv.rules?.packagePrice);
@@ -438,8 +656,53 @@
       if (pkg.full_day !== true && (sp?.full_day === true || String(numValue(sp?.duration_minutes)) !== String(sessionTotal(session)))) {
         revalidateSession(session, true);
       }
+      if (photoCount && photoCount.value !== '') {
+        const pcRes = validatePhotoCount(photoCount.value);
+        if (!pcRes.valid) showFieldError(photoCount, pcRes.message);
+      }
+      if (additionalPeople && additionalPeople.value !== '') {
+        const apRes = validateAdditionalPeople(additionalPeople.value);
+        if (!apRes.valid) showFieldError(additionalPeople, apRes.message);
+      }
     });
     numberFrames();
+  }
+
+  async function onPackageImageUpload(fileInput) {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    const id = fileInput.dataset.pkgImageFile;
+    const isNew = id === 'new';
+    const targetInput = isNew ? $('#pkgNewImage') : document.getElementById(pkgField(id, 'image_url'));
+
+    fileInput.disabled = true;
+    toast(`Uploading ${file.name}…`, { type: 'info' });
+
+    try {
+      let url = '';
+      if (R().photographyApi?.uploadMedia) {
+        const res = await R().photographyApi.uploadMedia(file);
+        url = res.url || (res.key ? `/api/media/${res.key}` : '');
+      } else {
+        url = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+      }
+
+      if (targetInput) {
+        targetInput.value = url;
+        targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      toast('Image uploaded', { type: 'success' });
+    } catch (err) {
+      failToast("Couldn't upload image.", err);
+    } finally {
+      fileInput.disabled = false;
+      fileInput.value = '';
+    }
   }
 
   function onPackageInput(e) {
@@ -468,6 +731,43 @@
       } else {
         pkg.duration_minutes = sessionTotal(session);
         revalidateSession(session);
+      }
+    } else if (kind === 'best_for') {
+      pkg.best_for = input.value;
+      pkg.bestFor = input.value;
+    } else if (kind === 'booking_mode') {
+      pkg.booking_mode = input.value;
+      pkg.bookingMode = input.value;
+    } else if (kind === 'photo_count') {
+      const check = validatePhotoCount(input.value);
+      if (check.valid) {
+        clearFieldError(input);
+        pkg.photo_count = input.value === '' ? null : check.value;
+        pkg.photoCount = pkg.photo_count;
+      } else {
+        showFieldError(input, check.message);
+      }
+    } else if (kind === 'image_url') {
+      pkg.image_url = input.value.trim();
+      pkg.imageUrl = pkg.image_url;
+      if (pkg.image_url) {
+        pkg.image = { url: pkg.image_url, alt: pkg.name || 'Package' };
+      } else {
+        pkg.image = undefined;
+      }
+      const preview = frame.querySelector('.pay-pkg-img-preview img');
+      if (preview) {
+        preview.src = pkg.image_url;
+        preview.parentElement.hidden = !pkg.image_url;
+      }
+    } else if (kind === 'additional_people') {
+      const check = validateAdditionalPeople(input.value);
+      if (check.valid) {
+        clearFieldError(input);
+        pkg.additional_people = input.value.trim();
+        pkg.additionalPeople = check.parsed;
+      } else {
+        showFieldError(input, check.message);
       }
     }
     st().markDirty();
@@ -569,6 +869,14 @@
     if (!form || !btn || form.hidden) return;
     form.reset();
     applyFullDay(sessionEls(NEW_SESSION_IDS));
+    ['#pkgNewBestFor', '#pkgNewBookingMode', '#pkgNewPhotoCount', '#pkgNewImage', '#pkgNewAdditionalPeople'].forEach(sel => {
+      const el = $(sel);
+      if (el) {
+        if (sel === '#pkgNewBookingMode') el.value = 'direct';
+        else el.value = '';
+        clearFieldError(el);
+      }
+    });
     form.querySelectorAll('[aria-invalid="true"]').forEach(el => {
       el.setCustomValidity?.('');
       R().formValidation?.validate?.(el);
@@ -586,15 +894,35 @@
     const priceEl = $('#pkgNewPrice');
     const descEl = $('#pkgNewDescription');
     const outfitsEl = $('#pkgNewOutfits');
+    const bestForEl = $('#pkgNewBestFor');
+    const bookingModeEl = $('#pkgNewBookingMode');
+    const photoCountEl = $('#pkgNewPhotoCount');
+    const imageEl = $('#pkgNewImage');
+    const additionalPeopleEl = $('#pkgNewAdditionalPeople');
     const session = sessionEls(NEW_SESSION_IDS);
     if (!nameEl || !priceEl || !session.h || !session.m) return;
+
+    const bookingMode = bookingModeEl?.value === 'inquiry' ? 'inquiry' : 'direct';
+    const isDirect = bookingMode === 'direct';
+
     const fullDay = Boolean(session.day?.checked);
     const total = sessionTotal(session);
     const check = (el, fallback) => (fv ? fv.validate(el) : fallback);
+
+    const pcCheck = photoCountEl ? validatePhotoCount(photoCountEl.value) : { valid: true };
+    if (!pcCheck.valid) showFieldError(photoCountEl, pcCheck.message);
+    else if (photoCountEl) clearFieldError(photoCountEl);
+
+    const apCheck = additionalPeopleEl ? validateAdditionalPeople(additionalPeopleEl.value) : { valid: true };
+    if (!apCheck.valid) showFieldError(additionalPeopleEl, apCheck.message);
+    else if (additionalPeopleEl) clearFieldError(additionalPeopleEl);
+
     const checks = [
       [nameEl, check(nameEl, nameEl.value.trim() !== '')],
-      [priceEl, check(priceEl, priceEl.value !== '')],
+      [priceEl, !isDirect || check(priceEl, priceEl.value !== '')],
       [outfitsEl, outfitsEl ? check(outfitsEl, true) : true],
+      [photoCountEl, pcCheck.valid],
+      [additionalPeopleEl, apCheck.valid],
       // Entire day: the length fields are disabled and not checked
       [session.h, fullDay || check(session.h, Number.isInteger(total) && total >= 15 && total <= 1440)],
       [session.m, fullDay || check(session.m, true)]
@@ -603,21 +931,55 @@
     if (firstBad) { firstBad[0]?.focus(); return; }
 
     const name = nameEl.value.trim();
-    const price = parseFloat(priceEl.value);
+    const price = priceEl.value !== '' ? parseFloat(priceEl.value) : (isDirect ? 0 : null);
     const description = (descEl?.value || '').trim();
     const outfits = outfitsEl && outfitsEl.value !== '' ? Number(outfitsEl.value) : null;
     const durationMinutes = fullDay ? FULL_DAY_MINUTES : total;
-    R().confirmation.confirmSavePackage(name, true, () => createPackage({ name, price, description, outfits, durationMinutes, fullDay }));
+    const best_for = (bestForEl?.value || '').trim() || null;
+    const photo_count = pcCheck.valid && photoCountEl && photoCountEl.value !== '' ? Number(photoCountEl.value) : null;
+    const image_url = (imageEl?.value || '').trim() || null;
+    const additional_people = apCheck.valid ? apCheck.parsed : null;
+
+    R().confirmation.confirmSavePackage(name, true, () => createPackage({
+      name,
+      price,
+      description,
+      outfits,
+      durationMinutes,
+      fullDay,
+      best_for,
+      booking_mode: bookingMode,
+      photo_count,
+      image_url,
+      additional_people
+    }));
   }
 
-  async function createPackage({ name, price, description, outfits, durationMinutes, fullDay }) {
+  async function createPackage({
+    name, price, description, outfits, durationMinutes, fullDay,
+    best_for, booking_mode, photo_count, image_url, additional_people
+  }) {
     const submit = $('#pkgNewCreate');
     const cancel = $('#pkgNewCancel');
     if (submit) submit.disabled = true;
     if (cancel) cancel.disabled = true;
     try {
+      const packages = cur().packages || [];
+      const display_order = packages.length;
       const res = await R().packagesApi.createPackage({
-        name, price, description, outfits, duration_minutes: durationMinutes, full_day: fullDay, is_active: 1
+        name,
+        price,
+        description,
+        outfits,
+        duration_minutes: durationMinutes,
+        full_day: fullDay,
+        is_active: 1,
+        best_for,
+        booking_mode,
+        photo_count,
+        image_url,
+        additional_people,
+        display_order
       });
       const data = res?.data && typeof res.data === 'object' ? res.data : {};
       const id = res?.id ?? data.id;
@@ -626,12 +988,29 @@
         id,
         name: data.name ?? data.title ?? name,
         description: data.description ?? description,
-        price: data.price !== undefined && data.price !== null ? Number(data.price) / 100 : price,
+        price: data.price !== undefined && data.price !== null ? Number(data.price) / 100 : (price ?? 0),
         duration_minutes: numValue(data.duration_minutes ?? durationMinutes),
         outfits: numValue(data.outfits !== undefined ? data.outfits : outfits),
         full_day: data.full_day !== undefined ? (data.full_day === true || Number(data.full_day) === 1) : fullDay,
         category: data.category ?? '',
-        active: data.is_active === undefined ? true : (data.is_active !== 0 && data.is_active !== false)
+        active: data.is_active === undefined ? true : (data.is_active !== 0 && data.is_active !== false),
+        best_for: data.best_for ?? data.bestFor ?? best_for ?? '',
+        bestFor: data.best_for ?? data.bestFor ?? best_for ?? '',
+        booking_mode: data.booking_mode ?? data.bookingMode ?? booking_mode ?? 'direct',
+        bookingMode: data.booking_mode ?? data.bookingMode ?? booking_mode ?? 'direct',
+        photo_count: numValue(data.photo_count ?? data.photoCount ?? photo_count),
+        photoCount: numValue(data.photo_count ?? data.photoCount ?? photo_count),
+        image_url: data.image_url ?? data.imageUrl ?? data.image?.url ?? image_url ?? '',
+        imageUrl: data.image_url ?? data.imageUrl ?? data.image?.url ?? image_url ?? '',
+        image_alt: data.image_alt ?? data.imageAlt ?? data.image?.alt ?? '',
+        imageAlt: data.image_alt ?? data.imageAlt ?? data.image?.alt ?? '',
+        image: data.image ?? (image_url ? { url: image_url, alt: name } : undefined),
+        additional_people: data.additional_people !== undefined
+          ? (typeof data.additional_people === 'object' ? JSON.stringify(data.additional_people) : String(data.additional_people))
+          : (data.additionalPeople !== undefined ? (typeof data.additionalPeople === 'object' ? JSON.stringify(data.additionalPeople) : String(data.additionalPeople)) : (additional_people ? (typeof additional_people === 'object' ? JSON.stringify(additional_people) : String(additional_people)) : '')),
+        additionalPeople: data.additionalPeople ?? additional_people,
+        display_order: data.display_order ?? data.displayOrder ?? display_order,
+        displayOrder: data.display_order ?? data.displayOrder ?? display_order
       };
       st().addPackage(pkg);
       closeAddForm();
@@ -670,6 +1049,14 @@
     list.addEventListener('click', e => {
       const t = e.target instanceof Element ? e.target : e.target?.parentElement;
       if (!t) return;
+      const moveBtn = t.closest('[data-pkg-move]');
+      if (moveBtn) {
+        e.preventDefault();
+        const dir = moveBtn.dataset.pkgMove;
+        const id = moveBtn.dataset.pkgId;
+        movePackage(id, dir);
+        return;
+      }
       const del = t.closest('[data-pkg-delete]');
       if (del) { e.preventDefault(); onPackageDelete(del); return; }
       const edit = t.closest('[data-pkg-price-edit]');
@@ -678,6 +1065,12 @@
     list.addEventListener('change', e => {
       const toggle = e.target.closest?.('[data-pkg-toggle]');
       if (toggle) onPackageToggle(toggle);
+      const fileInput = e.target.closest?.('[data-pkg-image-file]');
+      if (fileInput) onPackageImageUpload(fileInput);
+    });
+    $('#pkgAddForm')?.addEventListener('change', e => {
+      const fileInput = e.target.closest?.('[data-pkg-image-file]');
+      if (fileInput) onPackageImageUpload(fileInput);
     });
   }
 

@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import type { HeroDestinations, HeroSlide } from '../../types/hero'
 import { ActionLink } from '../../components/ActionLink'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
+import { usePublicProfile } from '../about/useAboutData'
 import './Hero.css'
 
 export interface HeroProps {
@@ -56,6 +57,8 @@ function HeroImage({ slide, fallbackImageUrl }: HeroImageProps) {
 }
 
 export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
+  const { profile } = usePublicProfile()
+  const location = profile?.location?.trim()
   const availableSlides = useMemo(() => {
     const ids = new Set<string>()
     return slides.filter(slide => {
@@ -115,7 +118,9 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
         <div className="hero__content">
           <p className="hero__role"><span aria-hidden="true" />Photographer</p>
           <h1 id="hero-title">Kevin D<br />Gonzalez</h1>
-          <p className="hero__location">Based in New Jersey<span aria-hidden="true" /></p>
+          {location ? (
+            <p className="hero__location">{location}<span aria-hidden="true" /></p>
+          ) : null}
           <p className="hero__description">Photography that feels natural, intentional, and uniquely yours.</p>
           <div className="hero__actions">
             <ActionLink href={destinations.booking} className="action action--primary" effect="light-sweep">Book Your Session</ActionLink>

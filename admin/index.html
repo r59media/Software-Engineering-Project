@@ -10,7 +10,8 @@
   <link rel="icon" type="image/png" href="/favicon-light.png" media="(prefers-color-scheme: dark)" />
 
   <!-- Google Identity Services -->
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <meta name="google-client-id" content="903574031170-h5dehd9irqrpd5ujki24dp1q91k23f9o.apps.googleusercontent.com">
+  <script src="https://accounts.google.com/gsi/client?onload=__gsiReady" async defer></script>
 
   <!-- Theme before first paint (blocking, external: CSP script-src 'self') -->
   <script src="assets/js/theme-init.js"></script>
@@ -624,6 +625,30 @@
                           </div>
                         </div>
                       </div>
+                      <div class="field">
+                        <label class="field__label" for="pkgNewBestFor">Best for</label>
+                        <div class="field__control">
+                          <input class="field__input" id="pkgNewBestFor" type="text" maxlength="200" placeholder="e.g. LinkedIn, resumes & personal branding">
+                        </div>
+                      </div>
+                      <div class="field-row">
+                        <div class="field">
+                          <label class="field__label" for="pkgNewBookingMode">Booking mode</label>
+                          <div class="field__control">
+                            <select class="field__input" id="pkgNewBookingMode">
+                              <option value="direct" selected>Direct booking</option>
+                              <option value="inquiry">Inquiry only</option>
+                            </select>
+                          </div>
+                        </div>
+                        <div class="field">
+                          <label class="field__label" for="pkgNewPhotoCount">Photo count</label>
+                          <div class="field__control">
+                            <input class="field__input num" id="pkgNewPhotoCount" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 10">
+                          </div>
+                          <p class="field__error" id="pkgNewPhotoCount-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
+                        </div>
+                      </div>
                       <div class="field pay-outfits">
                         <label class="field__label" for="pkgNewOutfits">Number of outfits</label>
                         <div class="field__control">
@@ -652,6 +677,26 @@
                         </div>
                         <p class="field__error" id="pkgNewDurationH-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
                         <p class="field__error" id="pkgNewDurationM-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
+                      </div>
+                      <div class="field">
+                        <label class="field__label" for="pkgNewImage">Package image</label>
+                        <div class="field__control" style="display: flex; gap: var(--s2, 0.5rem); align-items: center;">
+                          <input class="field__input" id="pkgNewImage" type="text" placeholder="https://... or /api/media/..." style="flex: 1;">
+                          <label class="btn btn--ghost btn--sm" style="margin: 0; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: var(--s1, 0.25rem);" title="Upload image file">
+                            <svg class="ico" aria-hidden="true"><use href="#i-upload"/></svg>
+                            <span>Upload</span>
+                            <input type="file" accept="image/*" class="sr-only" data-pkg-image-file="new">
+                          </label>
+                        </div>
+                        <p class="field__hint">Image URL or choose a file to upload.</p>
+                      </div>
+                      <div class="field">
+                        <label class="field__label" for="pkgNewAdditionalPeople">Additional people</label>
+                        <div class="field__control">
+                          <input class="field__input" id="pkgNewAdditionalPeople" type="text" placeholder='e.g. {"includedPeople": 1}'>
+                        </div>
+                        <p class="field__hint">JSON configuration for group bookings (e.g. {"includedPeople": 1, "maxPeople": 5}).</p>
+                        <p class="field__error" id="pkgNewAdditionalPeople-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
                       </div>
                       <div class="field">
                         <label class="field__label" for="pkgNewDescription">Short description</label>

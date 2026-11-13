@@ -32,30 +32,100 @@ export interface GoogleJwksKey {
   [key: string]: unknown
 }
 
+const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs'
+const JWKS_FORCE_REFRESH_DEBOUNCE_MS = 5 * 60 * 1000 // Debounce forceRefresh to at most once per 5 min
+
 let cachedJwks: GoogleJwksKey[] | null = null
 let jwksCachedAt = 0
 let jwksTtlMs = 3600 * 1000
+let lastJwksForceRefreshAt = 0
+
+function getWorkerCache(): Cache | null {
+  try {
+    if (typeof caches !== 'undefined' && 'default' in caches) {
+      return (caches as any).default as Cache
+    }
+  } catch {}
+  return null
+}
 
 export async function getGoogleJwks(forceRefresh = false): Promise<GoogleJwksKey[]> {
   const now = Date.now()
+
+  // 1. In-memory cache check
   if (!forceRefresh && cachedJwks && now - jwksCachedAt < jwksTtlMs) {
     return cachedJwks
   }
-  const res = await fetch('https://www.googleapis.com/oauth2/v3/certs')
+
+  // 2. Debounce forceRefresh to at most once per 5 min per isolate
+  if (forceRefresh && cachedJwks && now - lastJwksForceRefreshAt < JWKS_FORCE_REFRESH_DEBOUNCE_MS) {
+    return cachedJwks
+  }
+
+  const cache = getWorkerCache()
+  const cacheKey = new Request(GOOGLE_JWKS_URL)
+
+  // 3. Cache API check (caches.default) if not forcing refresh
+  if (!forceRefresh && cache) {
+    try {
+      const cachedRes = await cache.match(cacheKey)
+      if (cachedRes) {
+        const cacheControl = cachedRes.headers.get('cache-control')
+        let ttlMs = 3600 * 1000
+        if (cacheControl) {
+          const match = cacheControl.match(/max-age=(\d+)/i)
+          if (match) {
+            ttlMs = Math.max(60, parseInt(match[1], 10)) * 1000
+          }
+        }
+        const data = (await cachedRes.json()) as { keys?: GoogleJwksKey[] }
+        if (data && Array.isArray(data.keys)) {
+          cachedJwks = data.keys
+          jwksCachedAt = now
+          jwksTtlMs = ttlMs
+          return cachedJwks
+        }
+      }
+    } catch (cacheErr) {
+      console.warn('[auth] caches.default match error:', cacheErr)
+    }
+  }
+
+  // 4. Fetch fresh JWKS from Google
+  if (forceRefresh) {
+    lastJwksForceRefreshAt = now
+  }
+
+  const res = await fetch(GOOGLE_JWKS_URL)
   if (!res.ok) {
+    if (cachedJwks) return cachedJwks
     throw new Error(`Failed to fetch Google JWKS: ${res.statusText}`)
   }
+
+  let ttlSeconds = 3600
   const cacheControl = res.headers.get('cache-control')
   if (cacheControl) {
     const match = cacheControl.match(/max-age=(\d+)/i)
     if (match) {
-      jwksTtlMs = Math.max(60, parseInt(match[1], 10)) * 1000
+      ttlSeconds = Math.max(60, parseInt(match[1], 10))
     }
   }
+  jwksTtlMs = ttlSeconds * 1000
+
+  // Honor Cache-Control max-age in caches.default
+  if (cache) {
+    try {
+      await cache.put(cacheKey, res.clone())
+    } catch (cacheErr) {
+      console.warn('[auth] caches.default put error:', cacheErr)
+    }
+  }
+
   const data = (await res.json()) as { keys?: GoogleJwksKey[] }
   if (!data || !Array.isArray(data.keys)) {
     throw new Error('Invalid Google JWKS response: missing keys array')
   }
+
   cachedJwks = data.keys
   jwksCachedAt = now
   return cachedJwks
@@ -87,7 +157,7 @@ export async function verifyGoogleIdToken(
   idToken: string,
   clientId?: string,
   authorizedEmail?: string,
-  options?: { mockKeys?: GoogleJwksKey[] }
+  options?: { mockKeys?: GoogleJwksKey[]; expectedNonce?: string }
 ): Promise<{ success: true; email: string } | { success: false; error: string }> {
   try {
     if (!idToken || typeof idToken !== 'string') {
@@ -106,6 +176,8 @@ export async function verifyGoogleIdToken(
       iss?: string
       aud?: string
       exp?: number
+      iat?: number
+      nonce?: string
       email?: string
       email_verified?: boolean | string
       [key: string]: unknown
@@ -132,8 +204,11 @@ export async function verifyGoogleIdToken(
 
     let jwk = keys.find(k => k.kid === header.kid)
     if (!jwk && !options?.mockKeys) {
-      keys = await getGoogleJwks(true)
-      jwk = keys.find(k => k.kid === header.kid)
+      const now = Date.now()
+      if (now - lastJwksForceRefreshAt >= JWKS_FORCE_REFRESH_DEBOUNCE_MS) {
+        keys = await getGoogleJwks(true)
+        jwk = keys.find(k => k.kid === header.kid)
+      }
     }
 
     if (!jwk) {
@@ -172,18 +247,26 @@ export async function verifyGoogleIdToken(
     }
 
     // 3. Verify claims
+    if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
+      return { success: false, error: 'GOOGLE_CLIENT_ID is required and must not be empty' }
+    }
+
     const validIssuers = ['accounts.google.com', 'https://accounts.google.com']
     if (!payload.iss || !validIssuers.includes(payload.iss)) {
       return { success: false, error: `Invalid issuer: ${payload.iss}` }
     }
 
-    if (clientId && payload.aud !== clientId) {
+    if (payload.aud !== clientId) {
       return { success: false, error: `Audience mismatch: expected ${clientId}, got ${payload.aud}` }
     }
 
     const nowSeconds = Math.floor(Date.now() / 1000)
-    if (!payload.exp || typeof payload.exp !== 'number' || payload.exp <= nowSeconds) {
+    const CLOCK_SKEW_SECONDS = 60
+    if (!payload.exp || typeof payload.exp !== 'number' || payload.exp < nowSeconds - CLOCK_SKEW_SECONDS) {
       return { success: false, error: 'ID token has expired' }
+    }
+    if (payload.iat !== undefined && (typeof payload.iat !== 'number' || payload.iat > nowSeconds + CLOCK_SKEW_SECONDS)) {
+      return { success: false, error: 'ID token issued in the future' }
     }
 
     const isEmailVerified = payload.email_verified === true || payload.email_verified === 'true'
@@ -195,8 +278,20 @@ export async function verifyGoogleIdToken(
       return { success: false, error: 'ID token missing email claim' }
     }
 
-    // 4. Enforce single-account check using timingSafeEqual
-    const targetEmail = (authorizedEmail || 'r59mediatesting@gmail.com').trim().toLowerCase()
+    // 4. If nonce provided, require payload.nonce === nonce in constant time
+    if (options?.expectedNonce) {
+      const tokenNonce = typeof payload.nonce === 'string' ? payload.nonce : ''
+      if (!tokenNonce || !timingSafeEqual(tokenNonce, options.expectedNonce)) {
+        return { success: false, error: 'Nonce mismatch' }
+      }
+    }
+
+    // 5. Enforce single-account check using timingSafeEqual (fail closed if authorizedEmail is empty)
+    const targetEmail = (authorizedEmail || '').trim().toLowerCase()
+    if (!targetEmail) {
+      console.error('[auth] Server misconfigured: authorizedEmail is unset or empty')
+      return { success: false, error: 'Server misconfigured' }
+    }
     const tokenEmail = payload.email.trim().toLowerCase()
     if (!timingSafeEqual(tokenEmail, targetEmail)) {
       return { success: false, error: `Unauthorized email address: ${payload.email}` }
@@ -314,24 +409,9 @@ export function getSigningSecret(env?: Bindings): string | null {
 
 /**
  * Creates an HMAC-SHA256 signed session token containing the authenticated email, issuedAt timestamp, and expiration.
- * Supports arguments in either order: (secret, email) or (email, secret).
+ * Fixed positional args: (secret: string, email: string).
  */
-export async function createSessionToken(arg1: string, arg2: string): Promise<string> {
-  let secret: string
-  let email: string
-  if (arg1.includes('@')) {
-    email = arg1
-    secret = arg2
-  } else if (arg2.includes('@')) {
-    secret = arg1
-    email = arg2
-  } else if (arg2.length >= 32 && arg1.length < 32) {
-    email = arg1
-    secret = arg2
-  } else {
-    secret = arg1
-    email = arg2
-  }
+export async function createSessionToken(secret: string, email: string): Promise<string> {
   const now = Date.now()
   const expiry = now + SESSION_TTL_MS
   const payload = `${email}:${now}:${expiry}`
@@ -402,12 +482,23 @@ export async function verifySessionToken(
 const MAX_REVOKED_TOKENS = 1000
 const revokedTokens = new Map<string, number>()
 
-function pruneRevokedTokens(now: number): void {
-  for (const [tok, exp] of revokedTokens.entries()) {
-    if (now > exp) {
-      revokedTokens.delete(tok)
-    }
+// Short-lived positive cache for tokens confirmed NOT revoked (≤30s TTL per token)
+const POSITIVE_REVOCATION_CACHE_TTL_MS = 30_000
+const MAX_NOT_REVOKED_CACHE = 1000
+const notRevokedTokens = new Map<string, number>()
+
+function pruneTokenCaches(now: number): void {
+  for (const [k, exp] of revokedTokens.entries()) {
+    if (now > exp) revokedTokens.delete(k)
   }
+  for (const [k, validUntil] of notRevokedTokens.entries()) {
+    if (now > validUntil) notRevokedTokens.delete(k)
+  }
+}
+
+function getTokenKey(token: string): string {
+  const parts = token.split('.')
+  return parts.length > 1 ? parts[1] : token
 }
 
 /**
@@ -416,26 +507,43 @@ function pruneRevokedTokens(now: number): void {
 export function revokeSessionToken(token: string, ttlMs: number = SESSION_TTL_MS): void {
   if (!token) return
   const now = Date.now()
-  pruneRevokedTokens(now)
+  pruneTokenCaches(now)
+  const key = getTokenKey(token)
   if (revokedTokens.size >= MAX_REVOKED_TOKENS) {
     const oldestKey = revokedTokens.keys().next().value
     if (oldestKey) revokedTokens.delete(oldestKey)
   }
-  revokedTokens.set(token, now + ttlMs)
+  const expiry = now + ttlMs
+  revokedTokens.set(token, expiry)
+  revokedTokens.set(key, expiry)
+  notRevokedTokens.delete(token)
+  notRevokedTokens.delete(key)
 }
 
 /**
- * Checks whether a session token has been revoked.
+ * Checks whether a session token has been revoked in memory.
  */
 export function isTokenRevoked(token: string): boolean {
   if (!token) return true
+  const now = Date.now()
   const exp = revokedTokens.get(token)
-  if (exp === undefined) return false
-  if (Date.now() > exp) {
-    revokedTokens.delete(token)
-    return false
+  if (exp !== undefined) {
+    if (now > exp) {
+      revokedTokens.delete(token)
+    } else {
+      return true
+    }
   }
-  return true
+  const key = getTokenKey(token)
+  const keyExp = revokedTokens.get(key)
+  if (keyExp !== undefined) {
+    if (now > keyExp) {
+      revokedTokens.delete(key)
+    } else {
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -502,14 +610,15 @@ export function normalizeIpBucket(ip: string): string {
 
 export async function checkAndRecordLoginAttempt(
   db: D1Database | undefined,
-  ip: string
+  ip: string,
+  options?: { maxAttempts?: number; windowMs?: number }
 ): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
   const now = Date.now()
   const ipBucket = normalizeIpBucket(ip)
   const accountBucket = 'account'
 
-  const IP_WINDOW_MS = 60 * 1000
-  const MAX_IP_ATTEMPTS = 5
+  const IP_WINDOW_MS = options?.windowMs ?? 60 * 1000
+  const MAX_IP_ATTEMPTS = options?.maxAttempts ?? 5
 
   const ACCOUNT_WINDOW_MS = 15 * 60 * 1000
   const MAX_ACCOUNT_ATTEMPTS = 20
@@ -549,7 +658,8 @@ export async function checkAndRecordLoginAttempt(
 
     return { allowed: true, retryAfterSeconds: 0 }
   } catch (err) {
-    console.warn('[rate-limit] D1 rate limiter error:', err)
+    // Fail OPEN on DB error: prevents total denial-of-service lockout for admins if D1 encounters transient errors
+    console.warn('[rate-limit] D1 rate limiter error (failing open):', err)
     return { allowed: true, retryAfterSeconds: 0 }
   }
 }
@@ -562,35 +672,34 @@ export async function clearLoginAttempts(db: D1Database | undefined, ip: string)
   } catch {}
 }
 
-let lastDbCheckMs = 0
-const DB_CACHE_TTL_MS = 30_000
-
 /**
- * Revokes a session token in D1 database (Revoked_Sessions table) and in-memory cache across Cloudflare Worker isolates.
+ * Revokes a session token in D1 database (Revoked_Sessions table) and updates local in-memory cache immediately.
  */
 export async function revokeTokenInDb(db: D1Database | undefined, token: string): Promise<void> {
   if (!token) return
+  // Immediately update local in-memory cache
   revokeSessionToken(token)
-  lastDbCheckMs = 0
+  const key = getTokenKey(token)
+  notRevokedTokens.delete(token)
+  notRevokedTokens.delete(key)
+
   if (!db) return
 
   try {
-    const parts = token.split('.')
-    const sig = parts.length > 1 ? parts[1] : token
     const now = Date.now()
     const expiry = now + SESSION_TTL_MS
 
     // Insert into dedicated Revoked_Sessions table (Finding 3)
     await db.prepare(
       'INSERT OR IGNORE INTO Revoked_Sessions (signature, expires_at) VALUES (?, ?)'
-    ).bind(sig, expiry).run().catch(async () => {
+    ).bind(key, expiry).run().catch(async () => {
       // Fallback if table not yet initialized
       await db.prepare(
         'CREATE TABLE IF NOT EXISTS Revoked_Sessions (signature TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)'
       ).run().catch(() => {})
       await db.prepare(
         'INSERT OR IGNORE INTO Revoked_Sessions (signature, expires_at) VALUES (?, ?)'
-      ).bind(sig, expiry).run()
+      ).bind(key, expiry).run()
     })
 
     // Periodically prune expired revoked sessions (1 in 10 chance)
@@ -604,18 +713,22 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
 }
 
 /**
- * Checks whether a token is revoked, consulting both the in-memory cache and D1 database.
+ * Checks whether a token is revoked, consulting both the per-token in-memory caches and D1 database.
+ * Positive ("not revoked") results are cached ≤30s per token.
+ * Revoked results are cached until token expiry.
  */
 export async function isTokenRevokedInDb(db: D1Database | undefined, token: string): Promise<boolean> {
   if (!token) return true
-  if (isTokenRevoked(token)) return true
-
-  const parts = token.split('.')
-  const sig = parts.length > 1 ? parts[1] : token
-  if (isTokenRevoked(sig)) return true
-
   const now = Date.now()
-  if (now - lastDbCheckMs < DB_CACHE_TTL_MS) {
+
+  // 1. In-memory check for known revoked tokens
+  if (isTokenRevoked(token)) return true
+  const key = getTokenKey(token)
+  if (isTokenRevoked(key)) return true
+
+  // 2. Per-token short-lived positive cache ("not revoked" ≤30s)
+  const notRevokedUntil = notRevokedTokens.get(key) ?? notRevokedTokens.get(token)
+  if (notRevokedUntil !== undefined && now < notRevokedUntil) {
     return false
   }
 
@@ -624,13 +737,21 @@ export async function isTokenRevokedInDb(db: D1Database | undefined, token: stri
   try {
     const row = await db.prepare(
       'SELECT 1 FROM Revoked_Sessions WHERE signature = ? AND expires_at > ? LIMIT 1'
-    ).bind(sig, now).first()
-    lastDbCheckMs = now
+    ).bind(key, now).first()
 
     if (row) {
-      revokedTokens.set(sig, now + SESSION_TTL_MS)
+      revokeSessionToken(token)
+      revokeSessionToken(key)
       return true
     }
+
+    // Token confirmed not revoked in DB; cache positive result up to 30s
+    pruneTokenCaches(now)
+    if (notRevokedTokens.size >= MAX_NOT_REVOKED_CACHE) {
+      const oldestKey = notRevokedTokens.keys().next().value
+      if (oldestKey) notRevokedTokens.delete(oldestKey)
+    }
+    notRevokedTokens.set(key, now + POSITIVE_REVOCATION_CACHE_TTL_MS)
   } catch (err) {
     // Graceful fallback if table query fails
   }
@@ -638,9 +759,71 @@ export async function isTokenRevokedInDb(db: D1Database | undefined, token: stri
   return false
 }
 
+// ── In-memory cache for Admin_Settings: sessions_valid_after (Task 10) ──
+let cachedSessionsValidAfter: number | null = null
+let sessionsValidAfterCachedAt = 0
+const SESSIONS_VALID_AFTER_TTL_MS = 60_000
+
+export function invalidateSessionsValidAfterCache(): void {
+  cachedSessionsValidAfter = null
+  sessionsValidAfterCachedAt = 0
+}
+
+export function setSessionsValidAfterInMemory(val: number): void {
+  cachedSessionsValidAfter = val
+  sessionsValidAfterCachedAt = Date.now()
+}
+
+/**
+ * Retrieves sessions_valid_after timestamp, caching in memory for 60s per isolate.
+ */
+export async function getSessionsValidAfter(db: D1Database | undefined): Promise<number | null> {
+  ensureDbWriteHook(db)
+  const now = Date.now()
+  if (cachedSessionsValidAfter !== null && now - sessionsValidAfterCachedAt < SESSIONS_VALID_AFTER_TTL_MS) {
+    return cachedSessionsValidAfter
+  }
+  if (!db) return cachedSessionsValidAfter
+
+  try {
+    const row = await db.prepare(
+      "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'sessions_valid_after'"
+    ).first<{ setting_value: string }>()
+    if (row?.setting_value) {
+      const parsed = Number(row.setting_value)
+      cachedSessionsValidAfter = isNaN(parsed) ? 0 : parsed
+    } else {
+      cachedSessionsValidAfter = 0
+    }
+    sessionsValidAfterCachedAt = now
+    return cachedSessionsValidAfter
+  } catch (err) {
+    console.warn('[auth] DB sessions_valid_after check warning:', err)
+    return cachedSessionsValidAfter ?? 0
+  }
+}
+
+const wrappedDbs = new WeakSet<object>()
+function ensureDbWriteHook(db: D1Database | undefined): void {
+  if (!db || typeof db !== 'object' || wrappedDbs.has(db)) return
+  wrappedDbs.add(db)
+  const origPrepare = db.prepare.bind(db)
+  db.prepare = function (sql: string) {
+    if (
+      /Admin_Settings/i.test(sql) &&
+      /sessions_valid_after/i.test(sql) &&
+      /(INSERT|UPDATE|DELETE|REPLACE)/i.test(sql)
+    ) {
+      invalidateSessionsValidAfterCache()
+    }
+    return origPrepare(sql)
+  }
+}
+
 /**
  * Middleware that strictly checks for a valid HMAC-signed session token.
- * Fails closed if session signing secret is not configured or < 32 characters.
+ * Fails closed if session signing secret is not configured or < 32 characters,
+ * or if ADMIN_EMAIL is unset/empty.
  */
 export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) => {
   const signingSecret = getSigningSecret(c.env)
@@ -654,22 +837,21 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }, 500)
   }
 
+  const adminEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
+  if (!adminEmail) {
+    console.error('[auth] Server misconfigured: ADMIN_EMAIL is unset or empty')
+    return c.json({
+      error: 'Server misconfigured',
+      message: 'Server misconfigured'
+    }, 500)
+  }
+
   const { token } = extractSessionToken(c)
   if (!token) {
     return c.json({
       error: {
         code: 'UNAUTHORIZED',
         message: 'Authentication required. Provide a valid Authorization header.',
-        details: []
-      }
-    }, 401)
-  }
-
-  if (await isTokenRevokedInDb(c.env.DB, token)) {
-    return c.json({
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Invalid or expired session token.',
         details: []
       }
     }, 401)
@@ -686,9 +868,8 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }, 401)
   }
 
-  const adminEmail = (c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim().toLowerCase()
   const sessionEmail = session.email ? session.email.trim().toLowerCase() : ''
-  if (!adminEmail || !sessionEmail || !timingSafeEqual(sessionEmail, adminEmail)) {
+  if (!sessionEmail || !timingSafeEqual(sessionEmail, adminEmail)) {
     return c.json({
       error: {
         code: 'UNAUTHORIZED',
@@ -698,26 +879,33 @@ export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) 
     }, 401)
   }
 
-  if (c.env.DB) {
-    try {
-      const row = await c.env.DB.prepare(
-        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'sessions_valid_after'"
-      ).first<{ setting_value: string }>()
-      if (row?.setting_value) {
-        const validAfter = Number(row.setting_value)
-        if (!isNaN(validAfter) && session.issuedAt !== undefined && session.issuedAt < validAfter) {
-          return c.json({
-            error: {
-              code: 'UNAUTHORIZED',
-              message: 'Session has been revoked due to password change or logout everywhere.',
-              details: []
-            }
-          }, 401)
-        }
+  // Hook DB to auto-invalidate sessions_valid_after cache if updated in this isolate
+  ensureDbWriteHook(c.env.DB)
+
+  // Run revocation check and sessions_valid_after lookup in parallel with Promise.all
+  const [isRevoked, validAfter] = await Promise.all([
+    isTokenRevokedInDb(c.env.DB, token),
+    getSessionsValidAfter(c.env.DB)
+  ])
+
+  if (isRevoked) {
+    return c.json({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Invalid or expired session token.',
+        details: []
       }
-    } catch (err) {
-      console.warn('[auth] DB sessions_valid_after check warning:', err)
-    }
+    }, 401)
+  }
+
+  if (validAfter && session.issuedAt !== undefined && session.issuedAt < validAfter) {
+    return c.json({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Session has been revoked due to password change or logout everywhere.',
+        details: []
+      }
+    }, 401)
   }
 
   return await next()

@@ -19,4 +19,6 @@ export const previewBookingTimeSlots = [
   { time: '05:00 PM', period: 'afternoon', available: true },
 ] as const
 
-export const previewBookingDepositPercent = 60
+export const fallbackBookingDepositPercent = 60
+export const previewBookingDepositPercent = fallbackBookingDepositPercent
+

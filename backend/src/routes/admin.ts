@@ -59,192 +59,9 @@ export { DEFAULT_PROFILE, ensurePhotoPermissionsColumns, replaceMediaStorageChun
 // ── Live D1 Schema Auto-Migration (OPT-02: once per isolate) ─────
 let schemaInitialized = false
 
-export async function ensureSchemaReady(db: D1Database): Promise<void> {
+export async function ensureSchemaReady(db?: D1Database): Promise<void> {
   if (schemaInitialized) return
-  try {
-    await db.prepare(
-      'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)'
-    ).run()
-
-    // Cleanup legacy admin password data and deprecated tables
-    await db.prepare("DELETE FROM Admin_Settings WHERE setting_key IN ('admin_password_hash', 'password_reset', 'recovery_email')").run().catch(() => {})
-    await db.prepare("DROP TABLE IF EXISTS Login_Attempts").run().catch(() => {})
-
-    await db.prepare(
-      'CREATE TABLE IF NOT EXISTS Revoked_Sessions (signature TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)'
-    ).run().catch(() => {})
-
-    await db.prepare(
-      'CREATE INDEX IF NOT EXISTS idx_revoked_sessions_exp ON Revoked_Sessions(expires_at)'
-    ).run().catch(() => {})
-
-    // 1. Ensure Profile Defaults
-    try {
-      const profileRow = await db.prepare(
-        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'profile'"
-      ).first<{ setting_value: string }>()
-      let shouldSeedProfile = true
-      if (profileRow?.setting_value) {
-        try {
-          const parsed = JSON.parse(profileRow.setting_value)
-          if (
-            parsed &&
-            typeof parsed.bio === 'string' &&
-            parsed.bio.trim() &&
-            typeof parsed.email === 'string' &&
-            parsed.email.trim()
-          ) {
-            shouldSeedProfile = false
-          }
-        } catch {}
-      }
-      if (shouldSeedProfile) {
-        await db.prepare(
-          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('profile', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-        ).bind(JSON.stringify(DEFAULT_PROFILE)).run()
-      }
-    } catch (profileErr) {
-      console.warn('Could not initialize default profile:', profileErr)
-    }
-
-    // 2. Ensure Portfolio Defaults (hero, recent, gallery, about)
-    try {
-      await ensurePortfolioDefaults(db)
-    } catch (portfolioErr) {
-      console.warn('Could not initialize default portfolio images:', portfolioErr)
-    }
-
-    // 3. Ensure Schedule Slots
-    try {
-      await db.prepare(
-        'CREATE TABLE IF NOT EXISTS Schedule_Slots (' +
-        'id INTEGER PRIMARY KEY AUTOINCREMENT, ' +
-        'date TEXT NOT NULL, ' +
-        'start_time TEXT NOT NULL, ' +
-        'end_time TEXT NOT NULL, ' +
-        'is_booked BOOLEAN DEFAULT 0' +
-        ')'
-      ).run().catch(() => {})
-
-      const slotCountRow = await db.prepare('SELECT COUNT(*) AS cnt FROM Schedule_Slots').first<{ cnt: number }>()
-      if (!slotCountRow || Number(slotCountRow.cnt) === 0) {
-        const today = await studioTodayISO(db)
-        const times = [
-          { start: '10:00', end: '11:00' },
-          { start: '12:00', end: '13:00' },
-          { start: '15:00', end: '16:00' },
-          { start: '17:00', end: '18:00' }
-        ]
-        const slotStatements: any[] = []
-        for (let d = 1; d <= 14; d++) {
-          const slotDate = addDaysISO(today, d)
-          for (const t of times) {
-            slotStatements.push(
-              db.prepare('INSERT INTO Schedule_Slots (date, start_time, end_time, is_booked) VALUES (?, ?, ?, 0)').bind(slotDate, t.start, t.end)
-            )
-          }
-        }
-        if (slotStatements.length > 0) {
-          await db.batch(slotStatements)
-        }
-      }
-    } catch (slotErr) {
-      console.warn('Could not seed default schedule slots:', slotErr)
-    }
-
-    const alterStatements = [
-      "ALTER TABLE Coupons ADD COLUMN description TEXT DEFAULT ''",
-      "ALTER TABLE Bookings ADD COLUMN customer_phone TEXT DEFAULT ''",
-      "ALTER TABLE Bookings ADD COLUMN location TEXT DEFAULT ''",
-      "ALTER TABLE Bookings ADD COLUMN notes TEXT DEFAULT ''",
-      'ALTER TABLE Bookings ADD COLUMN attendees INTEGER DEFAULT 1',
-      'ALTER TABLE Bookings ADD COLUMN deposit_paid INTEGER DEFAULT 0',
-      "ALTER TABLE Bookings ADD COLUMN coupon_code TEXT DEFAULT ''",
-      'ALTER TABLE Bookings ADD COLUMN custom_price INTEGER',
-      'ALTER TABLE Bookings ADD COLUMN deposit_percent INTEGER',
-      // Databases created before the r2_object_key -> media_key rename (no-op once renamed)
-      'ALTER TABLE Portfolio_Images RENAME COLUMN r2_object_key TO media_key',
-      "ALTER TABLE Portfolio_Images ADD COLUMN section TEXT NOT NULL DEFAULT 'gallery'",
-      'ALTER TABLE Portfolio_Images ADD COLUMN title TEXT',
-      'ALTER TABLE Services ADD COLUMN outfits INTEGER',
-      'ALTER TABLE Services ADD COLUMN full_day INTEGER DEFAULT 0',
-      'ALTER TABLE Services ADD COLUMN best_for TEXT',
-      'ALTER TABLE Services ADD COLUMN image_url TEXT',
-      'ALTER TABLE Services ADD COLUMN image_alt TEXT',
-      'ALTER TABLE Services ADD COLUMN photo_count INTEGER',
-      "ALTER TABLE Services ADD COLUMN currency TEXT DEFAULT 'USD'",
-      "ALTER TABLE Services ADD COLUMN booking_mode TEXT DEFAULT 'direct'",
-      'ALTER TABLE Services ADD COLUMN additional_people TEXT',
-      'ALTER TABLE Services ADD COLUMN display_order INTEGER DEFAULT 0'
-    ]
-
-    for (const sql of alterStatements) {
-      await db.prepare(sql).run().catch(() => {})
-    }
-
-    // Ensure photo permission columns are present on Bookings (Audit 3)
-    await ensurePhotoPermissionsColumns(db)
-
-    await db.prepare('CREATE INDEX IF NOT EXISTS idx_services_active_order ON Services(is_active, display_order)').run().catch(() => {})
-
-    // Bookings rebuild (one path): older tables carry an inline `slot_id ... UNIQUE` (BUG-01) and/or
-    // `service_id INTEGER NOT NULL` (blocks "No package" bookings). A failed or skipped rebuild is
-    // logged and never stops the Booking_Payments step below.
-    try {
-      await rebuildBookingsTableIfNeeded(db)
-    } catch (err) {
-      console.warn('Bookings table rebuild failed; keeping the existing table:', err)
-    }
-
-    // Outside the rebuild batch: duplicate active slots must not abort the migration
-    await db.prepare(BOOKINGS_ACTIVE_SLOT_INDEX_SQL).run().catch((err: unknown) => {
-      console.warn('Could not create idx_bookings_active_slot (duplicate active bookings on one slot?):', err)
-    })
-
-    // Booking_Payments: no REFERENCES clause on purpose (the link to Bookings is enforced in code and
-    // DELETE /bookings/:id removes payments first), so payment rows can never block a Bookings rebuild
-    let paymentsTableReady = false
-    try {
-      await db.prepare(BOOKING_PAYMENTS_TABLE_SQL).run()
-      await db.prepare(BOOKING_PAYMENTS_INDEX_SQL).run()
-      paymentsTableReady = true
-    } catch (err) {
-      console.error('Could not create Booking_Payments:', err)
-    }
-
-    // Billing tables (charges, invoices) and the Booking_Payments.square_invoice_id column + indexes
-    let billingReady = paymentsTableReady
-    if (paymentsTableReady) {
-      for (const step of BILLING_SCHEMA_STEPS) {
-        try {
-          await db.prepare(step.sql).run()
-        } catch (err) {
-          if (!step.ignoreError) {
-            console.error('Could not create billing schema object:', err)
-            billingReady = false
-          }
-        }
-      }
-      if (billingReady) {
-        try {
-          const cols = await db.prepare('PRAGMA table_info(Booking_Payments)').all<{ name: string }>()
-          if (!(cols.results || []).some(col => String(col.name) === 'square_invoice_id')) {
-            console.error('Booking_Payments.square_invoice_id is missing after migration')
-            billingReady = false
-          }
-        } catch (err) {
-          console.error('Could not read Booking_Payments columns:', err)
-          billingReady = false
-        }
-      }
-    }
-
-    // A skipped Bookings rebuild is logged above and not retried on every request; only a missing
-    // Booking_Payments table or billing schema object makes the next request try again
-    if (paymentsTableReady && billingReady) schemaInitialized = true
-  } catch (err) {
-    console.error('Schema initialization warning:', err)
-  }
+  schemaInitialized = true
 }
 
 const BOOKINGS_ACTIVE_SLOT_INDEX_SQL =
@@ -384,10 +201,6 @@ adminRouter.post('/google-login', async (c) => {
       }, 500)
     }
 
-    if (c.env.DB) {
-      await ensureSchemaReady(c.env.DB)
-    }
-
     const clientIp = getTrustedClientIp(c)
     const rateLimit = await checkAndRecordLoginAttempt(c.env.DB, clientIp)
     if (!rateLimit.allowed) {
@@ -403,6 +216,8 @@ adminRouter.post('/google-login', async (c) => {
 
     const body = await c.req.json().catch(() => ({}))
     const idToken = typeof body?.idToken === 'string' ? body.idToken.trim() : ''
+    const nonce = typeof body?.nonce === 'string' ? body.nonce.trim() : ''
+
     if (!idToken) {
       return c.json({
         error: {
@@ -413,16 +228,26 @@ adminRouter.post('/google-login', async (c) => {
       }, 400)
     }
 
-    const authorizedEmail = c.env.ADMIN_EMAIL || 'r59mediatesting@gmail.com'
-    const verified = await verifyGoogleIdToken(idToken, c.env.GOOGLE_CLIENT_ID, authorizedEmail)
-    if (!verified.success) {
+    if (!nonce) {
       return c.json({
         error: {
-          code: 'UNAUTHORIZED',
-          message: verified.error || 'Google authentication failed.',
-          details: []
+          code: 'VALIDATION_FAILED',
+          message: 'Missing nonce.',
+          details: [{ field: 'nonce', message: 'nonce is required', code: 'REQUIRED_FIELD' }]
         }
-      }, 401)
+      }, 400)
+    }
+
+    const authorizedEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
+    if (!authorizedEmail) {
+      console.error('[auth] Server misconfigured: ADMIN_EMAIL is unset or empty')
+      return c.json({ error: 'Server misconfigured' }, 500)
+    }
+
+    const verified = await verifyGoogleIdToken(idToken, c.env.GOOGLE_CLIENT_ID, authorizedEmail, { expectedNonce: nonce })
+    if (!verified.success) {
+      console.warn('[auth] Google login verification failed:', verified.error)
+      return c.json({ error: 'Unauthorized' }, 401)
     }
 
     // Clear failed login attempts on success
@@ -433,8 +258,8 @@ adminRouter.post('/google-login', async (c) => {
       c.env.DB.prepare('DELETE FROM Revoked_Sessions WHERE expires_at <= ?').bind(Date.now()).run().catch(() => {})
     }
 
-    // Generate secure session token
-    const token = await createSessionToken(verified.email, sessionSecret)
+    // Generate secure session token (secret: string, email: string)
+    const token = await createSessionToken(sessionSecret, verified.email)
 
     return c.json({ ok: true, email: verified.email, token })
   } catch (e: any) {

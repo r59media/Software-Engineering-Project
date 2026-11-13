@@ -11,6 +11,7 @@ import { portfolioRouter } from './routes/portfolio'
 import { servicesRouter } from './routes/services'
 import { adminRouter, DEFAULT_PROFILE, replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady } from './routes/admin'
 import { squareWebhookRouter } from './routes/squareWebhook'
+import { pricingRouter, couponsRouter } from './routes/pricing'
 import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret } from './middleware/auth'
 import { verifyMediaSignature, parseRangeHeader } from './utils/signedUrl'
 
@@ -406,59 +407,102 @@ export const EMPTY_PROFILE = {
 // Public studio profile endpoint
 app.get('/api/profile', async (c) => {
   try {
-    let parsed: any = null
+    let row: { setting_value: string } | null = null
     if (c.env.DB) {
       try {
-        const row = await c.env.DB.prepare(
+        row = await c.env.DB.prepare(
           "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'profile'"
         ).first<{ setting_value: string }>()
-        if (row?.setting_value) {
-          parsed = JSON.parse(row.setting_value)
-        }
       } catch {}
     }
 
-    // A stored value (including '') is returned as stored; a missing or null field is empty
-    const text = (value: unknown): string =>
-      value === undefined || value === null ? '' : String(value).trim()
-
-    const bio = text(parsed?.bio)
-    const email = text(parsed?.email)
-
-    if (!bio || !email) {
+    // Defaults only when the profile setting has never been saved
+    if (!row || row.setting_value === null || row.setting_value === undefined) {
       c.header('Cache-Control', 'no-store')
       return c.json({
+        ...DEFAULT_PROFILE,
         status: 'success',
         profile: DEFAULT_PROFILE,
         data: DEFAULT_PROFILE
       })
     }
 
+    let parsed: any = null
+    try {
+      parsed = JSON.parse(row.setting_value)
+    } catch {
+      c.header('Cache-Control', 'no-store')
+      return c.json({
+        ...DEFAULT_PROFILE,
+        status: 'success',
+        profile: DEFAULT_PROFILE,
+        data: DEFAULT_PROFILE
+      })
+    }
+
+    if (!parsed || typeof parsed !== 'object') {
+      c.header('Cache-Control', 'no-store')
+      return c.json({
+        ...DEFAULT_PROFILE,
+        status: 'success',
+        profile: DEFAULT_PROFILE,
+        data: DEFAULT_PROFILE
+      })
+    }
+
+    // Return admin-saved values as-is; if admin saved an empty string/empty array, return empty (no reviving defaults)
+    const text = (value: unknown): string =>
+      value === undefined || value === null ? '' : String(value)
+
+    let socialList: { platform: string; url: string }[] = []
+    if (Array.isArray(parsed.social)) {
+      socialList = parsed.social
+    } else if (parsed.social && typeof parsed.social === 'object') {
+      socialList = Object.entries(parsed.social)
+        .filter(([_, url]) => Boolean(url))
+        .map(([platform, url]) => ({
+          platform: platform.charAt(0).toUpperCase() + platform.slice(1),
+          url: String(url)
+        }))
+    }
+
+    const bio = text(parsed.bio)
+    const email = text(parsed.email)
+    const phone = text(parsed.phone)
+    const location = text(parsed.location)
+    const travel = text(parsed.travel)
+    const social = socialList
+
     const profile = {
       bio,
       email,
-      phone: text(parsed?.phone) || DEFAULT_PROFILE.phone,
-      location: text(parsed?.location) || DEFAULT_PROFILE.location,
-      // The admin saves travel as a label (e.g. "Studio only"); keep that text instead of coercing it to true
-      travel: parsed?.travel !== undefined && parsed?.travel !== null && String(parsed.travel).trim()
-        ? (typeof parsed.travel === 'string' ? parsed.travel : Boolean(parsed.travel))
-        : DEFAULT_PROFILE.travel,
-      social: Array.isArray(parsed?.social) && parsed.social.length > 0 ? parsed.social : DEFAULT_PROFILE.social
+      phone,
+      location,
+      travel,
+      social
     }
 
     c.header('Cache-Control', 'no-store')
     return c.json({
+      ...profile,
       status: 'success',
       profile,
       data: profile
     })
   } catch {
     c.header('Cache-Control', 'no-store')
-    return c.json({ status: 'success', profile: DEFAULT_PROFILE, data: DEFAULT_PROFILE })
+    return c.json({
+      ...DEFAULT_PROFILE,
+      status: 'success',
+      profile: DEFAULT_PROFILE,
+      data: DEFAULT_PROFILE
+    })
   }
 })
 
 // Mount routes
+app.route('/api/pricing', pricingRouter)
+app.route('/api/coupons', couponsRouter)
 app.route('/api/contact', contactRouter)
 app.route('/api/leads', contactRouter)
 app.route('/api/schedule', scheduleRouter)

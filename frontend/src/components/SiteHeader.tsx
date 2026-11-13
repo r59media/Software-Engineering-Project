@@ -13,37 +13,36 @@ import './SiteHeader.css'
 
 const socialIcons = { Instagram: instagram, Threads: threads, X: x }
 
-function extractSocialUrl(profileSocial: unknown, platform: string): string | undefined {
-  if (!profileSocial) return undefined
+function getSocialLinks(profileSocial: unknown): Array<{ platform: string; href: string }> {
+  if (!profileSocial) return []
   if (Array.isArray(profileSocial)) {
-    const item = profileSocial.find(
-      (s: unknown) =>
-        s &&
-        typeof s === 'object' &&
-        'platform' in s &&
-        typeof s.platform === 'string' &&
-        (s.platform.trim().toLowerCase() === platform.toLowerCase() ||
-          (platform.toLowerCase() === 'x' && s.platform.trim().toLowerCase() === 'twitter'))
-    )
-    if (item && typeof item === 'object') {
-      const url = 'url' in item ? item.url : 'href' in item ? item.href : undefined
-      if (typeof url === 'string' && /^https?:\/\//i.test(url)) return url
-    }
-  } else if (typeof profileSocial === 'object') {
-    const rec = profileSocial as Record<string, unknown>
-    const matchKey = Object.keys(rec).find(k => {
-      const lower = k.toLowerCase()
-      return lower === platform.toLowerCase() || (platform.toLowerCase() === 'x' && lower === 'twitter')
-    })
-    if (matchKey && typeof rec[matchKey] === 'string' && /^https?:\/\//i.test(rec[matchKey] as string)) {
-      return rec[matchKey] as string
-    }
+    return profileSocial
+      .map((item: unknown) => {
+        if (!item || typeof item !== 'object') return null
+        const p = 'platform' in item && typeof item.platform === 'string' ? item.platform.trim() : ''
+        const h =
+          'url' in item && typeof item.url === 'string'
+            ? item.url.trim()
+            : 'href' in item && typeof (item as { href?: unknown }).href === 'string'
+            ? ((item as { href: string }).href).trim()
+            : ''
+        return p && h ? { platform: p, href: h } : null
+      })
+      .filter((x): x is { platform: string; href: string } => Boolean(x))
   }
-  return undefined
+  if (typeof profileSocial === 'object') {
+    return Object.entries(profileSocial as Record<string, unknown>)
+      .map(([platform, url]) => {
+        const href = typeof url === 'string' ? url.trim() : ''
+        return platform && href ? { platform, href } : null
+      })
+      .filter((x): x is { platform: string; href: string } => Boolean(x))
+  }
+  return []
 }
 
 export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: HeroDestinations; homeHref?: string }) {
-  const { profile } = usePublicProfile()
+  const { profile, error } = usePublicProfile()
   const header = useRef<HTMLElement>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
@@ -116,13 +115,11 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
     ['Get In Touch', destinations.contact, 'contact'], ['FAQ', destinations.faq, 'faq']] as const
 
   const resolvedSocials = useMemo(() => {
-    const mapped = footerSocialLinks.map(({ platform, href: staticHref }) => {
-      const remoteUrl = extractSocialUrl(profile?.social, platform)
-      return { platform, href: remoteUrl || staticHref }
-    })
-    const active = mapped.filter(item => Boolean(item.href))
-    return active.length > 0 ? active : footerSocialLinks
-  }, [profile?.social])
+    if (!profile) {
+      return error ? footerSocialLinks : []
+    }
+    return getSocialLinks(profile.social)
+  }, [profile, error])
 
   return <>
     <header ref={header} className="site-header" data-hidden={hidden && !open} onFocusCapture={() => setHidden(false)}>
@@ -161,14 +158,21 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
           {mobileLinks.map(([label, href, key]) => <ActionLink key={key} href={href} className={`mobile-navigation__link mobile-navigation__link--${key}`} ariaCurrent={href && (key === 'home' ? currentSection === 'hero' : href === `#${currentSection}`) ? 'location' : undefined} pressKey={key} pressed={pressed === key} onNavigate={closeMenu}><span>{label}</span></ActionLink>)}
         </nav>
         <ActionLink href={destinations.booking} className="mobile-navigation__booking" pressKey="booking-cta" pressed={pressed === 'booking-cta'} onNavigate={closeMenu}><span>Book Your Session</span></ActionLink>
-        <div className="mobile-navigation__connect">
-          <h2>CONNECT</h2>
-          <ul>{resolvedSocials.map(({ platform, href }) => <li key={platform}>
-            {href && /^https:\/\//.test(href)
-              ? <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`${platform} (opens in a new tab)`}><img src={socialIcons[platform]} alt="" /></a>
-              : <span role="link" aria-disabled="true" aria-label={`${platform} — link coming soon`} title="Link coming soon"><img src={socialIcons[platform]} alt="" /></span>}
-          </li>)}</ul>
-        </div>
+        {resolvedSocials.length > 0 && (
+          <div className="mobile-navigation__connect">
+            <h2>CONNECT</h2>
+            <ul>{resolvedSocials.map(({ platform, href }) => {
+              const icon = socialIcons[platform as keyof typeof socialIcons] || socialIcons.Instagram
+              return (
+                <li key={platform}>
+                  {href && /^https:\/\//.test(href)
+                    ? <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`${platform} (opens in a new tab)`}><img src={icon} alt="" /></a>
+                    : <span role="link" aria-disabled="true" aria-label={`${platform} — link coming soon`} title="Link coming soon"><img src={icon} alt="" /></span>}
+                </li>
+              )
+            })}</ul>
+          </div>
+        )}
         <div className="mobile-navigation__legal"><ActionLink href={`${import.meta.env.BASE_URL}terms-and-conditions`} onNavigate={closeMenu}>Terms and conditions</ActionLink><span aria-hidden="true">·</span><ActionLink href={`${import.meta.env.BASE_URL}privacy-policy`} onNavigate={closeMenu}>Privacy Policy</ActionLink></div>
       </div>
     </dialog>, document.body)}

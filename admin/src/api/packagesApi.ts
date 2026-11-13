@@ -25,7 +25,25 @@
   /** Number of outfits: '' or null means not set (sent as null). */
   const outfitsValue = v => (v === null || v === undefined || String(v).trim() === '' ? null : Number(v));
 
+  function cleanAdditionalPeople(val) {
+    if (val === undefined) return undefined;
+    if (val === null || val === '') return null;
+    if (typeof val === 'object') return val;
+    if (typeof val === 'string') {
+      try {
+        return JSON.parse(val);
+      } catch {
+        const n = Number(val);
+        if (Number.isInteger(n) && n >= 0) return { includedPeople: n };
+        return val;
+      }
+    }
+    return val;
+  }
+
   const packagesApi = {
+    _rawPackagesById: new Map(),
+
     /**
      * GET /services?all=true (includes inactive packages for the admin) → raw services, price in cents,
      * with duration_minutes, outfits (null when not set) and full_day (true for an "Entire day" package).
@@ -34,13 +52,22 @@
       const data = await window.R59.apiClient.get('/services?all=true');
       const list = data?.services ?? data?.data;
       if (!Array.isArray(list)) throw new Error('The server sent an unexpected package list.');
+      packagesApi._rawPackagesById = new Map();
+      list.forEach(s => {
+        if (s && s.id !== undefined) {
+          packagesApi._rawPackagesById.set(String(s.id), s);
+        }
+      });
       return list;
     },
 
+    getRawPackage(id) {
+      return packagesApi._rawPackagesById?.get(String(id)) || null;
+    },
+
     /**
-     * POST /services. `data`: { name, description, price ($) | priceInCents, duration_minutes, outfits, full_day, is_active }.
-     * duration_minutes is the session length the admin entered (the server checks 15–1440 unless
-     * full_day is true; the form sends 1440 then).
+     * POST /services. `data`: { name, description, price ($) | priceInCents, duration_minutes, outfits, full_day, is_active,
+     *   best_for, photo_count, booking_mode, image_url, additional_people, display_order }.
      * Resolves with the server response ({ id, data: { id, name, description, price (cents), … } }).
      */
     async createPackage(data = {}) {
@@ -58,7 +85,61 @@
           : (data.isActive !== undefined ? activeFlag(data.isActive) : 1)
       };
       if (data.category !== undefined) payload.category = data.category;
-      return await window.R59.apiClient.post('/services', payload);
+
+      const bestFor = data.best_for ?? data.bestFor;
+      if (bestFor !== undefined) {
+        payload.best_for = bestFor ? String(bestFor).trim() : null;
+        payload.bestFor = payload.best_for;
+      }
+
+      const photoCount = data.photo_count !== undefined ? data.photo_count : data.photoCount;
+      if (photoCount !== undefined && photoCount !== null && photoCount !== '') {
+        payload.photo_count = Math.max(0, Math.round(Number(photoCount)));
+        payload.photoCount = payload.photo_count;
+      } else if (photoCount === null || photoCount === '') {
+        payload.photo_count = null;
+        payload.photoCount = null;
+      }
+
+      const bookingMode = data.booking_mode ?? data.bookingMode;
+      if (bookingMode !== undefined) {
+        payload.booking_mode = bookingMode === 'inquiry' ? 'inquiry' : 'direct';
+        payload.bookingMode = payload.booking_mode;
+      }
+
+      const imageUrl = data.image_url ?? data.imageUrl ?? data.image?.url;
+      const imageAlt = data.image_alt ?? data.imageAlt ?? data.image?.alt;
+      if (imageUrl !== undefined) {
+        payload.image_url = imageUrl ? String(imageUrl).trim() : null;
+        payload.imageUrl = payload.image_url;
+        if (imageAlt !== undefined) {
+          payload.image_alt = imageAlt ? String(imageAlt).trim() : null;
+          payload.imageAlt = payload.image_alt;
+        }
+        if (payload.image_url) {
+          payload.image = { url: payload.image_url, alt: payload.image_alt || name };
+        }
+      }
+
+      const rawAP = data.additional_people !== undefined ? data.additional_people : data.additionalPeople;
+      if (rawAP !== undefined) {
+        const ap = cleanAdditionalPeople(rawAP);
+        payload.additional_people = ap ? (typeof ap === 'object' ? JSON.stringify(ap) : String(ap)) : null;
+        payload.additionalPeople = ap;
+      }
+
+      const displayOrder = data.display_order ?? data.displayOrder;
+      if (displayOrder !== undefined) {
+        payload.display_order = Math.round(Number(displayOrder));
+        payload.displayOrder = payload.display_order;
+      }
+
+      const res = await window.R59.apiClient.post('/services', payload);
+      const resData = res?.data ?? res;
+      if (resData && resData.id !== undefined) {
+        packagesApi._rawPackagesById?.set(String(resData.id), resData);
+      }
+      return res;
     },
 
     /**
@@ -84,7 +165,73 @@
       if (data.is_active !== undefined) payload.is_active = activeFlag(data.is_active);
       else if (data.isActive !== undefined) payload.is_active = activeFlag(data.isActive);
 
-      return await window.R59.apiClient.put(`/services/${encodeURIComponent(id)}`, payload);
+      const curPkg = window.R59?.state?.getState?.()?.packages?.find?.(p => String(p.id) === String(id));
+
+      const bestFor = data.best_for !== undefined ? data.best_for : (data.bestFor !== undefined ? data.bestFor : (data.name !== undefined ? (curPkg?.best_for ?? curPkg?.bestFor) : undefined));
+      if (bestFor !== undefined) {
+        payload.best_for = bestFor ? String(bestFor).trim() : null;
+        payload.bestFor = payload.best_for;
+      }
+
+      const photoCount = data.photo_count !== undefined ? data.photo_count : (data.photoCount !== undefined ? data.photoCount : (data.name !== undefined ? (curPkg?.photo_count ?? curPkg?.photoCount) : undefined));
+      if (photoCount !== undefined) {
+        if (photoCount === null || photoCount === '') {
+          payload.photo_count = null;
+          payload.photoCount = null;
+        } else {
+          payload.photo_count = Math.max(0, Math.round(Number(photoCount)));
+          payload.photoCount = payload.photo_count;
+        }
+      }
+
+      const bookingMode = data.booking_mode !== undefined ? data.booking_mode : (data.bookingMode !== undefined ? data.bookingMode : (data.name !== undefined ? (curPkg?.booking_mode ?? curPkg?.bookingMode) : undefined));
+      if (bookingMode !== undefined) {
+        payload.booking_mode = bookingMode === 'inquiry' ? 'inquiry' : 'direct';
+        payload.bookingMode = payload.booking_mode;
+      }
+
+      const imageUrl = data.image_url !== undefined ? data.image_url : (data.imageUrl !== undefined ? data.imageUrl : (data.image?.url !== undefined ? data.image?.url : (data.name !== undefined ? (curPkg?.image_url ?? curPkg?.imageUrl ?? curPkg?.image?.url) : undefined)));
+      const imageAlt = data.image_alt !== undefined ? data.image_alt : (data.imageAlt !== undefined ? data.imageAlt : (data.image?.alt !== undefined ? data.image?.alt : (data.name !== undefined ? (curPkg?.image_alt ?? curPkg?.imageAlt ?? curPkg?.image?.alt) : undefined)));
+      if (imageUrl !== undefined) {
+        payload.image_url = imageUrl ? String(imageUrl).trim() : null;
+        payload.imageUrl = payload.image_url;
+        if (imageAlt !== undefined) {
+          payload.image_alt = imageAlt ? String(imageAlt).trim() : null;
+          payload.imageAlt = payload.image_alt;
+        }
+        if (payload.image_url) {
+          payload.image = { url: payload.image_url, alt: payload.image_alt || name || curPkg?.name || '' };
+        }
+      }
+
+      const rawAP = data.additional_people !== undefined ? data.additional_people : (data.additionalPeople !== undefined ? data.additionalPeople : (data.name !== undefined ? (curPkg?.additional_people ?? curPkg?.additionalPeople) : undefined));
+      if (rawAP !== undefined) {
+        const ap = cleanAdditionalPeople(rawAP);
+        payload.additional_people = ap ? (typeof ap === 'object' ? JSON.stringify(ap) : String(ap)) : null;
+        payload.additionalPeople = ap;
+      }
+
+      const displayOrder = data.display_order !== undefined ? data.display_order : (data.displayOrder !== undefined ? data.displayOrder : (data.name !== undefined ? (curPkg?.display_order ?? curPkg?.displayOrder) : undefined));
+      if (displayOrder !== undefined) {
+        payload.display_order = Math.round(Number(displayOrder));
+        payload.displayOrder = payload.display_order;
+      }
+
+      const res = await window.R59.apiClient.put(`/services/${encodeURIComponent(id)}`, payload);
+      const resData = res?.data ?? res;
+      if (resData && resData.id !== undefined) {
+        packagesApi._rawPackagesById?.set(String(resData.id), resData);
+      }
+      return res;
+    },
+
+    /**
+     * PUT /api/services/order with body { ids: number[] }.
+     * Reorders packages by display_order.
+     */
+    async reorder(ids) {
+      const cleanIds = (Array.isArray(ids) ? ids : []).map(id => Number(id)).filter(n => Number.isFinite(n));
+      return await window.R59.apiClient.put('/api/services/order', { ids: cleanIds });
     },
 
     /**

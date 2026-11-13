@@ -8,10 +8,11 @@ export interface AboutPortraitData {
 }
 
 export interface UseAboutDataResult {
-  portrait: AboutPortraitData
+  portrait: AboutPortraitData | null
   paragraphs: string[]
   profile: PublicProfileData | null
   loading: boolean
+  error: boolean
 }
 
 const FALLBACK_PORTRAIT: AboutPortraitData = (aboutContent as unknown as { portrait?: AboutPortraitData }).portrait || {
@@ -23,10 +24,11 @@ const FALLBACK_PARAGRAPHS: string[] = (aboutContent as unknown as { paragraphs?:
   (aboutContent.biography ? [aboutContent.biography] : [])
 
 export function useAboutData(): UseAboutDataResult {
-  const [portrait, setPortrait] = useState<AboutPortraitData>(FALLBACK_PORTRAIT)
+  const [portrait, setPortrait] = useState<AboutPortraitData | null>(FALLBACK_PORTRAIT)
   const [paragraphs, setParagraphs] = useState<string[]>(FALLBACK_PARAGRAPHS)
   const [profile, setProfile] = useState<PublicProfileData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(false)
 
   useEffect(() => {
     let controller: AbortController | null = null
@@ -40,27 +42,34 @@ export function useAboutData(): UseAboutDataResult {
         .then(data => {
           if (current.signal.aborted) return
 
-          if (data.portrait?.src) {
-            setPortrait(data.portrait)
-          } else {
+          if (data.portraitError) {
             setPortrait(FALLBACK_PORTRAIT)
+          } else {
+            setPortrait(data.portrait)
           }
 
-          if (data.profile?.bio && typeof data.profile.bio === 'string' && data.profile.bio.trim()) {
+          if (data.profileError) {
+            setParagraphs(FALLBACK_PARAGRAPHS)
+          } else if (data.profile?.bio && typeof data.profile.bio === 'string' && data.profile.bio.trim()) {
             const bioParagraphs = data.profile.bio
               .split(/\r?\n\r?\n+/)
               .map(p => p.trim())
               .filter(Boolean)
-            setParagraphs(bioParagraphs.length > 0 ? bioParagraphs : FALLBACK_PARAGRAPHS)
+            setParagraphs(bioParagraphs.length > 0 ? bioParagraphs : [])
           } else {
-            setParagraphs(FALLBACK_PARAGRAPHS)
+            setParagraphs([])
           }
 
           setProfile(data.profile)
+          setError(Boolean(data.profileError))
           setLoading(false)
         })
         .catch(() => {
           if (!current.signal.aborted) {
+            setPortrait(FALLBACK_PORTRAIT)
+            setParagraphs(FALLBACK_PARAGRAPHS)
+            setProfile(null)
+            setError(true)
             setLoading(false)
           }
         })
@@ -80,10 +89,10 @@ export function useAboutData(): UseAboutDataResult {
     }
   }, [])
 
-  return { portrait, paragraphs, profile, loading }
+  return { portrait, paragraphs, profile, loading, error }
 }
 
-export function usePublicProfile(): { profile: PublicProfileData | null; loading: boolean } {
-  const { profile, loading } = useAboutData()
-  return { profile, loading }
+export function usePublicProfile(): { profile: PublicProfileData | null; loading: boolean; error: boolean } {
+  const { profile, loading, error } = useAboutData()
+  return { profile, loading, error }
 }
