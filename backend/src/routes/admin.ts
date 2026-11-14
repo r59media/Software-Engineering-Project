@@ -369,7 +369,16 @@ adminRouter.post('/media-token', async (c) => {
       }, 400)
     }
 
-    const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
+    const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || getSigningSecret(c.env)
+    if (!secret) {
+      return c.json({
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Media signing secret is not configured.',
+          details: []
+        }
+      }, 500)
+    }
     const { exp, sig } = await signMediaKey(fileKey, secret, 30)
 
     return c.json({
@@ -1959,10 +1968,10 @@ adminRouter.put('/packages/:id', async (c) => {
     const rawName = body.name ?? body.title
     const name = rawName !== undefined ? String(rawName).trim() : String(existing.name || '').trim()
     const description = body.description !== undefined ? (body.description === null ? null : String(body.description)) : existing.description
-    const rawPrice = body.price !== undefined ? body.price : existing.price
-    const numPrice = Number(rawPrice)
-    const rawDuration = body.duration_minutes ?? body.durationMinutes ?? existing.duration_minutes ?? 60
-    const numDuration = Number(rawDuration)
+    const bookingMode = body.booking_mode !== undefined ? String(body.booking_mode) : (body.bookingMode !== undefined ? String(body.bookingMode) : (existing.booking_mode || 'direct'))
+
+    const rawPrice = body.priceMinor !== undefined ? body.priceMinor : (body.price !== undefined ? body.price : existing.price)
+    const rawDuration = body.duration_minutes !== undefined ? body.duration_minutes : (body.durationMinutes !== undefined ? body.durationMinutes : existing.duration_minutes)
     const isActive =
       body.is_active !== undefined
         ? (body.is_active ? 1 : 0)
@@ -1974,19 +1983,40 @@ adminRouter.put('/packages/:id', async (c) => {
     if (!name) {
       errors.push({ field: 'name', message: 'Service name/title cannot be empty.', code: 'REQUIRED_FIELD' })
     }
-    if (!Number.isFinite(numPrice) || numPrice < 0) {
-      errors.push({ field: 'price', message: 'Price must be a valid number >= 0.', code: 'INVALID_VALUE' })
+
+    let cleanPrice: number | null = null
+    if (rawPrice === null || (rawPrice === undefined && bookingMode === 'inquiry')) {
+      cleanPrice = null
+    } else {
+      const numPrice = Number(rawPrice)
+      if (!Number.isFinite(numPrice) || numPrice < 0) {
+        errors.push({ field: 'price', message: 'Price must be a valid number >= 0.', code: 'INVALID_VALUE' })
+      } else {
+        cleanPrice = Math.round(numPrice)
+      }
     }
-    if (!Number.isFinite(numDuration) || numDuration < 0) {
-      errors.push({ field: 'duration_minutes', message: 'Duration in minutes must be >= 0.', code: 'INVALID_VALUE' })
+
+    let cleanDuration: number | null = null
+    if (rawDuration === null || (rawDuration === undefined && bookingMode === 'inquiry')) {
+      cleanDuration = null
+    } else {
+      const effectiveDuration = rawDuration === undefined ? 60 : rawDuration
+      const numDuration = Number(effectiveDuration)
+      if (!Number.isFinite(numDuration) || numDuration < 0) {
+        errors.push({ field: 'duration_minutes', message: 'Duration in minutes must be >= 0.', code: 'INVALID_VALUE' })
+      } else {
+        cleanDuration = Math.round(numDuration)
+      }
     }
 
     if (errors.length > 0) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not update service.', details: errors } }, 400)
     }
 
-    const cleanPrice = Math.round(numPrice)
-    const cleanDuration = Math.round(numDuration)
+    const rawFullDay = body.full_day !== undefined ? body.full_day : body.fullDay
+    const fullDay = rawFullDay !== undefined
+      ? (rawFullDay === true || Number(rawFullDay) === 1 ? 1 : 0)
+      : (existing.full_day ? 1 : 0)
 
     const bestFor = body.best_for !== undefined ? (body.best_for === null ? null : String(body.best_for)) : (body.bestFor !== undefined ? (body.bestFor === null ? null : String(body.bestFor)) : existing.best_for)
     const imageUrl = body.image_url !== undefined ? (body.image_url === null ? null : String(body.image_url)) : (body.image?.url !== undefined ? String(body.image.url) : existing.image_url)
@@ -2005,7 +2035,6 @@ adminRouter.put('/packages/:id', async (c) => {
     }
 
     const currency = body.currency !== undefined ? String(body.currency) : (existing.currency || 'USD')
-    const bookingMode = body.booking_mode !== undefined ? String(body.booking_mode) : (body.bookingMode !== undefined ? String(body.bookingMode) : (existing.booking_mode || 'direct'))
 
     let additionalPeople = existing.additional_people
     const rawAdditionalPeople = body.additional_people !== undefined ? body.additional_people : body.additionalPeople
@@ -2027,12 +2056,12 @@ adminRouter.put('/packages/:id', async (c) => {
 
     await c.env.DB.prepare(
       `UPDATE Services SET
-        name = ?, description = ?, price = ?, duration_minutes = ?, is_active = ?,
+        name = ?, description = ?, price = ?, duration_minutes = ?, full_day = ?, is_active = ?,
         best_for = ?, image_url = ?, image_alt = ?, photo_count = ?, outfits = ?,
         currency = ?, booking_mode = ?, additional_people = ?, display_order = ?
       WHERE id = ?`
     ).bind(
-      name, description, cleanPrice, cleanDuration, isActive,
+      name, description, cleanPrice, cleanDuration, fullDay, isActive,
       bestFor, imageUrl, imageAlt, photoCount, outfits,
       currency, bookingMode, additionalPeople, displayOrder,
       id
@@ -2048,6 +2077,7 @@ adminRouter.put('/packages/:id', async (c) => {
         description,
         price: cleanPrice,
         duration_minutes: cleanDuration,
+        full_day: fullDay === 1,
         is_active: isActive,
         best_for: bestFor,
         image_url: imageUrl,

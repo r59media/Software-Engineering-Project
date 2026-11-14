@@ -46,9 +46,9 @@ app.use('*', async (c, next) => {
   await next()
   c.header(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client https://web.squarecdn.com https://sandbox.web.squarecdn.com; connect-src 'self' https://accounts.google.com/gsi/ https://connect.squareup.com https://pci-connect.squareup.com https://pci-connect.squareupsandbox.com; frame-src https://accounts.google.com/gsi/ https://web.squarecdn.com https://sandbox.web.squarecdn.com; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; worker-src 'self'; object-src 'none'; base-uri 'self'"
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client https://cdn.jsdelivr.net https://web.squarecdn.com https://sandbox.web.squarecdn.com; connect-src 'self' https://accounts.google.com/gsi/ https://connect.squareup.com https://pci-connect.squareup.com https://pci-connect.squareupsandbox.com; frame-src https://accounts.google.com/gsi/ https://web.squarecdn.com https://sandbox.web.squarecdn.com; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; worker-src 'self'; object-src 'none'; base-uri 'self'"
   )
-  c.header('X-Frame-Options', 'DENY')
+  c.header('X-Frame-Options', 'SAMEORIGIN')
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
   c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
@@ -116,8 +116,8 @@ async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, file
   const sig = c.req.query('sig')
   if (exp && sig) {
     const key = fileKey || decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-    const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
-    const valid = await verifyMediaSignature(key, Number(exp), sig, secret)
+    const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || getSigningSecret(c.env)
+    const valid = secret ? await verifyMediaSignature(key, Number(exp), sig, secret) : false
     if (valid) return true
   }
 
@@ -173,8 +173,8 @@ app.use('*', async (c, next) => {
       const sigParam = url.searchParams.get('sig')
       if (expParam || sigParam) {
         const fileKey = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-        const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
-        const isValid = expParam && sigParam ? await verifyMediaSignature(fileKey, Number(expParam), sigParam, secret) : false
+        const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || getSigningSecret(c.env)
+        const isValid = secret && expParam && sigParam ? await verifyMediaSignature(fileKey, Number(expParam), sigParam, secret) : false
         if (!isValid) {
           return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
         }
@@ -566,10 +566,10 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
 
   const exp = c.req.query('exp')
   const sig = c.req.query('sig')
-  const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
+  const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || getSigningSecret(c.env)
 
   if (exp || sig) {
-    const isValid = exp && sig ? await verifyMediaSignature(fileKey, Number(exp), sig, secret) : false
+    const isValid = secret && exp && sig ? await verifyMediaSignature(fileKey, Number(exp), sig, secret) : false
     if (!isValid) {
       return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
     }

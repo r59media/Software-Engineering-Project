@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { motion, useReducedMotion } from 'motion/react'
+import { computeSessionPricing } from '../../api/client'
 import { previewBookingServices } from '../../config/booking'
 import type { BookingServicesProps, ServiceSelection } from '../../types/booking'
 import { BookingProgressBar } from './BookingProgressBar'
@@ -7,6 +8,7 @@ import './BookingServices.css'
 
 export function BookingServices({
   services = previewBookingServices,
+  pricing = null,
   status = 'ready',
   onRetry,
   onContinue,
@@ -162,18 +164,15 @@ export function BookingServices({
                   const active = selected?.id === service.id
                   const people = active ? validSelection?.people ?? 1 : service.additionalPeople?.includedPeople ?? 1
                   const extra = service.additionalPeople
+                  const breakdown = computeSessionPricing(service, people, pricing)
                   const price =
-                    service.priceMinor === null
+                    breakdown.subtotalMinor === null
                       ? 'Custom pricing'
                       : new Intl.NumberFormat('en-US', {
                           style: 'currency',
                           currency: service.currency,
                           maximumFractionDigits: 2,
-                        }).format(
-                          (service.priceMinor +
-                            (extra ? Math.max(0, people - extra.includedPeople) * (extra.extraPersonPriceMinor ?? 0) : 0)) /
-                            100
-                        )
+                        }).format(breakdown.subtotalMinor / 100)
                   return (
                     <article
                       key={service.id}

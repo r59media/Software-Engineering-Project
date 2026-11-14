@@ -165,7 +165,7 @@
         return heic2anyLoadingPromise;
     }
     /**
-     * Decode HEIC/HEIF files to a standard Blob (JPEG).
+     * Decode HEIC/HEIF files to a lossless PNG Blob.
      * Tries native createImageBitmap first (Safari / macOS), falling back to heic2any.
      * @param {File|Blob} file
      * @returns {Promise<Blob>}
@@ -182,7 +182,7 @@
                     ctx.drawImage(bitmap, 0, 0);
                     if (typeof bitmap.close === 'function')
                         bitmap.close();
-                    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 1.0));
+                    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
                     if (blob)
                         return blob;
                 }
@@ -194,8 +194,7 @@
         const heic2any = await loadHeic2Any();
         const result = await heic2any({
             blob: file,
-            toType: 'image/jpeg',
-            quality: 1.0
+            toType: 'image/png'
         });
         return Array.isArray(result) ? result[0] : result;
     }
@@ -317,7 +316,8 @@
         }
         return encoderWorker;
     }
-    function encodeViaWorker(rgbaBuffer, width, height, targetWidth, targetHeight, timeoutMs = 60000) {
+    function encodeViaWorker(rgbaBuffer, width, height, targetWidth, targetHeight, timeoutMs = 60000, quality = 0.92) {
+        const normalizedQuality = Math.max(1, Math.min(100, Math.round(quality <= 1 ? quality * 100 : quality)));
         return new Promise((resolve, reject) => {
             try {
                 const worker = getEncoderWorker();
@@ -338,7 +338,7 @@
                         reject(err);
                     }
                 });
-                worker.postMessage({ id, rgbaBuffer, width, height, targetWidth, targetHeight }, [rgbaBuffer]);
+                worker.postMessage({ id, rgbaBuffer, width, height, targetWidth, targetHeight, quality: normalizedQuality }, [rgbaBuffer]);
             }
             catch (err) {
                 reject(err);
@@ -499,7 +499,7 @@
                 targetWidth = Math.round(width * scale);
                 targetHeight = Math.round(height * scale);
             }
-            const workerRes = await encodeViaWorker(rgbaBuffer, width, height, targetWidth, targetHeight);
+            const workerRes = await encodeViaWorker(rgbaBuffer, width, height, targetWidth, targetHeight, 60000, requestedQuality);
             webpBlob = new Blob([workerRes.webpBuffer], { type: 'image/webp' });
             finalWidth = workerRes.width;
             finalHeight = workerRes.height;

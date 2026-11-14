@@ -14,6 +14,7 @@ import type { BookingFormErrors } from './bookingValidation'
 export function BookingYourInfo({
   service,
   people,
+  pricing = null,
   dateTime,
   initialInfo,
   onSubmit,
@@ -330,6 +331,7 @@ export function BookingYourInfo({
           <BookingSessionCard
             service={service}
             people={people}
+            pricing={pricing}
             dateTime={dateTime}
             hideDateHighlight
             continueText={busy ? 'Submitting...' : 'Continue to summary'}

@@ -140,6 +140,24 @@
       validate: v => isEmpty(v) || isWholeInRange(v, 0, 50),
       attrs: { min: '0', max: '50' }
     },
+    packagePhotoCount: {
+      message: 'Enter a whole number of photos from 0 to 5,000, or leave it empty.',
+      validate: v => isEmpty(v) || isWholeInRange(v, 0, 5000),
+      attrs: { min: '0', max: '5000' }
+    },
+    packageAdditionalPeople: {
+      message: 'Must be valid JSON, e.g. {"includedPeople": 1} or leave blank.',
+      validate: v => {
+        if (isEmpty(v)) return true;
+        const s = String(v).trim();
+        try {
+          const parsed = JSON.parse(s);
+          return typeof parsed === 'object' && parsed !== null;
+        } catch {
+          return isWholeInRange(s, 0, 500);
+        }
+      }
+    },
     /** Value-level check of a stored total (the review fallback when the fields are not rendered). */
     packageDuration: {
       message: SESSION_LENGTH_MESSAGE,
@@ -149,22 +167,24 @@
 
   /**
    * Rules for one Session length group: the hours field carries the total-length message, the
-   * minutes field its own 0–59 message. With "Entire day" ticked both pass (the fields are disabled).
+   * minutes field its own 0–59 message. With "Entire day" ticked (or blank in "inquiry" mode) both pass.
    */
-  function sessionLengthRules(hoursEl, minutesEl, fullDayEl) {
+  function sessionLengthRules(hoursEl, minutesEl, fullDayEl, bookingModeEl) {
     const off = () => Boolean(fullDayEl && fullDayEl.checked);
+    const customInquiryOk = () => Boolean(bookingModeEl && bookingModeEl.value === 'inquiry') &&
+      isEmpty(hoursEl ? hoursEl.value : '') && isEmpty(minutesEl ? minutesEl.value : '');
     const minutesOk = v => isEmpty(v) || isWholeInRange(v, 0, 59);
     return {
       hours: {
         message: SESSION_LENGTH_MESSAGE,
         // a bad minutes value is reported on the minutes field only
-        validate: v => off() || !minutesOk(minutesEl ? minutesEl.value : '') ||
+        validate: v => off() || customInquiryOk() || !minutesOk(minutesEl ? minutesEl.value : '') ||
           ((isEmpty(v) || isWholeInRange(v, 0, 24)) && isSessionLength(sessionMinutes(v, minutesEl ? minutesEl.value : ''))),
         attrs: { inputMode: 'numeric', min: '0', max: '24' }
       },
       minutes: {
         message: SESSION_MINUTES_MESSAGE,
-        validate: v => off() || minutesOk(v),
+        validate: v => off() || customInquiryOk() || minutesOk(v),
         attrs: { inputMode: 'numeric', min: '0', max: '59' }
       }
     };

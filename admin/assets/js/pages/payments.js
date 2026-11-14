@@ -275,13 +275,27 @@
               ${errorHtml(ids.m)}
             </div>`;
     }
-    function bindSession(els) {
+    function bindSession(els, bookingModeEl) {
         const fv = R().formValidation;
         if (!fv?.sessionLengthRules || !els.h || !els.m)
             return;
-        const rules = fv.sessionLengthRules(els.h, els.m, els.day);
+        const rules = fv.sessionLengthRules(els.h, els.m, els.day, bookingModeEl);
         fv.bind(els.h, rules.hours);
         fv.bind(els.m, rules.minutes);
+    }
+    function packagePriceRule(bookingModeEl) {
+        const fv = R().formValidation;
+        const base = fv?.rules?.packagePrice;
+        return {
+            message: base?.message || 'Enter a price of 0 or more.',
+            validate: v => {
+                const isEmpty = v === null || v === undefined || String(v).trim() === '';
+                if (bookingModeEl?.value === 'inquiry' && isEmpty)
+                    return true;
+                return base ? base.validate(v) : (!isEmpty && Number(v) >= 0);
+            },
+            attrs: { min: '0' }
+        };
     }
     /** Each field's rule reads the other one, so both are re-checked together. */
     function revalidateSession(els, show = false) {
@@ -517,7 +531,7 @@
                 <button type="button" class="btn btn--ghost btn--sm" data-pkg-price-edit="${id}" aria-controls="${pkgField(id, 'price')}" aria-pressed="${priceEdited ? 'true' : 'false'}"><svg class="ico" aria-hidden="true"><use href="#i-edit"/></svg><span class="price-edit-text">${priceEdited ? 'Finish editing' : 'Edit price'}</span></button>
               </div>
               <div class="field__control">
-                <input class="field__input num" id="${pkgField(id, 'price')}" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(priceVal)}" ${priceEdited ? '' : 'readonly'} data-pkg-input="price">
+                <input class="field__input num" id="${pkgField(id, 'price')}" type="number" inputmode="decimal" min="0" step="0.01" value="${esc(priceVal)}" placeholder="${bookingMode === 'inquiry' ? 'Custom' : ''}" ${priceEdited ? '' : 'readonly'} data-pkg-input="price">
               </div>
             </div>
             <div class="field">
@@ -561,7 +575,7 @@
                   <input type="file" accept="image/*" class="sr-only" data-pkg-image-file="${id}">
                 </label>
               </div>
-              ${imgUrl ? `<div class="pay-pkg-img-preview" style="margin-top:0.5rem;"><img src="${esc(imgUrl)}" alt="${esc(name || 'Package')} preview" style="max-height:80px;border-radius:2px;object-fit:cover;" onerror="this.parentElement.hidden=true"></div>` : ''}
+              <div class="pay-pkg-img-preview" style="margin-top:0.5rem;"${imgUrl ? '' : ' hidden'}><img src="${esc(imgUrl)}" alt="${esc(name || 'Package')} preview" style="max-height:80px;border-radius:2px;object-fit:cover;"></div>
             </div>
             <div class="field">
               <label class="field__label" for="${pkgField(id, 'additional_people')}">Additional people</label>
@@ -631,11 +645,19 @@
             const outfits = document.getElementById(pkgField(pkg.id, 'outfits'));
             const photoCount = document.getElementById(pkgField(pkg.id, 'photo_count'));
             const additionalPeople = document.getElementById(pkgField(pkg.id, 'additional_people'));
+            const bookingModeEl = document.getElementById(pkgField(pkg.id, 'booking_mode'));
             const session = sessionEls(sessionIds(pkg.id));
+            const previewImg = document.querySelector(`#card-pkg-${CSS.escape(String(pkg.id))} .pay-pkg-img-preview img`);
+            previewImg?.addEventListener('error', () => {
+                if (previewImg.parentElement)
+                    previewImg.parentElement.hidden = true;
+            });
             fv?.bind?.(name, fv.rules?.packageName);
-            fv?.bind?.(price, fv.rules?.packagePrice);
+            fv?.bind?.(price, bookingModeEl ? packagePriceRule(bookingModeEl) : fv.rules?.packagePrice);
             fv?.bind?.(outfits, fv.rules?.packageOutfits);
-            bindSession(session);
+            fv?.bind?.(photoCount, fv.rules?.packagePhotoCount);
+            fv?.bind?.(additionalPeople, fv.rules?.packageAdditionalPeople);
+            bindSession(session, bookingModeEl);
             // keep an invalid unsaved value visibly flagged after a re-render
             const sp = savedPkg(pkg.id);
             if (name && name.value !== String(sp?.name ?? name.value))
@@ -644,18 +666,12 @@
                 fv?.validate?.(price);
             if (outfits && String(numValue(sp?.outfits)) !== outfits.value)
                 fv?.validate?.(outfits);
+            if (photoCount && String(numValue(sp?.photo_count)) !== photoCount.value)
+                fv?.validate?.(photoCount);
+            if (additionalPeople && String(sp?.additional_people ?? '') !== additionalPeople.value.trim())
+                fv?.validate?.(additionalPeople);
             if (pkg.full_day !== true && (sp?.full_day === true || String(numValue(sp?.duration_minutes)) !== String(sessionTotal(session)))) {
                 revalidateSession(session, true);
-            }
-            if (photoCount && photoCount.value !== '') {
-                const pcRes = validatePhotoCount(photoCount.value);
-                if (!pcRes.valid)
-                    showFieldError(photoCount, pcRes.message);
-            }
-            if (additionalPeople && additionalPeople.value !== '') {
-                const apRes = validateAdditionalPeople(additionalPeople.value);
-                if (!apRes.valid)
-                    showFieldError(additionalPeople, apRes.message);
             }
         });
         numberFrames();
@@ -739,19 +755,19 @@
             pkg.bestFor = input.value;
         }
         else if (kind === 'booking_mode') {
-            pkg.booking_mode = input.value;
-            pkg.bookingMode = input.value;
+            pkg.booking_mode = input.value === 'inquiry' ? 'inquiry' : 'direct';
+            pkg.bookingMode = pkg.booking_mode;
+            const session = sessionEls(sessionIds(pkg.id));
+            revalidateSession(session, true);
+            const priceEl = document.getElementById(pkgField(pkg.id, 'price'));
+            if (priceEl) {
+                priceEl.placeholder = pkg.booking_mode === 'inquiry' ? 'Custom' : '';
+                R().formValidation?.revalidate?.(priceEl);
+            }
         }
         else if (kind === 'photo_count') {
-            const check = validatePhotoCount(input.value);
-            if (check.valid) {
-                clearFieldError(input);
-                pkg.photo_count = input.value === '' ? null : check.value;
-                pkg.photoCount = pkg.photo_count;
-            }
-            else {
-                showFieldError(input, check.message);
-            }
+            pkg.photo_count = numFromInput(input);
+            pkg.photoCount = pkg.photo_count;
         }
         else if (kind === 'image_url') {
             pkg.image_url = input.value.trim();
@@ -770,14 +786,8 @@
         }
         else if (kind === 'additional_people') {
             const check = validateAdditionalPeople(input.value);
-            if (check.valid) {
-                clearFieldError(input);
-                pkg.additional_people = input.value.trim();
-                pkg.additionalPeople = check.parsed;
-            }
-            else {
-                showFieldError(input, check.message);
-            }
+            pkg.additional_people = input.value.trim();
+            pkg.additionalPeople = check.valid ? check.parsed : undefined;
         }
         st().markDirty();
     }
@@ -940,9 +950,9 @@
             [outfitsEl, outfitsEl ? check(outfitsEl, true) : true],
             [photoCountEl, pcCheck.valid],
             [additionalPeopleEl, apCheck.valid],
-            // Entire day: the length fields are disabled and not checked
-            [session.h, fullDay || check(session.h, Number.isInteger(total) && total >= 15 && total <= 1440)],
-            [session.m, fullDay || check(session.m, true)]
+            // Entire day (or blank duration on an inquiry package): length fields are valid
+            [session.h, fullDay || (!isDirect && total === '') || check(session.h, Number.isInteger(total) && total >= 15 && total <= 1440)],
+            [session.m, fullDay || (!isDirect && total === '') || check(session.m, true)]
         ];
         const firstBad = checks.find(([, ok]) => !ok);
         if (firstBad) {
@@ -953,7 +963,7 @@
         const price = priceEl.value !== '' ? parseFloat(priceEl.value) : (isDirect ? 0 : null);
         const description = (descEl?.value || '').trim();
         const outfits = outfitsEl && outfitsEl.value !== '' ? Number(outfitsEl.value) : null;
-        const durationMinutes = fullDay ? FULL_DAY_MINUTES : total;
+        const durationMinutes = fullDay ? FULL_DAY_MINUTES : (total === '' ? null : total);
         const best_for = (bestForEl?.value || '').trim() || null;
         const photo_count = pcCheck.valid && photoCountEl && photoCountEl.value !== '' ? Number(photoCountEl.value) : null;
         const image_url = (imageEl?.value || '').trim() || null;
@@ -1047,14 +1057,19 @@
     }
     function initPackageListeners() {
         const fv = R().formValidation;
+        const newBookingMode = $('#pkgNewBookingMode');
         fv?.bind?.($('#pkgNewName'), fv.rules?.packageName);
-        fv?.bind?.($('#pkgNewPrice'), fv.rules?.packagePrice);
+        fv?.bind?.($('#pkgNewPrice'), newBookingMode ? packagePriceRule(newBookingMode) : fv.rules?.packagePrice);
         fv?.bind?.($('#pkgNewOutfits'), fv.rules?.packageOutfits);
         const newSession = sessionEls(NEW_SESSION_IDS);
-        bindSession(newSession);
+        bindSession(newSession, newBookingMode);
         newSession.h?.addEventListener('input', () => revalidateSession(newSession));
         newSession.m?.addEventListener('input', () => revalidateSession(newSession));
         newSession.day?.addEventListener('change', () => applyFullDay(newSession));
+        newBookingMode?.addEventListener('change', () => {
+            revalidateSession(newSession, true);
+            fv?.revalidate?.($('#pkgNewPrice'));
+        });
         $('#addPackageBtn')?.addEventListener('click', openAddForm);
         $('#pkgNewCancel')?.addEventListener('click', () => closeAddForm({ focusButton: true }));
         $('#pkgAddForm')?.addEventListener('submit', submitAddForm);
@@ -1093,6 +1108,9 @@
             }
         });
         list.addEventListener('change', e => {
+            const selectEl = e.target.closest?.('select[data-pkg-input]');
+            if (selectEl)
+                onPackageInput(e);
             const toggle = e.target.closest?.('[data-pkg-toggle]');
             if (toggle)
                 onPackageToggle(toggle);

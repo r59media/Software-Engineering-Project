@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { BookingReviewDraft, BookingService } from '../../types/booking'
-import { submitCheckout, fetchPricing, validateCoupon, type PricingData } from '../../api/client'
+import { computeSessionPricing, submitCheckout, fetchPricing, validateCoupon, type PricingData } from '../../api/client'
 import { fallbackBookingDepositPercent } from '../../config/booking'
 
 declare global {
@@ -178,17 +178,16 @@ export function DepositCheckoutModal({
 
   const slotId = draft.dateTime?.slotId ?? draft.slotId ?? draft.slot_id
 
-  const depositPercent = pricing?.depositPercent ?? fallbackBookingDepositPercent
   const currency = pricing?.currency || service?.currency || 'USD'
   const formatCurrency = (val: number) =>
     new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(val)
 
-  const pkgPriceDollars = (service?.priceMinor ?? 0) / 100
-  const baseFeeDollars = Number(pricing?.baseFee) || 0
-  const perPersonDollars = Number(pricing?.perPerson) || 0
   const attendees = draft.people || 1
-  const attendeeFeeDollars = perPersonDollars * attendees
-  const subtotalDollars = pkgPriceDollars + baseFeeDollars + attendeeFeeDollars
+  const breakdown = computeSessionPricing(service, attendees, pricing, fallbackBookingDepositPercent)
+  const depositPercent = breakdown.depositPercent
+  const baseFeeDollars = breakdown.baseFeeMinor / 100
+  const attendeeFeeDollars = breakdown.extraPeopleFeeMinor / 100
+  const subtotalDollars = (breakdown.subtotalMinor ?? 0) / 100
 
   let discountDollars = 0
   if (appliedCoupon && subtotalDollars > 0) {

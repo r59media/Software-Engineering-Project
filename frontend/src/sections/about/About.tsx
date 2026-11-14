@@ -9,7 +9,9 @@ import './About.css'
 
 export function About({ content = aboutContent }: { content?: AboutContent }) {
   const { portrait, paragraphs, profile } = useAboutData()
+  const location = typeof profile?.location === 'string' ? profile.location.trim() : ''
   const travel = typeof profile?.travel === 'string' ? profile.travel.trim() : profile?.travel ? 'Available for travel' : ''
+  const studioNote = [location ? `Based in ${location}` : '', travel].filter(Boolean).join(' · ')
 
   return (
     <section id="about" className="about" aria-labelledby="about-heading">
@@ -35,9 +37,9 @@ export function About({ content = aboutContent }: { content?: AboutContent }) {
               </p>
             ))}
           </div>
-          {travel ? (
+          {studioNote ? (
             <p className="about__paragraph about__travel" style={{ fontStyle: 'italic', marginTop: '1rem' }}>
-              {travel}
+              {studioNote}
             </p>
           ) : null}
           <AboutLens />

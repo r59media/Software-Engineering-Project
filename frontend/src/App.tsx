@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import './styles/global.css'
-import { fetchBookingServices, fetchHeroSlides } from './api/client'
+import { fetchBookingServices, fetchHeroSlides, fetchPricing, submitContactLead, type PricingData } from './api/client'
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
 import { previewBookingServices } from './config/booking'
@@ -12,12 +12,14 @@ import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
 import type { BookingReviewDraft, BookingService } from './types/booking'
+import type { ContactInquiry } from './types/contact'
 import { DepositCheckoutModal } from './sections/booking/DepositCheckoutModal'
 import { LegalPage } from './pages/legal/LegalPage'
 
 function App() {
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
   const [bookingServices, setBookingServices] = useState<readonly BookingService[]>(previewBookingServices)
+  const [pricing, setPricing] = useState<PricingData | null>(null)
   const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
   const [depositDraft, setDepositDraft] = useState<BookingReviewDraft | null>(null)
   const baseUrl = import.meta.env.BASE_URL
@@ -32,16 +34,44 @@ function App() {
 
   const loadBookingServices = useCallback(async () => {
     try {
-      const services = await fetchBookingServices()
+      const [services, livePricing] = await Promise.all([
+        fetchBookingServices(),
+        fetchPricing(),
+      ])
       if (services && services.length > 0) {
         setBookingServices(services)
       } else {
         setBookingServices(previewBookingServices)
       }
+      if (livePricing) {
+        setPricing(livePricing)
+      }
       setBookingStatus('ready')
     } catch {
       setBookingServices(previewBookingServices)
       setBookingStatus('ready')
+    }
+  }, [])
+
+  const handleSendInquiry = useCallback(async (inquiry: ContactInquiry) => {
+    const extraParts = [
+      inquiry.eventDate?.trim() ? `Target date: ${inquiry.eventDate.trim()}` : '',
+      inquiry.location?.trim() ? `Location: ${inquiry.location.trim()}` : '',
+    ].filter(Boolean)
+    const combinedMessage = extraParts.length > 0
+      ? `${extraParts.join(' | ')}\n\n${inquiry.message.trim()}`
+      : inquiry.message.trim()
+
+    const result = await submitContactLead({
+      name: inquiry.name.trim(),
+      email: inquiry.email.trim(),
+      phone: inquiry.phone.trim() || undefined,
+      session_type: inquiry.inquiryType || 'Other',
+      message: combinedMessage,
+    })
+
+    if (result.status !== 'success') {
+      throw new Error(result.message || 'Unable to send inquiry.')
     }
   }, [])
 
@@ -157,12 +187,13 @@ function App() {
       <PortfolioGallery />
       <BookingSection
         services={bookingServices}
+        pricing={pricing}
         status={bookingStatus}
         onRetry={loadBookingServices}
         inquiryHref="#contact"
         onProceedToDeposit={draft => setDepositDraft(draft)}
       />
-      <ContactSection />
+      <ContactSection onSendInquiry={handleSendInquiry} />
     </main>
     <SiteFooter />
     {depositDraft && (

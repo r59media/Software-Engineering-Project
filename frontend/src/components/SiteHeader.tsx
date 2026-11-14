@@ -11,7 +11,32 @@ import closeIcon from '../assets/navigation/close.svg'
 import menuIcon from '../assets/navigation/menu.svg'
 import './SiteHeader.css'
 
-const socialIcons = { Instagram: instagram, Threads: threads, X: x }
+const socialIcons: Record<string, string> = {
+  instagram,
+  threads,
+  x,
+  twitter: x,
+}
+
+function renderSocialIcon(platform: string) {
+  const key = platform.trim().toLowerCase()
+  if (key === 'facebook') {
+    return (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M13.5 21v-7.5h2.5l.4-3h-2.9V8.6c0-.9.3-1.5 1.5-1.5h1.6V4.4c-.3 0-1.3-.1-2.4-.1-2.4 0-4 1.4-4 4.1v2.1H7.7v3h2.5V21h3.3Z" />
+      </svg>
+    )
+  }
+  if (key === 'pinterest') {
+    return (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M12.2 3C7.4 3 4.5 6.3 4.5 9.8c0 1.6.9 3.6 2.3 4.2.2.1.4 0 .4-.2l.3-1.3c0-.1 0-.3-.1-.4-.5-.6-.9-1.5-.9-2.5 0-2.5 1.9-4.7 4.9-4.7 2.6 0 4.4 1.7 4.4 4.1 0 2.8-1.4 4.9-3.3 4.9-1 0-1.8-.9-1.6-2 .3-1.2.9-2.6.9-3.5 0-.8-.4-1.5-1.4-1.5-1.1 0-2 1.1-2 2.6 0 .9.3 1.6.3 1.6l-1.3 5.4c-.3 1.4 0 3.2 0 3.4 0 .1.2.2.3.1.1-.2 1.4-1.8 1.9-3.3l.7-2.6c.4.7 1.4 1.3 2.5 1.3 3.3 0 5.7-3 5.7-6.9C19.5 6 16.4 3 12.2 3Z" />
+      </svg>
+    )
+  }
+  const src = socialIcons[key] || instagram
+  return <img src={src} alt="" />
+}
 
 function getSocialLinks(profileSocial: unknown): Array<{ platform: string; href: string }> {
   if (!profileSocial) return []
@@ -161,16 +186,13 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
         {resolvedSocials.length > 0 && (
           <div className="mobile-navigation__connect">
             <h2>CONNECT</h2>
-            <ul>{resolvedSocials.map(({ platform, href }) => {
-              const icon = socialIcons[platform as keyof typeof socialIcons] || socialIcons.Instagram
-              return (
+            <ul>{resolvedSocials.map(({ platform, href }) => (
                 <li key={platform}>
                   {href && /^https:\/\//.test(href)
-                    ? <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`${platform} (opens in a new tab)`}><img src={icon} alt="" /></a>
-                    : <span role="link" aria-disabled="true" aria-label={`${platform} — link coming soon`} title="Link coming soon"><img src={icon} alt="" /></span>}
+                    ? <a href={href} target="_blank" rel="noopener noreferrer" aria-label={`${platform} (opens in a new tab)`}>{renderSocialIcon(platform)}</a>
+                    : <span role="link" aria-disabled="true" aria-label={`${platform} — link coming soon`} title="Link coming soon">{renderSocialIcon(platform)}</span>}
                 </li>
-              )
-            })}</ul>
+            ))}</ul>
           </div>
         )}
         <div className="mobile-navigation__legal"><ActionLink href={`${import.meta.env.BASE_URL}terms-and-conditions`} onNavigate={closeMenu}>Terms and conditions</ActionLink><span aria-hidden="true">·</span><ActionLink href={`${import.meta.env.BASE_URL}privacy-policy`} onNavigate={closeMenu}>Privacy Policy</ActionLink></div>

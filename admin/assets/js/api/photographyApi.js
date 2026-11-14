@@ -90,7 +90,16 @@
                 'Content-Type': contentType,
                 'X-Requested-With': 'XMLHttpRequest'
             };
-            const authToken = client()?.getAuthToken?.();
+            const api = client();
+            if (api?.request) {
+                await api.request(target.uploadUrl, {
+                    method: 'PUT',
+                    headers,
+                    body: file
+                });
+                return { key, url: target.publicUrl || mediaUrlForKey(key) };
+            }
+            const authToken = api?.getAuthToken?.();
             if (authToken) {
                 headers['Authorization'] = `Bearer ${authToken}`;
             }

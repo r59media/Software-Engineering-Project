@@ -1,6 +1,7 @@
 import type { PointerEvent } from 'react'
 import { motion } from 'motion/react'
 import { useTicketMotion } from './useTicketMotion'
+import { computeSessionPricing } from '../../api/client'
 import { previewBookingDepositPercent } from '../../config/booking'
 import type { BookingSessionCardProps } from '../../types/booking'
 import './BookingSessionCard.css'
@@ -8,6 +9,7 @@ import './BookingSessionCard.css'
 export function BookingSessionCard({
   service,
   people,
+  pricing,
   dateTime,
   continueText,
   onContinue,
@@ -15,11 +17,8 @@ export function BookingSessionCard({
   hideDateHighlight = false,
 }: BookingSessionCardProps) {
   const { shared, transition } = useTicketMotion()
-  const extra = service.additionalPeople
-  const extraPeople = extra ? Math.max(0, people - extra.includedPeople) : 0
-  const extraCostMinor = extra ? extraPeople * (extra.extraPersonPriceMinor ?? 0) : 0
-  const isCustomPrice = service.priceMinor === null
-  const totalMinor = isCustomPrice ? null : (service.priceMinor ?? 0) + extraCostMinor
+  const breakdown = computeSessionPricing(service, people, pricing, previewBookingDepositPercent)
+  const totalMinor = breakdown.subtotalMinor
 
   const formatCurrency = (minor: number) =>
     new Intl.NumberFormat('en-US', {
@@ -112,7 +111,7 @@ export function BookingSessionCard({
             <div className="booking-session-card__price-block">
               <motion.div layout="position" layoutId={shared ? 'booking-ticket-price' : undefined} transition={transition} className="booking-session-card__price-amount">{formattedPrice}</motion.div>
               <div className="booking-session-card__price-note">
-                {previewBookingDepositPercent}% deposit to reserve
+                {breakdown.depositPercent}% deposit to reserve
               </div>
             </div>
           </div>

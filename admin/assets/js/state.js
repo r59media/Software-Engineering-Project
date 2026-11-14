@@ -97,14 +97,34 @@
             return false;
         return !String(pkg.id).startsWith('pkg_'); // legacy local drafts never count as settings
     }
+    function normAp(v) {
+        if (v === undefined || v === null || v === '')
+            return '';
+        if (typeof v === 'object')
+            return JSON.stringify(v);
+        const s = String(v).trim();
+        if (!s)
+            return '';
+        try {
+            return JSON.stringify(JSON.parse(s));
+        }
+        catch {
+            return s;
+        }
+    }
     function packageSetting(pkg) {
         return {
             name: pkg.name ?? '',
             price: pkg.price ?? '',
             description: pkg.description ?? '',
-            outfits: pkg.outfits ?? '',
-            duration_minutes: pkg.duration_minutes ?? '',
-            full_day: pkg.full_day === true
+            outfits: pkg.outfits === null || pkg.outfits === undefined ? '' : pkg.outfits,
+            duration_minutes: pkg.duration_minutes === null || pkg.duration_minutes === undefined ? '' : pkg.duration_minutes,
+            full_day: pkg.full_day === true,
+            best_for: pkg.best_for ?? pkg.bestFor ?? '',
+            booking_mode: (pkg.booking_mode ?? pkg.bookingMode) === 'inquiry' ? 'inquiry' : 'direct',
+            photo_count: pkg.photo_count === null || pkg.photo_count === undefined ? '' : pkg.photo_count,
+            image_url: pkg.image_url ?? pkg.imageUrl ?? '',
+            additional_people: normAp(pkg.additional_people ?? pkg.additionalPeople)
         };
     }
     function getSettings() {
@@ -146,8 +166,30 @@
         if (snap.packages && typeof snap.packages === 'object') {
             (Array.isArray(state.packages) ? state.packages : []).forEach(pkg => {
                 const p = hasServerId(pkg) ? snap.packages[pkg.id] : null;
-                if (p)
+                if (p) {
                     Object.assign(pkg, p);
+                    pkg.bestFor = p.best_for ?? '';
+                    pkg.bookingMode = p.booking_mode ?? 'direct';
+                    pkg.photoCount = p.photo_count ?? '';
+                    pkg.imageUrl = p.image_url ?? '';
+                    if (pkg.imageUrl) {
+                        pkg.image = { url: pkg.imageUrl, alt: pkg.image_alt || pkg.name || '' };
+                    }
+                    else {
+                        pkg.image = undefined;
+                    }
+                    if (p.additional_people) {
+                        try {
+                            pkg.additionalPeople = JSON.parse(p.additional_people);
+                        }
+                        catch {
+                            pkg.additionalPeople = null;
+                        }
+                    }
+                    else {
+                        pkg.additionalPeople = null;
+                    }
+                }
             });
         }
     }

@@ -95,17 +95,26 @@ export function mapServiceRow(s: any) {
     title: s.name,
     description: s.description || '',
     bestFor: s.best_for || '',
+    best_for: s.best_for || '',
     image: s.image_url ? { url: s.image_url, alt: s.image_alt || s.name } : undefined,
+    image_url: s.image_url || null,
+    image_alt: s.image_alt || null,
     durationMinutes: s.duration_minutes !== null && s.duration_minutes !== undefined ? Number(s.duration_minutes) : null,
     photoCount: s.photo_count !== null && s.photo_count !== undefined ? Number(s.photo_count) : undefined,
+    photo_count: s.photo_count !== null && s.photo_count !== undefined ? Number(s.photo_count) : null,
     outfits: s.outfits !== null && s.outfits !== undefined ? Number(s.outfits) : undefined,
+    full_day: Boolean(s.full_day),
+    fullDay: Boolean(s.full_day),
     priceMinor: s.price !== null && s.price !== undefined ? Number(s.price) : null,
     price: s.price !== null && s.price !== undefined ? Number(s.price) : 0, // backwards-compatibility for existing admin callers
     duration_minutes: s.duration_minutes,
     currency: s.currency || 'USD',
     bookingMode: (s.booking_mode || 'direct') as 'direct' | 'inquiry',
+    booking_mode: (s.booking_mode || 'direct') as 'direct' | 'inquiry',
     additionalPeople,
+    additional_people: additionalPeople ?? null,
     displayOrder: s.display_order ?? 0,
+    display_order: s.display_order ?? 0,
     isActive: s.is_active !== 0,
     is_active: s.is_active
   }
@@ -125,6 +134,7 @@ export async function ensureServicesSchemaAndDefaults(db: D1Database): Promise<v
         duration_minutes INTEGER,
         photo_count INTEGER,
         outfits INTEGER,
+        full_day INTEGER DEFAULT 0,
         currency TEXT DEFAULT 'USD',
         booking_mode TEXT DEFAULT 'direct',
         additional_people TEXT,
@@ -140,6 +150,7 @@ export async function ensureServicesSchemaAndDefaults(db: D1Database): Promise<v
       'ALTER TABLE Services ADD COLUMN image_alt TEXT',
       'ALTER TABLE Services ADD COLUMN photo_count INTEGER',
       'ALTER TABLE Services ADD COLUMN outfits INTEGER',
+      'ALTER TABLE Services ADD COLUMN full_day INTEGER DEFAULT 0',
       'ALTER TABLE Services ADD COLUMN currency TEXT DEFAULT "USD"',
       'ALTER TABLE Services ADD COLUMN booking_mode TEXT DEFAULT "direct"',
       'ALTER TABLE Services ADD COLUMN additional_people TEXT',
@@ -156,9 +167,9 @@ export async function ensureServicesSchemaAndDefaults(db: D1Database): Promise<v
         db.prepare(
           `INSERT INTO Services (
             name, description, best_for, image_url, image_alt,
-            price, duration_minutes, photo_count, outfits,
+            price, duration_minutes, photo_count, outfits, full_day,
             currency, booking_mode, additional_people, display_order, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).bind(
           s.name,
           s.description ?? null,
@@ -169,6 +180,7 @@ export async function ensureServicesSchemaAndDefaults(db: D1Database): Promise<v
           s.duration_minutes !== null && s.duration_minutes !== undefined ? Math.round(Number(s.duration_minutes)) : null,
           s.photo_count !== null && s.photo_count !== undefined ? Math.round(Number(s.photo_count)) : null,
           s.outfits !== null && s.outfits !== undefined ? Math.round(Number(s.outfits)) : null,
+          s.full_day ? 1 : 0,
           s.currency || 'USD',
           s.booking_mode || s.bookingMode || 'direct',
           typeof s.additional_people === 'object' && s.additional_people !== null
@@ -179,6 +191,44 @@ export async function ensureServicesSchemaAndDefaults(db: D1Database): Promise<v
         )
       )
       await db.batch(inserts)
+    } else if (row && row.count > 0) {
+      await db.prepare(
+        'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)'
+      ).run().catch(() => {})
+      const flag = await db.prepare(
+        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'services_defaults_backfilled_v1'"
+      ).first<{ setting_value: string }>().catch(() => null)
+      if (!flag) {
+        const seedList = (defaultPortfolioSeed as any)?.services || DEFAULT_STUDIO_TIERS
+        const updates = seedList.map((s: any) =>
+          db.prepare(
+            `UPDATE Services SET
+              best_for = COALESCE(NULLIF(best_for, ''), ?),
+              photo_count = COALESCE(photo_count, ?),
+              outfits = COALESCE(outfits, ?),
+              booking_mode = COALESCE(NULLIF(booking_mode, ''), ?),
+              additional_people = COALESCE(additional_people, ?),
+              display_order = CASE WHEN display_order IS NULL OR display_order = 0 THEN ? ELSE display_order END
+            WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))`
+          ).bind(
+            s.best_for ?? s.bestFor ?? null,
+            s.photo_count !== null && s.photo_count !== undefined ? Math.round(Number(s.photo_count)) : null,
+            s.outfits !== null && s.outfits !== undefined ? Math.round(Number(s.outfits)) : null,
+            s.booking_mode || s.bookingMode || 'direct',
+            typeof s.additional_people === 'object' && s.additional_people !== null
+              ? JSON.stringify(s.additional_people)
+              : (s.additional_people ?? null),
+            s.display_order ?? s.displayOrder ?? 0,
+            s.name
+          )
+        )
+        updates.push(
+          db.prepare(
+            "INSERT OR REPLACE INTO Admin_Settings (setting_key, setting_value) VALUES ('services_defaults_backfilled_v1', '1')"
+          )
+        )
+        await db.batch(updates).catch(() => {})
+      }
     }
   } catch (err) {
     console.error('[services] ensureServicesSchemaAndDefaults non-fatal error:', err)
@@ -366,6 +416,9 @@ servicesRouter.post('/', adminAuth, async (c) => {
       }
     }
 
+    const rawFullDay = body.full_day !== undefined ? body.full_day : body.fullDay
+    const fullDay = rawFullDay === true || Number(rawFullDay) === 1 ? 1 : 0
+
     const isActive = body.is_active !== undefined
       ? (body.is_active ? 1 : 0)
       : body.active !== undefined
@@ -379,9 +432,9 @@ servicesRouter.post('/', adminAuth, async (c) => {
     const result = await c.env.DB.prepare(
       `INSERT INTO Services (
         name, description, best_for, image_url, image_alt,
-        price, duration_minutes, photo_count, outfits,
+        price, duration_minutes, photo_count, outfits, full_day,
         currency, booking_mode, additional_people, display_order, is_active
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       name,
       description,
@@ -392,6 +445,7 @@ servicesRouter.post('/', adminAuth, async (c) => {
       cleanDuration,
       cleanPhotoCount,
       cleanOutfits,
+      fullDay,
       currency,
       bookingMode,
       cleanAdditionalPeople,
@@ -616,6 +670,11 @@ servicesRouter.put('/:id', adminAuth, async (c) => {
       }
     }
 
+    const rawFullDay = body.full_day !== undefined ? body.full_day : body.fullDay
+    const fullDay = rawFullDay !== undefined
+      ? (rawFullDay === true || Number(rawFullDay) === 1 ? 1 : 0)
+      : (existing.full_day ? 1 : 0)
+
     const isActive = body.is_active !== undefined
       ? (body.is_active ? 1 : 0)
       : body.active !== undefined
@@ -637,6 +696,7 @@ servicesRouter.put('/:id', adminAuth, async (c) => {
         duration_minutes = ?,
         photo_count = ?,
         outfits = ?,
+        full_day = ?,
         currency = ?,
         booking_mode = ?,
         additional_people = ?,
@@ -653,6 +713,7 @@ servicesRouter.put('/:id', adminAuth, async (c) => {
       cleanDuration,
       cleanPhotoCount,
       cleanOutfits,
+      fullDay,
       currency,
       bookingMode,
       cleanAdditionalPeople,
