@@ -243,9 +243,10 @@
     async function request(endpoint, options = {}) {
         const { method = 'GET', headers: optHeaders = {}, body = null, params = null, suppressUnauthorized = false, responseType = null } = options;
         const baseUrl = getBaseUrl();
-        const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+        const isFullUrl = endpoint.startsWith('http://') || endpoint.startsWith('https://');
+        const cleanEndpoint = isFullUrl ? endpoint : (endpoint.startsWith('/') ? endpoint : `/${endpoint}`);
         let url;
-        if (cleanEndpoint.startsWith('http://') || cleanEndpoint.startsWith('https://')) {
+        if (isFullUrl) {
             url = cleanEndpoint;
         }
         else if (baseUrl.endsWith('/api') && cleanEndpoint.startsWith('/api/')) {

@@ -609,7 +609,7 @@
         <article class="frame photo${it.busy ? ' is-busy' : ''}${hidden ? ' is-hidden' : ''}" ${it.busy || it.saving ? 'aria-busy="true"' : ''}>
           <div class="photo__img">
             <button class="photo__pick" type="button" data-act="replace" aria-label="Replace “${esc(label)}”" ${lock ? 'disabled' : ''}>
-              ${src ? `<img data-auth-src="${src}" alt="" loading="lazy" decoding="async">` : '<span class="photo__missing caps">No preview</span>'}
+              ${src ? `<img src="${src}" data-auth-src="${src}" alt="" loading="lazy" decoding="async">` : '<span class="photo__missing caps">No preview</span>'}
             </button>
             ${hidden ? '<span class="tag photo__hidden">Hidden from site</span>' : ''}
             ${busyNoteHtml(it)}
@@ -681,7 +681,7 @@
     const print = target
       ? `<figure class="print" data-idx="${at}">
            <button class="photo__pick" type="button" data-act="replace" aria-label="Replace the About photo" ${lock ? 'disabled' : ''}>
-             ${src ? `<img data-auth-src="${src}" alt="" loading="lazy" decoding="async">` : '<span class="photo__missing caps">No preview</span>'}
+             ${src ? `<img src="${src}" data-auth-src="${src}" alt="" loading="lazy" decoding="async">` : '<span class="photo__missing caps">No preview</span>'}
            </button>
            ${busyNoteHtml(target)}
            <figcaption class="caps"><span>Shown on site</span><span>1 / 1</span></figcaption>
@@ -738,7 +738,7 @@
               return `
               <li class="row about-extra" data-idx="${i}">
                 <div class="row__main">
-                  <span class="about-extra__thumb">${s ? `<img data-auth-src="${s}" alt="" loading="lazy" decoding="async">` : ''}</span>
+                  <span class="about-extra__thumb">${s ? `<img src="${s}" data-auth-src="${s}" alt="" loading="lazy" decoding="async">` : ''}</span>
                   <strong>${esc(it.label || 'Photo')}</strong>
                 </div>
                 <div class="row__acts">
