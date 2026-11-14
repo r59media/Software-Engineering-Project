@@ -7,7 +7,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --var ENVIRONMENT:development",
     "deploy": "wrangler deploy --minify",
     "sync-admin": "node -e \"const fs=require('fs'), path=require('path'), cp=require('child_process'); if (!fs.existsSync('node_modules')) { try { cp.execSync('pnpm install', {stdio:'inherit'}); } catch(e){} } fs.mkdirSync('public/admin', {recursive:true}); fs.cpSync('../admin', 'public/admin', {recursive:true, filter: (src) => !src.endsWith('.md') && !src.includes('/src') && !src.includes('node_modules') && !src.endsWith('tsconfig.json') && !src.endsWith('package.json') && !src.endsWith('pnpm-lock.yaml')}); const esbuild = (() => { try { return require('esbuild'); } catch(e) {} try { return require('module').createRequire(require.resolve('wrangler'))('esbuild'); } catch(e) {} try { return require('../frontend/node_modules/esbuild'); } catch(e) {} return null; })(); function minifyDir(d) { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const f = path.join(d, e.name); if (e.isDirectory()) minifyDir(f); else if (f.endsWith('.js') || f.endsWith('.css')) { const c = fs.readFileSync(f, 'utf8'); if (esbuild) { const res = esbuild.transformSync(c, { loader: f.endsWith('.css') ? 'css' : 'js', minify: true, legalComments: 'none' }); fs.writeFileSync(f, res.code); } } } } if (fs.existsSync('public/admin/assets')) minifyDir('public/admin/assets');\"",
     "sync-defaults": "node --experimental-strip-types scripts/sync-defaults.ts",

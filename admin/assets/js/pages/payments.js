@@ -575,7 +575,7 @@
                   <input type="file" accept="image/*" class="sr-only" data-pkg-image-file="${id}">
                 </label>
               </div>
-              <div class="pay-pkg-img-preview" style="margin-top:0.5rem;"${imgUrl ? '' : ' hidden'}><img src="${esc(imgUrl)}" alt="${esc(name || 'Package')} preview" style="max-height:80px;border-radius:2px;object-fit:cover;"></div>
+              <div class="pay-pkg-img-preview" style="margin-top:0.5rem;"${imgUrl ? '' : ' hidden'}><img data-auth-src="${esc(imgUrl)}" alt="${esc(name || 'Package')} preview" style="max-height:80px;border-radius:2px;object-fit:cover;"></div>
             </div>
             <div class="field">
               <label class="field__label" for="${pkgField(id, 'additional_people')}">Additional people</label>
@@ -648,10 +648,20 @@
             const bookingModeEl = document.getElementById(pkgField(pkg.id, 'booking_mode'));
             const session = sessionEls(sessionIds(pkg.id));
             const previewImg = document.querySelector(`#card-pkg-${CSS.escape(String(pkg.id))} .pay-pkg-img-preview img`);
-            previewImg?.addEventListener('error', () => {
-                if (previewImg.parentElement)
-                    previewImg.parentElement.hidden = true;
-            });
+            if (previewImg) {
+                previewImg.addEventListener('error', () => {
+                    if (previewImg.parentElement)
+                        previewImg.parentElement.hidden = true;
+                });
+                const authSrc = previewImg.getAttribute('data-auth-src') || '';
+                const apply = R().apiClient?.applyAuthorizedImageSrc;
+                if (apply) {
+                    apply(previewImg, authSrc);
+                }
+                else if (authSrc) {
+                    previewImg.src = authSrc;
+                }
+            }
             fv?.bind?.(name, fv.rules?.packageName);
             fv?.bind?.(price, bookingModeEl ? packagePriceRule(bookingModeEl) : fv.rules?.packagePrice);
             fv?.bind?.(outfits, fv.rules?.packageOutfits);
@@ -780,7 +790,13 @@
             }
             const preview = frame.querySelector('.pay-pkg-img-preview img');
             if (preview) {
-                preview.src = pkg.image_url;
+                const apply = R().apiClient?.applyAuthorizedImageSrc;
+                if (apply) {
+                    apply(preview, pkg.image_url);
+                }
+                else {
+                    preview.src = pkg.image_url;
+                }
                 preview.parentElement.hidden = !pkg.image_url;
             }
         }

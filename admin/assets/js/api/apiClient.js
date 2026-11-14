@@ -175,7 +175,20 @@
             }));
         }
     }
+    function clearMediaCache() {
+        for (const objectUrl of mediaObjectUrlCache.values()) {
+            try {
+                URL.revokeObjectURL(objectUrl);
+            }
+            catch {
+                // ignore revoke errors
+            }
+        }
+        mediaObjectUrlCache.clear();
+        mediaInflightRequests.clear();
+    }
     function clearAuthToken() {
+        clearMediaCache();
         if (isWorkerMode && workerPort) {
             sendWorkerMessage('CLEAR_TOKEN').catch(() => { });
         }
@@ -563,6 +576,138 @@
             isWorkerAuthenticated = false;
         }
     }
+    const mediaObjectUrlCache = new Map();
+    const mediaInflightRequests = new Map();
+    function resolveMediaRequestUrl(rawUrl) {
+        const trimmed = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+        if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('blob:') || trimmed.startsWith('//')) {
+            return null;
+        }
+        const baseUrl = getBaseUrl();
+        let backendOrigin = '';
+        if (baseUrl.startsWith('http://') || baseUrl.startsWith('https://')) {
+            try {
+                backendOrigin = new URL(baseUrl).origin;
+            }
+            catch {
+                backendOrigin = '';
+            }
+        }
+        else if (typeof window !== 'undefined' && window.location?.origin) {
+            backendOrigin = window.location.origin;
+        }
+        const backendRoot = baseUrl.endsWith('/api')
+            ? baseUrl.slice(0, -4)
+            : (baseUrl === '/' ? '' : baseUrl);
+        if (trimmed.startsWith('/assets/') || trimmed.startsWith('/api/media/')) {
+            const resolved = backendRoot ? `${backendRoot}${trimmed}` : trimmed;
+            const fetchUrl = resolved.startsWith('/') && backendOrigin
+                ? new URL(resolved, backendOrigin).toString()
+                : resolved;
+            return { fetchUrl, cacheKey: resolved };
+        }
+        if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+            try {
+                const parsed = new URL(trimmed);
+                if (backendOrigin && parsed.origin === backendOrigin && (parsed.pathname.startsWith('/assets/') || parsed.pathname.startsWith('/api/media/'))) {
+                    const full = parsed.toString();
+                    return { fetchUrl: full, cacheKey: full };
+                }
+            }
+            catch {
+                return null;
+            }
+        }
+        return null;
+    }
+    /**
+     * Fetches protected media (/assets/* or /api/media/*) using the in-memory/SharedWorker
+     * Bearer token and X-R59-Client header, returning a cached Blob object URL.
+     * External, data:, and blob: URLs are returned as-is.
+     */
+    async function fetchAuthorizedMediaUrl(url) {
+        const trimmed = typeof url === 'string' ? url.trim() : '';
+        if (!trimmed)
+            return '';
+        const target = resolveMediaRequestUrl(trimmed);
+        if (!target)
+            return trimmed;
+        const cached = mediaObjectUrlCache.get(target.cacheKey);
+        if (cached)
+            return cached;
+        const inflight = mediaInflightRequests.get(target.cacheKey);
+        if (inflight)
+            return inflight;
+        const promise = (async () => {
+            try {
+                const blob = await request(target.fetchUrl, {
+                    method: 'GET',
+                    headers: { 'X-R59-Client': 'media-viewer' },
+                    responseType: 'blob',
+                    suppressUnauthorized: true
+                });
+                const objectUrl = URL.createObjectURL(blob);
+                const prev = mediaObjectUrlCache.get(target.cacheKey);
+                if (prev && prev !== objectUrl) {
+                    try {
+                        URL.revokeObjectURL(prev);
+                    }
+                    catch {
+                        // ignore revoke errors
+                    }
+                }
+                mediaObjectUrlCache.set(target.cacheKey, objectUrl);
+                return objectUrl;
+            }
+            finally {
+                mediaInflightRequests.delete(target.cacheKey);
+            }
+        })();
+        mediaInflightRequests.set(target.cacheKey, promise);
+        return promise;
+    }
+    /**
+     * Applies an image URL to an <img> element, fetching protected backend media
+     * with authorization headers when required and caching Blob object URLs.
+     */
+    async function applyAuthorizedImageSrc(img, url) {
+        if (!img)
+            return;
+        const trimmed = typeof url === 'string' ? url.trim() : '';
+        if (!trimmed) {
+            delete img.dataset.authMediaUrl;
+            img.removeAttribute('src');
+            return;
+        }
+        const target = resolveMediaRequestUrl(trimmed);
+        if (!target) {
+            delete img.dataset.authMediaUrl;
+            if (img.getAttribute('src') !== trimmed) {
+                img.src = trimmed;
+            }
+            return;
+        }
+        const cached = mediaObjectUrlCache.get(target.cacheKey);
+        if (cached) {
+            img.dataset.authMediaUrl = target.cacheKey;
+            if (img.getAttribute('src') !== cached) {
+                img.src = cached;
+            }
+            return;
+        }
+        img.dataset.authMediaUrl = target.cacheKey;
+        try {
+            const objectUrl = await fetchAuthorizedMediaUrl(trimmed);
+            if (img.dataset.authMediaUrl === target.cacheKey && img.getAttribute('src') !== objectUrl) {
+                img.src = objectUrl;
+            }
+        }
+        catch {
+            if (img.dataset.authMediaUrl === target.cacheKey) {
+                img.dispatchEvent(new Event('error'));
+            }
+        }
+    }
     /**
      * Fetches protected binary data via apiClient.request, wraps it in a Blob,
      * and generates an ephemeral Object URL.
@@ -615,6 +760,8 @@
         setSessionHint,
         request,
         fetchProtectedObjectUrl,
+        fetchAuthorizedMediaUrl,
+        applyAuthorizedImageSrc,
         triggerSignedDownload,
         get: (endpoint, params = null, headers = {}) => request(endpoint, { method: 'GET', params, headers }),
         post: (endpoint, body = null, headers = {}) => request(endpoint, { method: 'POST', body, headers }),

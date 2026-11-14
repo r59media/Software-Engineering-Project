@@ -103,6 +103,10 @@ app.use('*', async (c, next) => {
   return corsMiddleware(c, next)
 })
 
+function getCorpPolicy(c: Context<{ Bindings: Bindings }>): string {
+  return c.env?.ENVIRONMENT === 'development' ? 'cross-origin' : 'same-origin'
+}
+
 /**
  * Validates whether a media request is authorized (Finding 8).
  * Accepts requests with 'X-R59-Client: media-viewer', valid HMAC signed URL,
@@ -130,9 +134,14 @@ async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, file
     }
   }
 
-  const effectiveKey = fileKey || (new URL(c.req.url).pathname.startsWith('/api/media/')
-    ? decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-    : '')
+  const pathname = decodeURIComponent(new URL(c.req.url).pathname)
+  const effectiveKey = fileKey || (
+    pathname.startsWith('/api/media/')
+      ? pathname.replace(/^\/api\/media\//, '').replace(/^\/+/, '')
+      : pathname.startsWith('/assets/')
+        ? pathname.replace(/^\/+/, '')
+        : ''
+  )
   if (effectiveKey && c.env.DB) {
     try {
       const row = await c.env.DB.prepare(
@@ -179,7 +188,7 @@ app.use('*', async (c, next) => {
           return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
         }
         await next()
-        c.header('Cross-Origin-Resource-Policy', 'same-origin')
+        c.header('Cross-Origin-Resource-Policy', getCorpPolicy(c))
         c.header('Content-Disposition', 'inline')
         c.header('X-Content-Type-Options', 'nosniff')
         return
@@ -216,7 +225,7 @@ app.use('*', async (c, next) => {
   await next()
 
   if ((isProtectedImage || is3DModel) && (c.req.method === 'GET' || c.req.method === 'HEAD')) {
-    c.header('Cross-Origin-Resource-Policy', 'same-origin')
+    c.header('Cross-Origin-Resource-Policy', getCorpPolicy(c))
     c.header('Content-Disposition', 'inline')
     c.header('X-Content-Type-Options', 'nosniff')
   }
@@ -368,7 +377,7 @@ app.get('/admin/*', async (c) => {
     !url.pathname.startsWith('/favicon') &&
     (url.pathname.startsWith('/api/media/') || /\.(webp|png|jpe?g|glb)$/i.test(url.pathname))
   if (isProtectedAsset) {
-    headers.set('Cross-Origin-Resource-Policy', 'same-origin')
+    headers.set('Cross-Origin-Resource-Policy', getCorpPolicy(c))
     headers.set('Content-Disposition', 'inline')
     headers.set('X-Content-Type-Options', 'nosniff')
   }
@@ -654,7 +663,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
               'Content-Length': String(slice.byteLength),
               'Accept-Ranges': 'bytes',
               'Cache-Control': 'public, max-age=31536000, immutable',
-              'Cross-Origin-Resource-Policy': 'same-origin',
+              'Cross-Origin-Resource-Policy': getCorpPolicy(c),
               'Content-Disposition': 'inline',
               'X-Content-Type-Options': 'nosniff'
             }
@@ -669,7 +678,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
           'Content-Length': String(totalLength),
           'Accept-Ranges': 'bytes',
           'Cache-Control': 'public, max-age=31536000, immutable',
-          'Cross-Origin-Resource-Policy': 'same-origin',
+          'Cross-Origin-Resource-Policy': getCorpPolicy(c),
           'Content-Disposition': 'inline',
           'X-Content-Type-Options': 'nosniff'
         }
@@ -745,7 +754,7 @@ app.get('*', async (c) => {
   const headers = new Headers(assetRes.headers)
   headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   if (isProtectedAsset) {
-    headers.set('Cross-Origin-Resource-Policy', 'same-origin')
+    headers.set('Cross-Origin-Resource-Policy', getCorpPolicy(c))
     headers.set('Content-Disposition', 'inline')
     headers.set('X-Content-Type-Options', 'nosniff')
   }
