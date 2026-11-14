@@ -758,6 +758,9 @@ app.get('*', async (c) => {
     headers.set('Content-Disposition', 'inline')
     headers.set('X-Content-Type-Options', 'nosniff')
   }
+  if (assetRes.ok && (url.pathname.startsWith('/assets/') || is3DModel) && !headers.has('Cache-Control')) {
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+  }
   return new Response(assetRes.body, {
     status: assetRes.status,
     statusText: assetRes.statusText,

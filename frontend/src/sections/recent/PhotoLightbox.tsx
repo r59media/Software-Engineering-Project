@@ -125,6 +125,7 @@ export function PhotoLightbox({ photos, selectedIndex, onClose, onSelect }: Phot
           className="photo-viewer__canvas"
           width={photo.width}
           height={photo.height}
+          eager
         />
       </div>
 

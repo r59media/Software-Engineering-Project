@@ -107,11 +107,31 @@ function App() {
     }
 
     load()
-    void Promise.resolve().then(() => loadBookingServices())
+
+    let idleHandle: number | null = null
+    let timeoutHandle: number | null = null
+    if (typeof window.requestIdleCallback === 'function') {
+      idleHandle = window.requestIdleCallback(() => {
+        idleHandle = null
+        void loadBookingServices()
+      }, { timeout: 1200 })
+    } else {
+      timeoutHandle = window.setTimeout(() => {
+        timeoutHandle = null
+        void loadBookingServices()
+      }, 250)
+    }
+
     window.addEventListener('focus', handleVisibilityChange)
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => {
       controller?.abort()
+      if (idleHandle !== null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleHandle)
+      }
+      if (timeoutHandle !== null) {
+        window.clearTimeout(timeoutHandle)
+      }
       window.removeEventListener('focus', handleVisibilityChange)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }

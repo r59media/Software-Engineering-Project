@@ -1,7 +1,8 @@
-import { Component, lazy, Suspense, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useEffect, type ReactNode } from 'react'
 import type { LensTransitionController } from './LensTransitionContext'
 
-const LensScene = lazy(() => import('../about/LensScene'))
+const loadLensScene = () => import('../about/LensScene')
+const LensScene = lazy(loadLensScene)
 
 class TransitionBoundary extends Component<{ children: ReactNode; fail: () => void }, { failed: boolean }> {
   state = { failed: false }
@@ -11,6 +12,16 @@ class TransitionBoundary extends Component<{ children: ReactNode; fail: () => vo
 }
 
 export function TransitionLens({ url, controller }: { url: string; controller: LensTransitionController }) {
+  useEffect(() => {
+    let cancelled = false
+    void loadLensScene()
+      .then(mod => {
+        if (!cancelled) mod.preloadLensModel(url)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [url])
+
   return <TransitionBoundary key={url} fail={controller.fail}>
     <Suspense fallback={null}><LensScene url={url} aperture={0} transition={controller} /></Suspense>
   </TransitionBoundary>

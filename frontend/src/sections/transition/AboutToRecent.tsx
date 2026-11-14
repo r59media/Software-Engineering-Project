@@ -32,7 +32,8 @@ export function AboutToRecent() {
     ready: () => setReadyUrl(url),
     fail: () => setFailed(true),
   }), [url])
-  const canAnimate = loaded && !failed && !reduced && fits
+  const canReserve = !failed && !reduced && fits
+  const canAnimate = loaded && canReserve
   const enabled = canAnimate && readyUrl === url
 
   useEffect(() => {
@@ -63,6 +64,38 @@ export function AboutToRecent() {
 
   useEffect(() => {
     const host = root.current
+    if (!host || !canReserve) return
+    const stage = host.querySelector<HTMLElement>('.lens-transition__stage')!
+    const about = host.querySelector<HTMLElement>('#about')!
+    const recent = host.querySelector<HTMLElement>('.lens-transition__recent')!
+    let width = host.clientWidth
+    const reserve = () => {
+      const height = about.offsetHeight
+      const viewport = window.innerHeight
+      width = host.clientWidth
+      host.style.height = `${height + viewport * 1.6}px`
+      stage.style.top = `${Math.min(0, viewport - height)}px`
+      recent.style.height = `${viewport}px`
+    }
+    const onResize = () => {
+      if (host.clientWidth <= 1000 && Math.abs(host.clientWidth - width) < 2) return
+      reserve()
+    }
+    const resize = new ResizeObserver(reserve)
+    resize.observe(about)
+    window.addEventListener('resize', onResize)
+    reserve()
+    return () => {
+      resize.disconnect()
+      window.removeEventListener('resize', onResize)
+      host.style.height = ''
+      stage.style.top = ''
+      recent.style.height = ''
+    }
+  }, [canReserve])
+
+  useEffect(() => {
+    const host = root.current
     if (!host || !enabled) return
     const subscribers = listeners.current
     const stage = host.querySelector<HTMLElement>('.lens-transition__stage')!
@@ -82,6 +115,8 @@ export function AboutToRecent() {
 
     let targetProgress = 0
     let displayedProgress = 0
+    let hasSnapped = false
+    let lastTime = 0
 
     const calculateTarget = () => {
       if (document.body.style.position === 'fixed') return targetProgress
@@ -108,15 +143,29 @@ export function AboutToRecent() {
       host.dataset.progress = progress.toFixed(3)
       subscribers.forEach(listener => listener(aperture))
     }
-    const tick = () => {
+    const tick = (now: number) => {
       frame = 0
-      if (document.body.style.position === 'fixed') return
+      if (document.body.style.position === 'fixed') {
+        lastTime = 0
+        return
+      }
       targetProgress = calculateTarget()
+      if (!hasSnapped) {
+        hasSnapped = true
+        displayedProgress = targetProgress
+        lastTime = now
+        applyProgress(displayedProgress)
+        return
+      }
+      const dt = lastTime > 0 ? Math.min(64, Math.max(1, now - lastTime)) : 16.67
+      lastTime = now
       const diff = targetProgress - displayedProgress
       if (Math.abs(diff) < 0.0005) {
         displayedProgress = targetProgress
+        lastTime = 0
       } else {
-        displayedProgress += diff * 0.22
+        const alpha = Math.min(1, (Math.abs(diff) > 0.15 ? 0.45 : 0.28) * (dt / 16.67))
+        displayedProgress += diff * alpha
         frame = requestAnimationFrame(tick)
       }
       applyProgress(displayedProgress)
@@ -141,6 +190,8 @@ export function AboutToRecent() {
       start = bounds.top + window.scrollY + height - viewport
       targetProgress = calculateTarget()
       displayedProgress = targetProgress
+      hasSnapped = true
+      lastTime = 0
       if (frame) cancelAnimationFrame(frame)
       frame = 0
       applyProgress(displayedProgress)
@@ -197,7 +248,7 @@ export function AboutToRecent() {
       window.removeEventListener('keydown', trackKey, true)
       window.removeEventListener('pointerdown', trackPointer, true)
       recent.removeEventListener('focusin', focusRecent)
-      host.style.height = ''; stage.style.top = ''; recent.style.cssText = ''; lens.style.visibility = ''; overlay.style.cssText = ''
+      recent.style.clipPath = ''; recent.style.visibility = ''; lens.style.visibility = ''; overlay.style.cssText = ''
       delete host.dataset.progress
       recent.inert = false; about.inert = false
       subscribers.forEach(listener => listener(0))

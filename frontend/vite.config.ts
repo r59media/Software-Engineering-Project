@@ -18,6 +18,14 @@ export default defineConfig({
         entryFileNames: 'assets/[hash].js',
         chunkFileNames: 'assets/[hash].js',
         assetFileNames: 'assets/[hash][extname]',
+        manualChunks(id) {
+          if (
+            id.includes('node_modules/three') ||
+            id.includes('node_modules/@react-three/')
+          ) {
+            return 'vendor-three'
+          }
+        },
       },
     },
   },
