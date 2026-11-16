@@ -4,11 +4,11 @@ import portrait from "../assets/aboutMeImages/kevin'sPortrait.webp"
 import portraitFrame from '../assets/aboutMeImages/aboutMe_portraitFrame_img.webp'
 import signature from '../assets/aboutMeImages/kevin_Logo_IMG.webp'
 import topLens from '../assets/aboutMeImages/r59media-large-lens.webp'
-import rightLens from '../assets/aboutMeImages/smalLense_IMG.webp'
+import rightLens from '../assets/aboutMeImages/r59media-medium-lens.webp'
 import camera from '../assets/aboutMeImages/r59media-dslr.webp'
-import flash from '../assets/aboutMeImages/speedlight_IMG.webp'
+import flash from '../assets/aboutMeImages/r59media-speedlight.webp'
 import leftCard from '../assets/aboutMeImages/128MmrCard_IMG.webp'
-import topCard from '../assets/aboutMeImages/32MmrCard_IMG.webp'
+import topCard from '../assets/aboutMeImages/r59media-32memCard.webp'
 import bottomCard from '../assets/aboutMeImages/1TMmrCard_IMG.webp'
 import paper from '../assets/aboutMeImages/about-paper.webp'
 import type { AboutContent, AboutImage } from '../types/about'
@@ -32,10 +32,10 @@ export const aboutImages = {
 
 export const aboutDecorations: readonly AboutImage[] = [
   { id: 'top-lens', imageUrl: topLens, alt: '', width: 1040, height: 1686 },
-  { id: 'top-right-lens', imageUrl: rightLens, alt: '', width: 2070, height: 2072 },
+  { id: 'top-right-lens', imageUrl: rightLens, alt: '', width: 1254, height: 1254 },
   { id: 'bottom-right-camera', imageUrl: camera, alt: '', width: 1500, height: 1700 },
-  { id: 'left-flash', imageUrl: flash, alt: '', width: 1208, height: 1856 },
+  { id: 'left-flash', imageUrl: flash, alt: '', width: 1009, height: 1559 },
   { id: 'left-memory-card', imageUrl: leftCard, alt: '', width: 1162, height: 1160 },
-  { id: 'top-memory-card', imageUrl: topCard, alt: '', width: 1342, height: 1342 },
+  { id: 'top-memory-card', imageUrl: topCard, alt: '', width: 1254, height: 1254 },
   { id: 'bottom-memory-card', imageUrl: bottomCard, alt: '', width: 1104, height: 1102 },
 ]

@@ -247,50 +247,38 @@ button:disabled { cursor: not-allowed; }
 /* Lightbox Captions */
 .photo-lightbox__caption {
   position: absolute;
-  bottom: 1.25rem;
+  bottom: 1.5rem;
   left: 50%;
   transform: translateX(-50%);
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.85rem;
   z-index: 10;
-  background: rgba(17, 17, 17, 0.85);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 9999px;
-  padding: 0.45rem 1.25rem;
-  max-width: 90vw;
-  color: var(--color-brand-white);
-}
-
-.photo-lightbox__title {
-  font-weight: 600;
-  font-size: 0.875rem;
-  color: #f4f1ea;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
 }
 
 .photo-lightbox__category {
-  font-size: 0.75rem;
+  display: inline-block;
+  padding: 0.2rem 0.65rem;
+  background: var(--color-brand-yellow);
+  color: var(--color-brand-black);
+  font-family: var(--font-title);
+  font-size: var(--text-caption);
+  font-weight: var(--font-weight-bold);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: #f5d38c;
-  font-weight: 600;
-  border-left: 1px solid rgba(255, 255, 255, 0.2);
-  padding-left: 0.75rem;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
 }
 
-.photo-lightbox .photo-viewer__count {
-  position: static;
-  transform: none;
+.photo-lightbox__count {
   margin: 0;
-  border-left: 1px solid rgba(255, 255, 255, 0.2);
-  padding-left: 0.75rem;
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
+  font-family: var(--font-title);
+  font-size: 0.875rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.08em;
+  color: var(--color-brand-white);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.85);
 }
 
 /* Reserve the original hero header space; the navigation itself is global. */

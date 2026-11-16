@@ -680,35 +680,35 @@
   }
 
   .contact-section__photo {
-    width: 28%;
-    max-width: 125px;
-    padding: 4px 4px 12px;
+    width: 32%;
+    max-width: 135px;
+    padding: 5px 5px 13px;
   }
 
   .contact-section__photo--1 {
-    left: 41%;
+    left: 28%;
     top: 10px;
-    transform: rotate(-3deg);
+    transform: rotate(-4deg);
   }
 
   .contact-section__photo--2 {
-    left: 50%;
-    top: 64px;
-    transform: rotate(9deg);
+    left: 45%;
+    top: 56px;
+    transform: rotate(6deg);
   }
 
   .contact-section__photo--3 {
-    left: 66%;
-    top: 112px;
-    transform: rotate(-6deg);
+    left: 63%;
+    top: 104px;
+    transform: rotate(-4deg);
   }
 
   .contact-section__camera {
-    width: clamp(160px, 46vw, 220px);
-    left: 4px;
+    width: clamp(180px, 48vw, 240px);
+    left: -14px;
     top: auto;
-    bottom: -14px;
-    transform: rotate(0deg);
+    bottom: -20px;
+    transform: rotate(12deg);
     z-index: 3;
   }
 
@@ -717,11 +717,11 @@
   }
 
   .contact-section__seal {
-    width: 68px;
+    width: 96px;
     left: auto;
     top: auto;
-    right: -12px;
-    bottom: 10px;
+    right: -18px;
+    bottom: 8px;
     z-index: 4;
   }
 
