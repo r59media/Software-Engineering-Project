@@ -43,6 +43,11 @@
 textarea.field__input.pay-desc{min-height:6.5rem}
 /* Session length: [ 1 ] h : [ 30 ] min, then "Entire day" on the same line (wraps below on a narrow frame) */
 .pay-outfits .field__control{max-width:9rem}
+.pay-stepper{display:inline-flex;align-items:center;gap:var(--s2);max-width:12rem}
+.pay-stepper__btn{flex:none;min-width:var(--ctl,2.5rem);min-height:var(--ctl,2.5rem);padding-inline:var(--s2);font-size:1.125rem;line-height:1;justify-content:center}
+.pay-stepper__input{text-align:center;min-width:3.5rem;max-width:4.5rem;-moz-appearance:textfield}
+.pay-stepper__input::-webkit-outer-spin-button,
+.pay-stepper__input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .pay-session__line{display:flex;flex-wrap:wrap;align-items:center;gap:var(--s2) var(--s5)}
 .pay-session__units{display:flex;align-items:center;gap:var(--s2)}
 .pay-session__unit{flex:none;width:4.75rem}

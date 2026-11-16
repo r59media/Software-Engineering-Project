@@ -691,12 +691,15 @@
                         <p class="field__hint">Image URL or choose a file to upload.</p>
                       </div>
                       <div class="field">
-                        <label class="field__label" for="pkgNewAdditionalPeople">Additional people</label>
-                        <div class="field__control">
-                          <input class="field__input" id="pkgNewAdditionalPeople" type="text" placeholder='e.g. {"includedPeople": 1}'>
+                        <label class="field__label" for="pkgNewMaxPeople">Max people</label>
+                        <div class="field__control pay-stepper" data-pkg-new-stepper>
+                          <button type="button" class="btn btn--ghost btn--sm pay-stepper__btn" data-pkg-new-max-step="-1" aria-label="Decrease max people" disabled>−</button>
+                          <input class="field__input num pay-stepper__input" id="pkgNewMaxPeople" type="number" inputmode="numeric" min="1" max="99" step="1" value="1">
+                          <button type="button" class="btn btn--ghost btn--sm pay-stepper__btn" data-pkg-new-max-step="1" aria-label="Increase max people">+</button>
                         </div>
-                        <p class="field__hint">JSON configuration for group bookings (e.g. {"includedPeople": 1, "maxPeople": 5}).</p>
-                        <p class="field__error" id="pkgNewAdditionalPeople-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
+                        <input type="hidden" id="pkgNewAdditionalPeople" value="">
+                        <p class="field__hint">1 = solo only · 2+ = allows group bookings</p>
+                        <p class="field__error" id="pkgNewMaxPeople-error" hidden><svg class="ico" aria-hidden="true"><use href="#i-alert"/></svg><span></span></p>
                       </div>
                       <div class="field">
                         <label class="field__label" for="pkgNewDescription">Short description</label>

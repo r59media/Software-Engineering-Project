@@ -2047,7 +2047,7 @@ adminRouter.put('/packages/:id', async (c) => {
     let additionalPeople = existing.additional_people
     const rawAdditionalPeople = body.additional_people !== undefined ? body.additional_people : body.additionalPeople
     if (rawAdditionalPeople !== undefined) {
-      if (rawAdditionalPeople === null) {
+      if (rawAdditionalPeople === null || rawAdditionalPeople === '') {
         additionalPeople = null
       } else if (typeof rawAdditionalPeople === 'string') {
         additionalPeople = rawAdditionalPeople

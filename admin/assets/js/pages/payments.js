@@ -359,6 +359,61 @@
         }
         return { valid: true, value: num };
     }
+    function parseAdditionalPeopleConfig(pkgOrVal) {
+        let raw = pkgOrVal;
+        if (pkgOrVal && typeof pkgOrVal === 'object' && ('additional_people' in pkgOrVal || 'additionalPeople' in pkgOrVal)) {
+            raw = pkgOrVal.additional_people !== undefined && pkgOrVal.additional_people !== null && pkgOrVal.additional_people !== ''
+                ? pkgOrVal.additional_people
+                : pkgOrVal.additionalPeople;
+        }
+        let parsed = null;
+        if (raw && typeof raw === 'object') {
+            parsed = raw;
+        }
+        else if (typeof raw === 'string' && raw.trim()) {
+            try {
+                const obj = JSON.parse(raw.trim());
+                if (obj && typeof obj === 'object')
+                    parsed = obj;
+            }
+            catch {
+                const n = Number(raw.trim());
+                if (Number.isInteger(n) && n >= 1)
+                    parsed = { includedPeople: 1, maxPeople: n };
+            }
+        }
+        const incNum = Number(parsed?.includedPeople);
+        const includedPeople = Number.isFinite(incNum) && incNum >= 1 ? Math.round(incNum) : 1;
+        const maxNum = Number(parsed?.maxPeople);
+        let maxPeople = 1;
+        if (Number.isFinite(maxNum) && maxNum >= 1) {
+            maxPeople = Math.min(99, Math.round(maxNum));
+        }
+        else if (parsed && includedPeople >= 2) {
+            maxPeople = Math.min(99, includedPeople);
+        }
+        return { includedPeople, maxPeople };
+    }
+    function serializeAdditionalPeople(maxPeople, includedPeople = 1) {
+        const max = Number.isFinite(Number(maxPeople)) ? Math.max(1, Math.min(99, Math.round(Number(maxPeople)))) : 1;
+        if (max <= 1)
+            return { str: '', obj: null };
+        const inc = Number.isFinite(Number(includedPeople)) && Number(includedPeople) >= 1
+            ? Math.round(Number(includedPeople))
+            : 1;
+        const obj = { includedPeople: inc, maxPeople: max };
+        return { str: JSON.stringify(obj), obj };
+    }
+    function validateMaxPeople(val) {
+        const s = String(val ?? '').trim();
+        if (s === '')
+            return { valid: true, value: 1 };
+        const num = Number(s);
+        if (!Number.isInteger(num) || num < 1 || num > 99) {
+            return { valid: false, message: 'Enter a whole number from 1 to 99.' };
+        }
+        return { valid: true, value: num };
+    }
     function validateAdditionalPeople(val) {
         if (!val || String(val).trim() === '')
             return { valid: true, parsed: null };
@@ -490,9 +545,7 @@
         const bookingMode = pkg.booking_mode ?? pkg.bookingMode ?? 'direct';
         const photoCount = pkg.photo_count !== undefined && pkg.photo_count !== null ? pkg.photo_count : (pkg.photoCount !== undefined && pkg.photoCount !== null ? pkg.photoCount : '');
         const imgUrl = pkg.image_url ?? pkg.imageUrl ?? pkg.image?.url ?? '';
-        const apVal = pkg.additional_people !== undefined && pkg.additional_people !== null
-            ? (typeof pkg.additional_people === 'object' ? JSON.stringify(pkg.additional_people) : String(pkg.additional_people))
-            : (pkg.additionalPeople !== undefined && pkg.additionalPeople !== null ? (typeof pkg.additionalPeople === 'object' ? JSON.stringify(pkg.additionalPeople) : String(pkg.additionalPeople)) : '');
+        const { maxPeople } = parseAdditionalPeopleConfig(pkg);
         return `
       <div class="slot">
         <div class="edge caps" aria-hidden="true"><span><svg class="tri"><use href="#i-tri"/></svg><span data-frame-no>Frame</span></span><span data-frame-code></span></div>
@@ -578,12 +631,14 @@
               <div class="pay-pkg-img-preview" style="margin-top:0.5rem;"${imgUrl ? '' : ' hidden'}><img data-auth-src="${esc(imgUrl)}" alt="${esc(name || 'Package')} preview" style="aspect-ratio: 16 / 7; width: 100%; max-width: 240px; object-fit: cover; border-radius: 6px;"></div>
             </div>
             <div class="field">
-              <label class="field__label" for="${pkgField(id, 'additional_people')}">Additional people</label>
-              <div class="field__control">
-                <input class="field__input" id="${pkgField(id, 'additional_people')}" type="text" value="${esc(apVal)}" data-pkg-input="additional_people" placeholder='e.g. {"includedPeople": 1}'>
+              <label class="field__label" for="${pkgField(id, 'max_people')}">Max people</label>
+              <div class="field__control pay-stepper" data-pkg-stepper="${id}">
+                <button type="button" class="btn btn--ghost btn--sm pay-stepper__btn" data-pkg-max-step="-1" data-pkg-id="${id}" aria-label="Decrease max people for ${esc(name || 'package')}"${maxPeople <= 1 ? ' disabled' : ''}>−</button>
+                <input class="field__input num pay-stepper__input" id="${pkgField(id, 'max_people')}" type="number" inputmode="numeric" min="1" max="99" step="1" value="${maxPeople}" data-pkg-input="max_people">
+                <button type="button" class="btn btn--ghost btn--sm pay-stepper__btn" data-pkg-max-step="1" data-pkg-id="${id}" aria-label="Increase max people for ${esc(name || 'package')}"${maxPeople >= 99 ? ' disabled' : ''}>+</button>
               </div>
-              <p class="field__hint">JSON configuration for group bookings (e.g. {"includedPeople": 1, "maxPeople": 5}).</p>
-              ${errorHtml(pkgField(id, 'additional_people'))}
+              <p class="field__hint">1 = solo only · 2+ = allows group bookings</p>
+              ${errorHtml(pkgField(id, 'max_people'))}
             </div>
             <div class="field">
               <label class="field__label" for="${pkgField(id, 'description')}">Short description</label>
@@ -644,7 +699,7 @@
             const price = document.getElementById(pkgField(pkg.id, 'price'));
             const outfits = document.getElementById(pkgField(pkg.id, 'outfits'));
             const photoCount = document.getElementById(pkgField(pkg.id, 'photo_count'));
-            const additionalPeople = document.getElementById(pkgField(pkg.id, 'additional_people'));
+            const maxPeopleEl = document.getElementById(pkgField(pkg.id, 'max_people'));
             const bookingModeEl = document.getElementById(pkgField(pkg.id, 'booking_mode'));
             const session = sessionEls(sessionIds(pkg.id));
             const previewImg = document.querySelector(`#card-pkg-${CSS.escape(String(pkg.id))} .pay-pkg-img-preview img`);
@@ -666,7 +721,6 @@
             fv?.bind?.(price, bookingModeEl ? packagePriceRule(bookingModeEl) : fv.rules?.packagePrice);
             fv?.bind?.(outfits, fv.rules?.packageOutfits);
             fv?.bind?.(photoCount, fv.rules?.packagePhotoCount);
-            fv?.bind?.(additionalPeople, fv.rules?.packageAdditionalPeople);
             bindSession(session, bookingModeEl);
             // keep an invalid unsaved value visibly flagged after a re-render
             const sp = savedPkg(pkg.id);
@@ -678,8 +732,11 @@
                 fv?.validate?.(outfits);
             if (photoCount && String(numValue(sp?.photo_count)) !== photoCount.value)
                 fv?.validate?.(photoCount);
-            if (additionalPeople && String(sp?.additional_people ?? '') !== additionalPeople.value.trim())
-                fv?.validate?.(additionalPeople);
+            if (maxPeopleEl) {
+                const check = validateMaxPeople(maxPeopleEl.value);
+                if (!check.valid)
+                    showFieldError(maxPeopleEl, check.message);
+            }
             if (pkg.full_day !== true && (sp?.full_day === true || String(numValue(sp?.duration_minutes)) !== String(sessionTotal(session)))) {
                 revalidateSession(session, true);
             }
@@ -813,12 +870,66 @@
                 preview.parentElement.hidden = !pkg.image_url;
             }
         }
-        else if (kind === 'additional_people') {
-            const check = validateAdditionalPeople(input.value);
-            pkg.additional_people = input.value.trim();
-            pkg.additionalPeople = check.valid ? check.parsed : undefined;
+        else if (kind === 'max_people') {
+            const check = validateMaxPeople(input.value);
+            if (!check.valid) {
+                showFieldError(input, check.message);
+                return;
+            }
+            clearFieldError(input);
+            const { includedPeople } = parseAdditionalPeopleConfig(pkg);
+            const { str, obj } = serializeAdditionalPeople(check.value, includedPeople);
+            pkg.additional_people = str;
+            pkg.additionalPeople = obj;
+            syncStepperButtons(input.closest('.pay-stepper'), '[data-pkg-max-step="-1"]', '[data-pkg-max-step="1"]', check.value);
         }
         st().markDirty();
+    }
+    function syncStepperButtons(stepper, decSel, incSel, value) {
+        if (!stepper)
+            return;
+        const decBtn = stepper.querySelector(decSel);
+        const incBtn = stepper.querySelector(incSel);
+        if (decBtn)
+            decBtn.disabled = value <= 1;
+        if (incBtn)
+            incBtn.disabled = value >= 99;
+    }
+    function stepPackageMaxPeople(id, delta, btn) {
+        const pkg = findPkg(id);
+        const input = document.getElementById(pkgField(id, 'max_people'));
+        if (!pkg || !input)
+            return;
+        const { includedPeople, maxPeople } = parseAdditionalPeopleConfig(pkg);
+        const rawNum = Number(input.value);
+        const current = Number.isInteger(rawNum) && rawNum >= 1 && rawNum <= 99 ? rawNum : maxPeople;
+        const next = Math.max(1, Math.min(99, current + delta));
+        input.value = String(next);
+        clearFieldError(input);
+        const { str, obj } = serializeAdditionalPeople(next, includedPeople);
+        pkg.additional_people = str;
+        pkg.additionalPeople = obj;
+        syncStepperButtons(btn?.closest('.pay-stepper') || input.closest('.pay-stepper'), '[data-pkg-max-step="-1"]', '[data-pkg-max-step="1"]', next);
+        st().markDirty();
+    }
+    function syncNewPackageMaxPeople(normalizeEmpty = false) {
+        const input = $('#pkgNewMaxPeople');
+        const hidden = $('#pkgNewAdditionalPeople');
+        if (!input)
+            return { valid: true, value: 1 };
+        if (normalizeEmpty && input.value.trim() === '')
+            input.value = '1';
+        const check = validateMaxPeople(input.value);
+        if (!check.valid) {
+            showFieldError(input, check.message);
+            return check;
+        }
+        clearFieldError(input);
+        const { str } = serializeAdditionalPeople(check.value, 1);
+        if (hidden)
+            hidden.value = str;
+        syncStepperButtons(input.closest('.pay-stepper'), '[data-pkg-new-max-step="-1"]', '[data-pkg-new-max-step="1"]', check.value);
+        return check;
     }
     function onPackagePriceEdit(btn) {
         const id = btn.dataset.pkgPriceEdit;
@@ -923,16 +1034,19 @@
             return;
         form.reset();
         applyFullDay(sessionEls(NEW_SESSION_IDS));
-        ['#pkgNewBestFor', '#pkgNewBookingMode', '#pkgNewPhotoCount', '#pkgNewImage', '#pkgNewAdditionalPeople'].forEach(sel => {
+        ['#pkgNewBestFor', '#pkgNewBookingMode', '#pkgNewPhotoCount', '#pkgNewImage', '#pkgNewAdditionalPeople', '#pkgNewMaxPeople'].forEach(sel => {
             const el = $(sel);
             if (el) {
                 if (sel === '#pkgNewBookingMode')
                     el.value = 'direct';
+                else if (sel === '#pkgNewMaxPeople')
+                    el.value = '1';
                 else
                     el.value = '';
                 clearFieldError(el);
             }
         });
+        syncStepperButtons($('[data-pkg-new-stepper]'), '[data-pkg-new-max-step="-1"]', '[data-pkg-new-max-step="1"]', 1);
         form.querySelectorAll('[aria-invalid="true"]').forEach(el => {
             el.setCustomValidity?.('');
             R().formValidation?.validate?.(el);
@@ -954,6 +1068,7 @@
         const bookingModeEl = $('#pkgNewBookingMode');
         const photoCountEl = $('#pkgNewPhotoCount');
         const imageEl = $('#pkgNewImage');
+        const maxPeopleEl = $('#pkgNewMaxPeople');
         const additionalPeopleEl = $('#pkgNewAdditionalPeople');
         const session = sessionEls(NEW_SESSION_IDS);
         if (!nameEl || !priceEl || !session.h || !session.m)
@@ -968,17 +1083,14 @@
             showFieldError(photoCountEl, pcCheck.message);
         else if (photoCountEl)
             clearFieldError(photoCountEl);
+        const mpCheck = maxPeopleEl ? syncNewPackageMaxPeople(true) : { valid: true, value: 1 };
         const apCheck = additionalPeopleEl ? validateAdditionalPeople(additionalPeopleEl.value) : { valid: true };
-        if (!apCheck.valid)
-            showFieldError(additionalPeopleEl, apCheck.message);
-        else if (additionalPeopleEl)
-            clearFieldError(additionalPeopleEl);
         const checks = [
             [nameEl, check(nameEl, nameEl.value.trim() !== '')],
             [priceEl, !isDirect || check(priceEl, priceEl.value !== '')],
             [outfitsEl, outfitsEl ? check(outfitsEl, true) : true],
             [photoCountEl, pcCheck.valid],
-            [additionalPeopleEl, apCheck.valid],
+            [maxPeopleEl, mpCheck.valid],
             // Entire day (or blank duration on an inquiry package): length fields are valid
             [session.h, fullDay || (!isDirect && total === '') || check(session.h, Number.isInteger(total) && total >= 15 && total <= 1440)],
             [session.m, fullDay || (!isDirect && total === '') || check(session.m, true)]
@@ -1062,8 +1174,8 @@
                 imageAlt: data.image_alt ?? data.imageAlt ?? data.image?.alt ?? '',
                 image: data.image ?? (image_url ? { url: image_url, alt: name } : undefined),
                 additional_people: data.additional_people !== undefined
-                    ? (typeof data.additional_people === 'object' ? JSON.stringify(data.additional_people) : String(data.additional_people))
-                    : (data.additionalPeople !== undefined ? (typeof data.additionalPeople === 'object' ? JSON.stringify(data.additionalPeople) : String(data.additionalPeople)) : (additional_people ? (typeof additional_people === 'object' ? JSON.stringify(additional_people) : String(additional_people)) : '')),
+                    ? (data.additional_people === null ? '' : (typeof data.additional_people === 'object' ? JSON.stringify(data.additional_people) : String(data.additional_people)))
+                    : (data.additionalPeople !== undefined ? (data.additionalPeople === null ? '' : (typeof data.additionalPeople === 'object' ? JSON.stringify(data.additionalPeople) : String(data.additionalPeople))) : (additional_people ? (typeof additional_people === 'object' ? JSON.stringify(additional_people) : String(additional_people)) : '')),
                 additionalPeople: data.additionalPeople ?? additional_people,
                 display_order: data.display_order ?? data.displayOrder ?? display_order,
                 displayOrder: data.display_order ?? data.displayOrder ?? display_order
@@ -1108,6 +1220,23 @@
                 closeAddForm({ focusButton: true });
             }
         });
+        $('#pkgAddForm')?.addEventListener('click', e => {
+            const t = e.target instanceof Element ? e.target : e.target?.parentElement;
+            const stepBtn = t?.closest?.('[data-pkg-new-max-step]');
+            if (!stepBtn)
+                return;
+            e.preventDefault();
+            const input = $('#pkgNewMaxPeople');
+            if (!input)
+                return;
+            const delta = Number(stepBtn.dataset.pkgNewMaxStep);
+            const rawNum = Number(input.value);
+            const current = Number.isInteger(rawNum) && rawNum >= 1 && rawNum <= 99 ? rawNum : 1;
+            input.value = String(Math.max(1, Math.min(99, current + delta)));
+            syncNewPackageMaxPeople();
+        });
+        $('#pkgNewMaxPeople')?.addEventListener('input', () => syncNewPackageMaxPeople(false));
+        $('#pkgNewMaxPeople')?.addEventListener('change', () => syncNewPackageMaxPeople(true));
         const list = $('#packageList');
         if (!list)
             return;
@@ -1116,6 +1245,12 @@
             const t = e.target instanceof Element ? e.target : e.target?.parentElement;
             if (!t)
                 return;
+            const stepBtn = t.closest('[data-pkg-max-step]');
+            if (stepBtn) {
+                e.preventDefault();
+                stepPackageMaxPeople(stepBtn.dataset.pkgId, Number(stepBtn.dataset.pkgMaxStep), stepBtn);
+                return;
+            }
             const moveBtn = t.closest('[data-pkg-move]');
             if (moveBtn) {
                 e.preventDefault();
@@ -1140,6 +1275,12 @@
             const selectEl = e.target.closest?.('select[data-pkg-input]');
             if (selectEl)
                 onPackageInput(e);
+            const maxPeopleInput = e.target.closest?.('input[data-pkg-input="max_people"]');
+            if (maxPeopleInput) {
+                if (maxPeopleInput.value.trim() === '')
+                    maxPeopleInput.value = '1';
+                onPackageInput(e);
+            }
             const toggle = e.target.closest?.('[data-pkg-toggle]');
             if (toggle)
                 onPackageToggle(toggle);

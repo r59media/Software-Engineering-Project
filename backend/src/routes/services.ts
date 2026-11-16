@@ -393,7 +393,7 @@ servicesRouter.post('/', adminAuth, async (c) => {
 
     const rawAdditionalPeople = body.additional_people !== undefined ? body.additional_people : body.additionalPeople
     let cleanAdditionalPeople: string | null = null
-    if (rawAdditionalPeople !== undefined && rawAdditionalPeople !== null) {
+    if (rawAdditionalPeople !== undefined && rawAdditionalPeople !== null && rawAdditionalPeople !== '') {
       if (typeof rawAdditionalPeople === 'string') {
         try {
           JSON.parse(rawAdditionalPeople)
@@ -642,7 +642,7 @@ servicesRouter.put('/:id', adminAuth, async (c) => {
     const rawAdditionalPeople = body.additional_people !== undefined ? body.additional_people : body.additionalPeople
     let cleanAdditionalPeople: string | null = existing.additional_people
     if (rawAdditionalPeople !== undefined) {
-      if (rawAdditionalPeople === null) {
+      if (rawAdditionalPeople === null || rawAdditionalPeople === '') {
         cleanAdditionalPeople = null
       } else if (typeof rawAdditionalPeople === 'string') {
         try {
