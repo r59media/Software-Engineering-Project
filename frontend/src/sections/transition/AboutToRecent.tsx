@@ -8,7 +8,10 @@ import './AboutToRecent.css'
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value))
 const smooth = (value: number) => value * value * (3 - 2 * value)
-const getViewportHeight = () => Math.max(window.innerHeight || 0, Math.round(window.visualViewport?.height || 0))
+const getViewportHeight = (host?: HTMLElement | null) => {
+  const probeHeight = host?.querySelector<HTMLElement>('.lens-transition__lvh-probe')?.offsetHeight || 0
+  return Math.max(probeHeight, window.innerHeight || 0, Math.round(window.visualViewport?.height || 0))
+}
 
 export function AboutToRecent() {
   const root = useRef<HTMLDivElement>(null)
@@ -48,7 +51,7 @@ export function AboutToRecent() {
     const section = root.current?.querySelector<HTMLElement>('#recent-photoshoot')
     if (!section) return
     // Keep all gallery content scrollable on short/landscape viewports.
-    const measure = () => setFits(section.offsetHeight <= getViewportHeight() + 1)
+    const measure = () => setFits(section.offsetHeight <= getViewportHeight(root.current) + 1)
     const observer = new ResizeObserver(measure)
     observer.observe(section)
     window.addEventListener('resize', measure)
@@ -77,14 +80,14 @@ export function AboutToRecent() {
     let lastViewport = 0
     const reserve = () => {
       const height = about.offsetHeight
-      const viewport = getViewportHeight()
+      const viewport = getViewportHeight(host)
       lastViewport = viewport
       host.style.height = `${height + viewport * 1.6}px`
       stage.style.top = `${Math.min(0, viewport - height)}px`
       recent.style.height = `${viewport}px`
     }
     const onResize = () => {
-      const nextViewport = getViewportHeight()
+      const nextViewport = getViewportHeight(host)
       if (nextViewport !== lastViewport) reserve()
     }
     const resize = new ResizeObserver(reserve)
@@ -152,7 +155,7 @@ export function AboutToRecent() {
       subscribers.forEach(listener => listener(aperture))
     }
     const syncViewportHeight = () => {
-      const nextViewport = getViewportHeight()
+      const nextViewport = getViewportHeight(host)
       if (nextViewport === viewport) return false
       viewport = nextViewport
       stage.style.top = `${Math.min(0, viewport - height)}px`
@@ -194,7 +197,7 @@ export function AboutToRecent() {
 
     const measure = () => {
       height = about.offsetHeight
-      viewport = getViewportHeight()
+      viewport = getViewportHeight(host)
       width = host.clientWidth
       distance = viewport * 1.6
       const bounds = host.getBoundingClientRect()
@@ -285,6 +288,7 @@ export function AboutToRecent() {
 
   return <LensTransitionContext.Provider value={controller}>
     <div ref={root} className="lens-transition" data-enabled={enabled} data-reserved={canReserve}>
+      <div className="lens-transition__lvh-probe" aria-hidden="true" />
       <div className="lens-transition__stage">
         {enabled && <a className="lens-transition__skip" href="#recent-photoshoot">Skip lens transition</a>}
         <About />
