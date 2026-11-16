@@ -2,6 +2,23 @@
 var ctx = self;
 var bearerToken = null;
 var connectedPorts = /* @__PURE__ */ new Set();
+var LOCAL_DEV_HOSTNAMES = /* @__PURE__ */ new Set(["localhost", "127.0.0.1"]);
+var ALLOWED_LOCAL_DEV_ORIGINS = /* @__PURE__ */ new Set([
+  "http://localhost:8787",
+  "http://127.0.0.1:8787"
+]);
+function isTrustedProxyUrl(parsed) {
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return false;
+  }
+  if (parsed.origin === self.location.origin) {
+    return true;
+  }
+  if (LOCAL_DEV_HOSTNAMES.has(self.location.hostname) && ALLOWED_LOCAL_DEV_ORIGINS.has(parsed.origin)) {
+    return true;
+  }
+  return false;
+}
 function broadcast(message) {
   for (const port of Array.from(connectedPorts)) {
     try {
@@ -86,6 +103,33 @@ ctx.onconnect = (event) => {
           }
           break;
         }
+        let parsedUrl;
+        try {
+          parsedUrl = new URL(url, self.location.origin);
+        } catch {
+          if (id) {
+            port.postMessage({
+              id,
+              ok: false,
+              status: 400,
+              statusText: "Bad Request",
+              error: "Invalid URL for proxy fetch"
+            });
+          }
+          break;
+        }
+        if (!isTrustedProxyUrl(parsedUrl)) {
+          if (id) {
+            port.postMessage({
+              id,
+              ok: false,
+              status: 403,
+              statusText: "Forbidden Origin",
+              error: "Cross-origin proxy fetch denied"
+            });
+          }
+          break;
+        }
         const headers = {};
         if (init && init.headers) {
           if (typeof init.headers.forEach === "function") {
@@ -109,7 +153,7 @@ ctx.onconnect = (event) => {
           credentials: "omit"
         };
         try {
-          const response = await fetch(url, fetchInit);
+          const response = await fetch(parsedUrl.toString(), fetchInit);
           const contentType = response.headers.get("content-type") || "";
           let responseData = null;
           if (init && (init.responseType === "arraybuffer" || init.responseType === "blob")) {
@@ -161,4 +205,7 @@ ctx.onconnect = (event) => {
         break;
     }
   };
+};
+export {
+  isTrustedProxyUrl
 };

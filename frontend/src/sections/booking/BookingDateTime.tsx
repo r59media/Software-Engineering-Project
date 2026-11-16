@@ -18,6 +18,7 @@ import './BookingDateTime.css'
 export function BookingDateTime({
   service,
   people,
+  pricing = null,
   selection,
   onSelectDateTime,
   onBack,
@@ -26,6 +27,7 @@ export function BookingDateTime({
 }: BookingDateTimeProps) {
   const easternToday = getEasternToday()
   const [scheduleSlots, setScheduleSlots] = useState<readonly ScheduleSlotItem[]>([])
+  const [slotsLoadedFromApi, setSlotsLoadedFromApi] = useState(false)
   const [selectedDate, setSelectedDate] = useState<string>(selection?.date || easternToday)
   const [currentTimeSlot, setCurrentTimeSlot] = useState<string | null>(selection?.timeSlot || null)
 
@@ -47,30 +49,44 @@ export function BookingDateTime({
 
   useEffect(() => {
     let active = true
-    const controller = new AbortController()
+    let controller: AbortController | null = null
 
     async function loadSlots() {
+      controller?.abort()
+      const current = new AbortController()
+      controller = current
       try {
-        const slots = await fetchAvailableSlots(controller.signal)
-        if (!active) return
-        if (slots && slots.length > 0) {
+        const slots = await fetchAvailableSlots(current.signal)
+        if (!active || current.signal.aborted) return
+        if (slots !== null) {
           setScheduleSlots(slots)
+          setSlotsLoadedFromApi(true)
         }
       } catch {
-        // Fall back gracefully
+        // Fall back gracefully only when API has not responded
+      }
+    }
+
+    const onRevalidate = () => {
+      if (document.visibilityState === 'visible') {
+        void loadSlots()
       }
     }
 
     void loadSlots()
+    window.addEventListener('focus', onRevalidate)
+    document.addEventListener('visibilitychange', onRevalidate)
     return () => {
       active = false
-      controller.abort()
+      controller?.abort()
+      window.removeEventListener('focus', onRevalidate)
+      document.removeEventListener('visibilitychange', onRevalidate)
     }
   }, [])
 
   const availableDates = useMemo(() => {
     const unbookedSlots = scheduleSlots.filter(s => s.is_booked === 0 && s.date >= easternToday)
-    if (unbookedSlots.length > 0) {
+    if (unbookedSlots.length > 0 || slotsLoadedFromApi) {
       const dates = Array.from(new Set(unbookedSlots.map(s => s.date))).sort()
       return dates
     }
@@ -83,7 +99,7 @@ export function BookingDateTime({
       )
     }
     return dates
-  }, [scheduleSlots, easternToday])
+  }, [scheduleSlots, slotsLoadedFromApi, easternToday])
 
   const currentDate =
     availableDates.length > 0 && !availableDates.includes(selectedDate)
@@ -92,7 +108,7 @@ export function BookingDateTime({
 
   const daySlots: TimeSlotItem[] = useMemo(() => {
     const matched = scheduleSlots.filter(s => s.date === currentDate && s.is_booked === 0)
-    if (matched.length > 0) {
+    if (matched.length > 0 || slotsLoadedFromApi) {
       return matched.map(slot => {
         const formatted = formatSlotTime(slot.start_time)
         const hour = parseInt(slot.start_time.split(':')[0], 10)
@@ -106,7 +122,7 @@ export function BookingDateTime({
     }
 
     return [...previewBookingTimeSlots]
-  }, [scheduleSlots, currentDate])
+  }, [scheduleSlots, slotsLoadedFromApi, currentDate])
 
   const resolveSlotId = (date: string, time: string | null): number | undefined => {
     if (!time || !scheduleSlots.length) return undefined
@@ -293,6 +309,7 @@ export function BookingDateTime({
           <BookingSessionCard
             service={service}
             people={people}
+            pricing={pricing}
             dateTime={liveSelection}
             continueText="Continue to your information →"
             onContinue={handleContinue}

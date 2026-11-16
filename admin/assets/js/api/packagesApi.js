@@ -13,10 +13,14 @@
 (function () {
     'use strict';
     function toCents(data) {
-        if (data.priceInCents !== undefined)
-            return Math.round(Number(data.priceInCents) || 0);
-        if (data.price !== undefined)
+        if (data.priceInCents !== undefined) {
+            return data.priceInCents === null || data.priceInCents === '' ? null : Math.round(Number(data.priceInCents) || 0);
+        }
+        if (data.price !== undefined) {
+            if (data.price === null || data.price === '')
+                return null;
             return Math.round((Number(data.price) || 0) * 100);
+        }
         return undefined;
     }
     const activeFlag = v => (v ? 1 : 0);
@@ -71,12 +75,16 @@
          */
         async createPackage(data = {}) {
             const name = String(data.name ?? data.title ?? '').trim();
+            const bookingModeRaw = data.booking_mode ?? data.bookingMode;
+            const isInquiry = bookingModeRaw === 'inquiry';
+            const rawDur = data.duration_minutes !== undefined ? data.duration_minutes : data.durationMinutes;
+            const cents = toCents(data);
             const payload = {
                 name,
                 title: name,
                 description: data.description || '',
-                price: toCents(data) ?? 0,
-                duration_minutes: Number(data.duration_minutes ?? data.durationMinutes),
+                price: cents !== undefined ? cents : (isInquiry ? null : 0),
+                duration_minutes: rawDur === null || rawDur === '' || rawDur === undefined ? null : Number(rawDur),
                 outfits: outfitsValue(data.outfits),
                 full_day: data.full_day === true || data.full_day === 1,
                 is_active: data.is_active !== undefined
@@ -152,9 +160,10 @@
             const cents = toCents(data);
             if (cents !== undefined)
                 payload.price = cents;
-            const duration = data.duration_minutes ?? data.durationMinutes;
-            if (duration !== undefined)
-                payload.duration_minutes = Number(duration);
+            const duration = data.duration_minutes !== undefined ? data.duration_minutes : data.durationMinutes;
+            if (duration !== undefined) {
+                payload.duration_minutes = duration === null || duration === '' ? null : Number(duration);
+            }
             if (data.outfits !== undefined)
                 payload.outfits = outfitsValue(data.outfits);
             if (data.full_day !== undefined)
@@ -224,7 +233,7 @@
          */
         async reorder(ids) {
             const cleanIds = (Array.isArray(ids) ? ids : []).map(id => Number(id)).filter(n => Number.isFinite(n));
-            return await window.R59.apiClient.put('/api/services/order', { ids: cleanIds });
+            return await window.R59.apiClient.put('/services/order', { ids: cleanIds });
         },
         /**
          * DELETE /services/:id. The server deletes the package, or deactivates it when bookings

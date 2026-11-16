@@ -64,6 +64,33 @@
     return Number.isNaN(n) ? t : `${n} outfit${n === 1 ? '' : 's'}`;
   }
 
+  function fmtPhotoCount(v) {
+    const t = norm(v);
+    if (t === '') return EMPTY;
+    const n = Number(t);
+    return Number.isNaN(n) ? t : `${n} photo${n === 1 ? '' : 's'}`;
+  }
+
+  const fmtBookingMode = v => (norm(v) === 'inquiry' ? 'Inquiry only' : 'Direct booking');
+
+  function sameJsonText(a, b) {
+    const sa = norm(a);
+    const sb = norm(b);
+    if (sa === sb) return true;
+    try {
+      const pa = JSON.parse(sa || 'null');
+      const pb = JSON.parse(sb || 'null');
+      if (pa && pb && typeof pa === 'object' && typeof pb === 'object') {
+        const sortKeys = obj => Object.keys(obj).sort().reduce((acc, k) => {
+          acc[k] = obj[k];
+          return acc;
+        }, {});
+        return JSON.stringify(sortKeys(pa)) === JSON.stringify(sortKeys(pb));
+      }
+    } catch { /* fall through */ }
+    return false;
+  }
+
   /** Minutes as "45 min", "2 h" or "1 h 30 min". */
   function fmtDuration(v) {
     const t = norm(v);
@@ -76,9 +103,10 @@
     return m ? `${h} h ${m} min` : `${h} h`;
   }
 
-  /** One side of a package's Session length row: "Entire day", or the length as fmtDuration. */
+  /** One side of a package's Session length row: "Entire day", "Custom (Inquiry)", or the length as fmtDuration. */
   const isFullDay = pkg => Boolean(pkg) && pkg.full_day === true;
-  const sessionText = pkg => (isFullDay(pkg) ? 'Entire day' : fmtDuration(pkg && pkg.duration_minutes));
+  const isCustomInquirySession = pkg => !isFullDay(pkg) && norm(pkg?.booking_mode) === 'inquiry' && norm(pkg?.duration_minutes) === '';
+  const sessionText = pkg => (isFullDay(pkg) ? 'Entire day' : (isCustomInquirySession(pkg) ? 'Custom (Inquiry)' : fmtDuration(pkg && pkg.duration_minutes)));
 
   function sameSession(o, n) {
     if (isFullDay(o) !== isFullDay(n)) return false;
@@ -154,7 +182,7 @@
    * is checked when they are not rendered. Fix goes to the hours field.
    */
   function sessionValidity(id, pkg) {
-    if (isFullDay(pkg)) return { invalid: false, message: '' };
+    if (isFullDay(pkg) || isCustomInquirySession(pkg)) return { invalid: false, message: '' };
     const hoursId = `pkg-${id}-duration-h`;
     const hours = fieldValidity(hoursId, null, null);
     if (hours.invalid) return hours;
@@ -274,17 +302,29 @@
         [
           ['name', 'Name', fmtText, sameText, 'packageName'],
           ['price', 'Price', fmtMoney, sameNumber, 'packagePrice'],
+          ['best_for', 'Best for', fmtText, sameText, null, 'best_for'],
+          ['booking_mode', 'Booking mode', fmtBookingMode, sameText, null, 'booking_mode'],
+          ['photo_count', 'Photo count', fmtPhotoCount, sameNumber, 'packagePhotoCount', 'photo_count'],
           ['description', 'Description', fmtText, sameText, null],
-          ['outfits', 'Outfits', fmtOutfits, sameNumber, 'packageOutfits', 'outfits']
+          ['outfits', 'Outfits', fmtOutfits, sameNumber, 'packageOutfits', 'outfits'],
+          ['image_url', 'Package image', fmtText, sameText, null, 'image_url'],
+          ['additional_people', 'Additional people', fmtText, sameJsonText, 'packageAdditionalPeople', 'additional_people']
         ].forEach(([key, title, fmt, same, rule, fieldKey]) => {
           if (same(o[key], n[key])) return;
           const fieldId = `pkg-${id}-${fieldKey || key}`;
+          const isInquiryCustomPrice = key === 'price' && norm(n.booking_mode) === 'inquiry' && norm(n.price) === '';
+          const oldText = key === 'description'
+            ? (excerpt(o[key]) || EMPTY)
+            : (key === 'price' && norm(o.booking_mode) === 'inquiry' && norm(o.price) === '' ? 'Custom pricing' : fmt(o[key]));
+          const newText = key === 'description'
+            ? (excerpt(n[key]) || EMPTY)
+            : (isInquiryCustomPrice ? 'Custom pricing' : fmt(n[key]));
           rows.push(makeRow({
             area: `package:${id}`, key, label: `Package “${name}” · ${title}`,
-            oldText: key === 'description' ? (excerpt(o[key]) || EMPTY) : fmt(o[key]),
-            newText: key === 'description' ? (excerpt(n[key]) || EMPTY) : fmt(n[key]),
+            oldText,
+            newText,
             fieldId, view: 'payment'
-          }, rule, n[key]));
+          }, isInquiryCustomPrice ? null : rule, n[key]));
         });
         // Session length and Entire day are one row ("1 h 30 min → Entire day")
         if (!sameSession(o, n)) {

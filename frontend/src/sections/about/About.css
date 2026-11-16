@@ -59,7 +59,10 @@
 @media (max-width: 1000px) {
   .about__layout { grid-template-columns: 1fr; padding-top: clamp(3rem, 8vw, 5rem); }
   .about__collage { width: min(100%, 710px); justify-self: center; }
-  .about__content { padding: 0 clamp(1.5rem, 7vw, 5rem) 3rem; }
+  .about__content {
+    padding: 0 clamp(1.5rem, 7vw, 5rem) 3rem;
+    padding-bottom: calc(3rem + max(0px, 100lvh - 100svh));
+  }
   .about__heading { font-size: clamp(2.75rem, 8.6vw, 5rem); }
   .about__subheading { padding: .5rem 0 0; font-size: clamp(1.5rem, 4.9vw, 3rem); }
   .about__biography { margin-top: 1.75rem; max-width: 42rem; }

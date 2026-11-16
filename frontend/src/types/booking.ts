@@ -1,3 +1,5 @@
+import type { PricingData } from '../api/client'
+
 export interface BookingService {
   id: string
   name: string
@@ -53,6 +55,7 @@ export interface BookingSessionCardProps {
   hideDateHighlight?: boolean
   service: BookingService
   people: number
+  pricing?: PricingData | null
   dateTime?: BookingDateTimeSelection | null
   onEditService?: () => void
   onEditDateTime?: () => void
@@ -64,6 +67,7 @@ export interface BookingSessionCardProps {
 export interface BookingDateTimeProps {
   service: BookingService
   people: number
+  pricing?: PricingData | null
   selection?: BookingDateTimeSelection | null
   onSelectDateTime: (selection: BookingDateTimeSelection) => void
   onBack: () => void
@@ -74,6 +78,7 @@ export interface BookingDateTimeProps {
 export interface BookingYourInfoProps {
   service: BookingService
   people: number
+  pricing?: PricingData | null
   dateTime: BookingDateTimeSelection
   initialInfo?: BookingCustomerInfo | null
   onDraftChange?: (info: BookingCustomerInfo) => void
@@ -85,6 +90,7 @@ export interface BookingYourInfoProps {
 
 export interface BookingServicesProps {
   services?: readonly BookingService[]
+  pricing?: PricingData | null
   status?: 'ready' | 'loading' | 'error'
   onRetry?: () => void
   onContinue?: (selection: ServiceSelection) => void
@@ -96,6 +102,7 @@ export interface BookingServicesProps {
 export interface BookingSectionProps {
   onProceedToDeposit?: (draft: BookingReviewDraft) => void | Promise<void>
   services?: readonly BookingService[]
+  pricing?: PricingData | null
   status?: 'ready' | 'loading' | 'error'
   onRetry?: () => void
   inquiryHref?: string

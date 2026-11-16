@@ -379,6 +379,56 @@ export interface PricingData {
   currency: string
 }
 
+export interface SessionPricingBreakdown {
+  subtotalMinor: number | null
+  baseFeeMinor: number
+  extraPeopleFeeMinor: number
+  depositPercent: number
+  depositMinor: number | null
+}
+
+/**
+ * Shared pricing math aligned 1:1 with backend POST /api/checkout.
+ */
+export function computeSessionPricing(
+  service: Pick<BookingService, 'priceMinor' | 'additionalPeople'> | null | undefined,
+  attendees: number,
+  pricing?: Pick<PricingData, 'depositPercent' | 'baseFee' | 'perPerson'> | null,
+  fallbackDepositPercent = 60
+): SessionPricingBreakdown {
+  const depositPercent = typeof pricing?.depositPercent === 'number' && Number.isFinite(pricing.depositPercent)
+    ? pricing.depositPercent
+    : fallbackDepositPercent
+
+  if (!service || service.priceMinor === null || service.priceMinor === undefined) {
+    return {
+      subtotalMinor: null,
+      baseFeeMinor: 0,
+      extraPeopleFeeMinor: 0,
+      depositPercent,
+      depositMinor: null,
+    }
+  }
+
+  const extra = service.additionalPeople
+  const includedPeople = extra?.includedPeople ?? 1
+  const additionalPeople = Math.max(0, attendees - includedPeople)
+  const baseFeeMinor = Math.round((Number(pricing?.baseFee) || 0) * 100)
+  const adminPerPersonMinor = Math.round((Number(pricing?.perPerson) || 0) * 100)
+  const ratePerPersonMinor = adminPerPersonMinor > 0 ? adminPerPersonMinor : (extra?.extraPersonPriceMinor ?? 0)
+  const extraPeopleFeeMinor = ratePerPersonMinor * additionalPeople
+  const subtotalMinor = service.priceMinor + baseFeeMinor + extraPeopleFeeMinor
+  const depositMinor = Math.round(subtotalMinor * (depositPercent / 100))
+
+  return {
+    subtotalMinor,
+    baseFeeMinor,
+    extraPeopleFeeMinor,
+    depositPercent,
+    depositMinor,
+  }
+}
+
 export async function fetchPricing(signal?: AbortSignal): Promise<PricingData | null> {
   try {
     const data = await apiGet<PricingData | { pricing?: PricingData; data?: PricingData }>('/pricing', signal)

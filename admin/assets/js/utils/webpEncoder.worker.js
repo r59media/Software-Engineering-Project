@@ -3611,7 +3611,7 @@ async function initModules() {
   return initPromise;
 }
 self.onmessage = async (e) => {
-  const { id, rgbaBuffer, width, height, targetWidth, targetHeight } = e.data;
+  const { id, rgbaBuffer, width, height, targetWidth, targetHeight, quality } = e.data;
   try {
     if (!rgbaBuffer || !width || !height) {
       throw new Error("Invalid worker input: rgbaBuffer, width, and height are required");
@@ -3647,7 +3647,11 @@ self.onmessage = async (e) => {
     } else {
       preparedImageData = initialImageData;
     }
-    const webpBuffer = await encode(preparedImageData, PRISTINE_STUDIO_PRESET);
+    const targetQuality = typeof quality === "number" && Number.isFinite(quality) ? Math.max(1, Math.min(100, Math.round(quality <= 1 ? quality * 100 : quality))) : PRISTINE_STUDIO_PRESET.quality;
+    const webpBuffer = await encode(preparedImageData, {
+      ...PRISTINE_STUDIO_PRESET,
+      quality: targetQuality
+    });
     self.postMessage(
       {
         id,

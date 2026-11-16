@@ -158,7 +158,7 @@ export async function verifyGoogleIdToken(
   clientId?: string,
   authorizedEmail?: string,
   options?: { mockKeys?: GoogleJwksKey[]; expectedNonce?: string }
-): Promise<{ success: true; email: string } | { success: false; error: string }> {
+): Promise<{ success: true; email: string; exp: number } | { success: false; error: string }> {
   try {
     if (!idToken || typeof idToken !== 'string') {
       return { success: false, error: 'Missing or invalid ID token' }
@@ -297,7 +297,7 @@ export async function verifyGoogleIdToken(
       return { success: false, error: `Unauthorized email address: ${payload.email}` }
     }
 
-    return { success: true, email: payload.email }
+    return { success: true, email: payload.email, exp: payload.exp }
   } catch (err: any) {
     return { success: false, error: err?.message || 'Token verification failed' }
   }
@@ -405,6 +405,35 @@ const SESSION_TTL_MS = 24 * 60 * 60 * 1000 // 24 hours
  */
 export function getSigningSecret(env?: Bindings): string | null {
   return env?.SESSION_SECRET && env.SESSION_SECRET.length >= 32 ? env.SESSION_SECRET : null
+}
+
+/**
+ * Retrieves or derives a domain-separated secret for HMAC media URL signing.
+ * Uses MEDIA_SIGNING_SECRET when >= 32 chars; otherwise derives via HMAC-SHA256
+ * from SESSION_SECRET with context "r59-media-url-signing-v1".
+ */
+export async function getMediaSigningSecret(env?: Bindings): Promise<string | null> {
+  if (typeof env?.MEDIA_SIGNING_SECRET === 'string' && env.MEDIA_SIGNING_SECRET.length >= 32) {
+    return env.MEDIA_SIGNING_SECRET
+  }
+  const sessionSecret = getSigningSecret(env)
+  if (!sessionSecret) {
+    return null
+  }
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(sessionSecret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  )
+  const derivedBytes = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode('r59-media-url-signing-v1')
+  )
+  return bytesToHex(new Uint8Array(derivedBytes))
 }
 
 /**
@@ -598,6 +627,98 @@ export function hasForbiddenPaymentFields(obj: unknown): boolean {
 }
 
 // ── Atomic D1 Distributed Rate Limiter for Admin Authentication (Finding 2) ──
+const MAX_IN_MEMORY_LOGIN_BUCKETS = 1000
+const inMemoryLoginAttempts = new Map<string, { attempts: number; windowStart: number }>()
+
+function recordInMemoryAttempt(bucket: string, now: number, windowMs: number, maxAttempts: number): { allowed: boolean; retryAfterSeconds: number } {
+  const existing = inMemoryLoginAttempts.get(bucket)
+  if (!existing || now - existing.windowStart > windowMs) {
+    if (!existing && inMemoryLoginAttempts.size >= MAX_IN_MEMORY_LOGIN_BUCKETS) {
+      for (const [k, v] of inMemoryLoginAttempts.entries()) {
+        if (now - v.windowStart > windowMs) inMemoryLoginAttempts.delete(k)
+      }
+      if (inMemoryLoginAttempts.size >= MAX_IN_MEMORY_LOGIN_BUCKETS) {
+        const oldestKey = inMemoryLoginAttempts.keys().next().value
+        if (oldestKey) inMemoryLoginAttempts.delete(oldestKey)
+      }
+    }
+    inMemoryLoginAttempts.set(bucket, { attempts: 1, windowStart: now })
+    return { allowed: 1 <= maxAttempts, retryAfterSeconds: 1 <= maxAttempts ? 0 : Math.ceil(windowMs / 1000) }
+  }
+
+  existing.attempts += 1
+  if (existing.attempts > maxAttempts) {
+    const remainingMs = Math.max(1000, windowMs - (now - existing.windowStart))
+    return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
+  }
+  return { allowed: true, retryAfterSeconds: 0 }
+}
+
+function checkAndRecordLoginAttemptInMemory(
+  ipBucket: string,
+  accountBucket: string,
+  now: number,
+  ipWindowMs: number,
+  maxIpAttempts: number,
+  accountWindowMs: number,
+  maxAccountAttempts: number
+): { allowed: boolean; retryAfterSeconds: number } {
+  const ipRes = recordInMemoryAttempt(ipBucket, now, ipWindowMs, maxIpAttempts)
+  if (!ipRes.allowed) return ipRes
+  return recordInMemoryAttempt(accountBucket, now, accountWindowMs, maxAccountAttempts)
+}
+
+async function ensureLoginAttemptsTable(db: D1Database): Promise<void> {
+  await db.prepare(
+    'CREATE TABLE IF NOT EXISTS Login_Attempts (bucket TEXT PRIMARY KEY, attempts INTEGER NOT NULL, window_start INTEGER NOT NULL)'
+  ).run()
+}
+
+async function ensureRevokedSessionsTable(db: D1Database): Promise<void> {
+  await db.prepare(
+    'CREATE TABLE IF NOT EXISTS Revoked_Sessions (signature TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)'
+  ).run()
+}
+
+async function queryD1LoginAttempts(
+  db: D1Database,
+  ipBucket: string,
+  accountBucket: string,
+  now: number,
+  ipWindowMs: number,
+  maxIpAttempts: number,
+  accountWindowMs: number,
+  maxAccountAttempts: number
+): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+  const ipRow = await db.prepare(
+    `INSERT INTO Login_Attempts (bucket, attempts, window_start) VALUES (?1, 1, ?2)
+     ON CONFLICT(bucket) DO UPDATE SET
+       attempts = CASE WHEN ?2 - window_start > ?3 THEN 1 ELSE attempts + 1 END,
+       window_start = CASE WHEN ?2 - window_start > ?3 THEN ?2 ELSE window_start END
+     RETURNING attempts, window_start`
+  ).bind(ipBucket, now, ipWindowMs).first<{ attempts: number; window_start: number }>()
+
+  if (ipRow && ipRow.attempts > maxIpAttempts) {
+    const remainingMs = Math.max(1000, ipWindowMs - (now - ipRow.window_start))
+    return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
+  }
+
+  const accRow = await db.prepare(
+    `INSERT INTO Login_Attempts (bucket, attempts, window_start) VALUES (?1, 1, ?2)
+     ON CONFLICT(bucket) DO UPDATE SET
+       attempts = CASE WHEN ?2 - window_start > ?3 THEN 1 ELSE attempts + 1 END,
+       window_start = CASE WHEN ?2 - window_start > ?3 THEN ?2 ELSE window_start END
+     RETURNING attempts, window_start`
+  ).bind(accountBucket, now, accountWindowMs).first<{ attempts: number; window_start: number }>()
+
+  if (accRow && accRow.attempts > maxAccountAttempts) {
+    const remainingMs = Math.max(1000, accountWindowMs - (now - accRow.window_start))
+    return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
+  }
+
+  return { allowed: true, retryAfterSeconds: 0 }
+}
+
 export function normalizeIpBucket(ip: string): string {
   const cleanIp = (ip || 'unknown').trim()
   if (cleanIp.includes(':')) {
@@ -624,52 +745,77 @@ export async function checkAndRecordLoginAttempt(
   const MAX_ACCOUNT_ATTEMPTS = 20
 
   if (!db) {
-    return { allowed: true, retryAfterSeconds: 0 }
+    return checkAndRecordLoginAttemptInMemory(
+      ipBucket, accountBucket, now, IP_WINDOW_MS, MAX_IP_ATTEMPTS, ACCOUNT_WINDOW_MS, MAX_ACCOUNT_ATTEMPTS
+    )
   }
 
   try {
-    // 1. IP bucket atomic increment BEFORE password evaluation (Finding 2)
-    const ipRow = await db.prepare(
-      `INSERT INTO Login_Attempts (bucket, attempts, window_start) VALUES (?1, 1, ?2)
-       ON CONFLICT(bucket) DO UPDATE SET
-         attempts = CASE WHEN ?2 - window_start > ?3 THEN 1 ELSE attempts + 1 END,
-         window_start = CASE WHEN ?2 - window_start > ?3 THEN ?2 ELSE window_start END
-       RETURNING attempts, window_start`
-    ).bind(ipBucket, now, IP_WINDOW_MS).first<{ attempts: number; window_start: number }>()
-
-    if (ipRow && ipRow.attempts > MAX_IP_ATTEMPTS) {
-      const remainingMs = Math.max(1000, IP_WINDOW_MS - (now - ipRow.window_start))
-      return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
+    return await queryD1LoginAttempts(
+      db, ipBucket, accountBucket, now, IP_WINDOW_MS, MAX_IP_ATTEMPTS, ACCOUNT_WINDOW_MS, MAX_ACCOUNT_ATTEMPTS
+    )
+  } catch (firstErr) {
+    try {
+      await ensureLoginAttemptsTable(db)
+      return await queryD1LoginAttempts(
+        db, ipBucket, accountBucket, now, IP_WINDOW_MS, MAX_IP_ATTEMPTS, ACCOUNT_WINDOW_MS, MAX_ACCOUNT_ATTEMPTS
+      )
+    } catch (err) {
+      // Isolate-scoped in-memory fallback when D1 is unavailable so rate limiting never fails completely open
+      console.warn('[rate-limit] D1 rate limiter error (using isolate memory fallback):', err || firstErr)
+      return checkAndRecordLoginAttemptInMemory(
+        ipBucket, accountBucket, now, IP_WINDOW_MS, MAX_IP_ATTEMPTS, ACCOUNT_WINDOW_MS, MAX_ACCOUNT_ATTEMPTS
+      )
     }
-
-    // 2. Account-wide bucket atomic increment (Finding 2)
-    const accRow = await db.prepare(
-      `INSERT INTO Login_Attempts (bucket, attempts, window_start) VALUES (?1, 1, ?2)
-       ON CONFLICT(bucket) DO UPDATE SET
-         attempts = CASE WHEN ?2 - window_start > ?3 THEN 1 ELSE attempts + 1 END,
-         window_start = CASE WHEN ?2 - window_start > ?3 THEN ?2 ELSE window_start END
-       RETURNING attempts, window_start`
-    ).bind(accountBucket, now, ACCOUNT_WINDOW_MS).first<{ attempts: number; window_start: number }>()
-
-    if (accRow && accRow.attempts > MAX_ACCOUNT_ATTEMPTS) {
-      const remainingMs = Math.max(1000, ACCOUNT_WINDOW_MS - (now - accRow.window_start))
-      return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
-    }
-
-    return { allowed: true, retryAfterSeconds: 0 }
-  } catch (err) {
-    // Fail OPEN on DB error: prevents total denial-of-service lockout for admins if D1 encounters transient errors
-    console.warn('[rate-limit] D1 rate limiter error (failing open):', err)
-    return { allowed: true, retryAfterSeconds: 0 }
   }
 }
 
 export async function clearLoginAttempts(db: D1Database | undefined, ip: string): Promise<void> {
-  if (!db) return
   const ipBucket = normalizeIpBucket(ip)
+  inMemoryLoginAttempts.delete(ipBucket)
+  inMemoryLoginAttempts.delete('account')
+  if (!db) return
   try {
     await db.prepare('DELETE FROM Login_Attempts WHERE bucket IN (?, ?)').bind(ipBucket, 'account').run()
   } catch {}
+}
+
+/**
+ * Atomically consumes a one-time token digest in Revoked_Sessions for replay protection.
+ * Returns true only on first use (meta.changes > 0); returns false on replay or DB failure.
+ */
+export async function consumeOneTimeTokenDigest(
+  db: D1Database | undefined,
+  rawToken: string,
+  expiresAtSec: number
+): Promise<boolean> {
+  if (!db || !rawToken) return false
+
+  try {
+    const digestBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(rawToken))
+    const tokenKey = `oauth_replay:${bytesToHex(new Uint8Array(digestBytes))}`
+    const expiresAtMs = Number.isFinite(expiresAtSec) && expiresAtSec > 0
+      ? Math.floor(expiresAtSec * 1000)
+      : Date.now() + 3600_000
+
+    const insertReplay = () =>
+      db.prepare('INSERT OR IGNORE INTO Revoked_Sessions (signature, expires_at) VALUES (?, ?)')
+        .bind(tokenKey, expiresAtMs)
+        .run()
+
+    let res: D1Result<unknown>
+    try {
+      res = await insertReplay()
+    } catch {
+      await ensureRevokedSessionsTable(db)
+      res = await insertReplay()
+    }
+
+    return Boolean(res?.meta?.changes && res.meta.changes > 0)
+  } catch (err) {
+    console.warn('[auth] One-time token replay check failed (failing closed):', err)
+    return false
+  }
 }
 
 /**
@@ -694,9 +840,7 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
       'INSERT OR IGNORE INTO Revoked_Sessions (signature, expires_at) VALUES (?, ?)'
     ).bind(key, expiry).run().catch(async () => {
       // Fallback if table not yet initialized
-      await db.prepare(
-        'CREATE TABLE IF NOT EXISTS Revoked_Sessions (signature TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)'
-      ).run().catch(() => {})
+      await ensureRevokedSessionsTable(db).catch(() => {})
       await db.prepare(
         'INSERT OR IGNORE INTO Revoked_Sessions (signature, expires_at) VALUES (?, ?)'
       ).bind(key, expiry).run()

@@ -54,6 +54,7 @@ export function PhotoViewer({ photo, position, total, onStep, onClose }: PhotoVi
         className="photo-viewer__canvas"
         width={photo.width}
         height={photo.height}
+        eager
       />
     </div>
     {total > 1 && <>

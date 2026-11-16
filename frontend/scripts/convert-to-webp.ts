@@ -207,8 +207,16 @@ export function convertFile(srcPath: string, options: ConvertOptions, binInfo: B
       if (options.lossless) {
         magickArgs.push('-define', 'webp:lossless=true', '-quality', '100');
       } else {
-        // Default: visually lossless at 1:1 original resolution
-        magickArgs.push('-quality', '92');
+        // Default: Pristine Studio Preset at 0.92 quality (visually lossless at 1:1 original resolution)
+        magickArgs.push(
+          '-quality', '92',
+          '-define', 'webp:method=6',
+          '-define', 'webp:pass=10',
+          '-define', 'webp:use-sharp-yuv=true',
+          '-define', 'webp:sns-strength=80',
+          '-define', 'webp:filter-strength=25',
+          '-define', 'webp:auto-filter=true'
+        );
       }
       magickArgs.push(destPath);
       execFileSync(binInfo.path, magickArgs, { stdio: 'pipe' });
@@ -217,8 +225,8 @@ export function convertFile(srcPath: string, options: ConvertOptions, binInfo: B
       if (options.lossless) {
         ffmpegArgs.push('-lossless', '1', '-compression_level', '6');
       } else {
-        // Default: visually lossless at 1:1 original resolution
-        ffmpegArgs.push('-quality', '92', '-compression_level', '6');
+        // Default: Pristine Studio Preset at 0.92 quality (visually lossless at 1:1 original resolution)
+        ffmpegArgs.push('-quality', '92', '-compression_level', '6', '-preset', 'photo');
       }
       ffmpegArgs.push(destPath);
       execFileSync(binInfo.path, ffmpegArgs, { stdio: 'pipe' });

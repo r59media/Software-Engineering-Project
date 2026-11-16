@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { computeSessionPricing, type PricingData } from '../../api/client'
 import { previewBookingDepositPercent } from '../../config/booking'
 import type { BookingPhotoPermissions, BookingCustomerInfo, BookingDateTimeSelection, BookingReviewDraft, BookingService } from '../../types/booking'
 import { BookingProgressBar } from './BookingProgressBar'
@@ -7,6 +8,7 @@ import './BookingSection.css'
 interface BookingSummaryProps {
   service: BookingService
   people: number
+  pricing?: PricingData | null
   dateTime: BookingDateTimeSelection
   photoPermissions: BookingPhotoPermissions
   onPhotoPermissionsChange: (permissions: BookingPhotoPermissions) => void
@@ -15,12 +17,13 @@ interface BookingSummaryProps {
   onProceedToDeposit?: (draft: BookingReviewDraft) => void | Promise<void>
 }
 
-export function BookingSummary({ service, people, dateTime, customerInfo, photoPermissions, onPhotoPermissionsChange, onEdit, onProceedToDeposit }: BookingSummaryProps) {
+export function BookingSummary({ service, people, pricing = null, dateTime, customerInfo, photoPermissions, onPhotoPermissionsChange, onEdit, onProceedToDeposit }: BookingSummaryProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lock = useRef(false)
   const date = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${dateTime.date}T12:00:00Z`))
-  const price = service.priceMinor === null ? 'Custom pricing' : new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(service.priceMinor / 100)
+  const breakdown = computeSessionPricing(service, people, pricing, previewBookingDepositPercent)
+  const price = breakdown.subtotalMinor === null ? 'Custom pricing' : new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(breakdown.subtotalMinor / 100)
   const proceed = async () => {
     if (lock.current || !onProceedToDeposit) return
     lock.current = true
@@ -76,7 +79,7 @@ export function BookingSummary({ service, people, dateTime, customerInfo, photoP
         <p>These permissions do not include paid advertising, sale, or licensing to third parties.</p>
       </fieldset>
       <footer className="booking-review__footer">
-        <div className="booking-review__price"><span>SESSION BASE PRICE</span><strong>{price}</strong><div><b>{previewBookingDepositPercent}% deposit to reserve</b><p>Review your final total and payment details at the deposit step.</p></div></div>
+        <div className="booking-review__price"><span>SESSION TOTAL</span><strong>{price}</strong><div><b>{breakdown.depositPercent}% deposit to reserve</b><p>Review your final total and payment details at the deposit step.</p></div></div>
       </footer>
     </article>
     <button className="booking-review__button" disabled={busy || !onProceedToDeposit} onClick={() => void proceed()}>{busy ? 'Continuing…' : 'Continue to deposit →'}</button>

@@ -34,11 +34,30 @@ export function useGalleryPhotos(): { photos: GalleryPhoto[]; loading: boolean }
       if (document.visibilityState === 'visible') load()
     }
 
-    load()
+    let idleHandle: number | null = null
+    let timeoutHandle: number | null = null
+    if (typeof window.requestIdleCallback === 'function') {
+      idleHandle = window.requestIdleCallback(() => {
+        idleHandle = null
+        load()
+      }, { timeout: 1200 })
+    } else {
+      timeoutHandle = window.setTimeout(() => {
+        timeoutHandle = null
+        load()
+      }, 250)
+    }
+
     window.addEventListener('focus', onRevalidate)
     document.addEventListener('visibilitychange', onRevalidate)
     return () => {
       controller?.abort()
+      if (idleHandle !== null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleHandle)
+      }
+      if (timeoutHandle !== null) {
+        window.clearTimeout(timeoutHandle)
+      }
       window.removeEventListener('focus', onRevalidate)
       document.removeEventListener('visibilitychange', onRevalidate)
     }

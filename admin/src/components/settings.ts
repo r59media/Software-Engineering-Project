@@ -3,14 +3,14 @@
  * R59 Media Admin — Settings dialog (R59.account)
  *
  * Displays account information:
- *   Authorized Admin: r59mediatesting@gmail.com (Google Sign-In)
+ *   Authorized Admin: <email from /admin/verify> (Google Sign-In)
  */
 (function () {
   'use strict';
 
   const $ = s => document.querySelector(s);
-  const AUTHORIZED_EMAIL = 'r59mediatesting@gmail.com';
-  const ACCOUNT_TEXT = `Authorized Admin: ${AUTHORIZED_EMAIL} (Google Sign-In)`;
+  let accountEmail = '';
+  const accountText = () => accountEmail ? `Authorized Admin: ${accountEmail} (Google Sign-In)` : 'Authorized Admin (Google Sign-In)';
 
   let opener = null;
 
@@ -28,7 +28,7 @@
   function renderAccountIndicator() {
     const indicator = $('#accountIndicator') || $('#adminAccountIndicator');
     if (indicator) {
-      indicator.textContent = ACCOUNT_TEXT;
+      indicator.textContent = accountText();
     }
   }
 
@@ -39,6 +39,10 @@
     opener = source && $('#menuPanel')?.contains(source) ? $('#menuBtn') : source;
     closeMenuPanel();
     renderAccountIndicator();
+    window.R59?.apiClient?.get('/admin/verify').then(r => {
+      const e = r?.email || r?.data?.email;
+      if (e) { accountEmail = e; renderAccountIndicator(); }
+    }).catch(() => {});
     el.classList.add('open');
     $('#settingsClose')?.focus();
   }

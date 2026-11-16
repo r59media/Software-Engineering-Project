@@ -1,48 +1,80 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import './styles/global.css'
-import { fetchBookingServices, fetchHeroSlides } from './api/client'
+import { fetchBookingServices, fetchHeroSlides, fetchPricing, submitContactLead, type PricingData } from './api/client'
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
 import { previewBookingServices } from './config/booking'
 import { AboutToRecent } from './sections/transition/AboutToRecent'
 import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
-import { ContactSection } from './sections/contact/ContactSection'
-import { BookingSection } from './sections/booking/BookingSection'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
 import type { BookingReviewDraft, BookingService } from './types/booking'
+import type { ContactInquiry } from './types/contact'
 import { DepositCheckoutModal } from './sections/booking/DepositCheckoutModal'
-import { LegalPage } from './pages/legal/LegalPage'
-import { FaqPage } from './pages/faq/FaqPage'
+
+const ContactSection = lazy(() => import('./sections/contact/ContactSection').then(m => ({ default: m.ContactSection })))
+const BookingSection = lazy(() => import('./sections/booking/BookingSection').then(m => ({ default: m.BookingSection })))
+const LegalPage = lazy(() => import('./pages/legal/LegalPage').then(m => ({ default: m.LegalPage })))
+const FaqPage = lazy(() => import('./pages/faq/FaqPage').then(m => ({ default: m.FaqPage })))
+const FaqSection = lazy(() => import('./pages/faq/FaqPage').then(m => ({ default: m.FaqSection })))
 
 function App() {
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
   const [bookingServices, setBookingServices] = useState<readonly BookingService[]>(previewBookingServices)
+  const [pricing, setPricing] = useState<PricingData | null>(null)
   const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
   const [depositDraft, setDepositDraft] = useState<BookingReviewDraft | null>(null)
   const baseUrl = import.meta.env.BASE_URL
-  const path = window.location.pathname.replace(/\/$/, '')
+  const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
   const cleanBase = baseUrl.replace(/\/$/, '')
   const legalPage =
-    path === `${cleanBase}/privacy-policy` || path === `${cleanBase}/privacy`
+    normalizedPath === `${cleanBase}/privacy-policy` || normalizedPath === `${cleanBase}/privacy`
       ? 'privacy'
-      : path === `${cleanBase}/terms-and-conditions` || path === `${cleanBase}/terms`
+      : normalizedPath === `${cleanBase}/terms-and-conditions` || normalizedPath === `${cleanBase}/terms`
         ? 'terms'
         : null
-  const isFaqPage = path === `${cleanBase}/faq`
+  const isFaqPage = normalizedPath === `${cleanBase}/faq`
   const loadBookingServices = useCallback(async () => {
     try {
-      const services = await fetchBookingServices()
+      const [services, livePricing] = await Promise.all([
+        fetchBookingServices(),
+        fetchPricing(),
+      ])
       if (services && services.length > 0) {
         setBookingServices(services)
       } else {
         setBookingServices(previewBookingServices)
       }
+      if (livePricing) {
+        setPricing(livePricing)
+      }
       setBookingStatus('ready')
     } catch {
       setBookingServices(previewBookingServices)
       setBookingStatus('ready')
+    }
+  }, [])
+
+  const handleSendInquiry = useCallback(async (inquiry: ContactInquiry) => {
+    const extraParts = [
+      inquiry.eventDate?.trim() ? `Target date: ${inquiry.eventDate.trim()}` : '',
+      inquiry.location?.trim() ? `Location: ${inquiry.location.trim()}` : '',
+    ].filter(Boolean)
+    const combinedMessage = extraParts.length > 0
+      ? `${extraParts.join(' | ')}\n\n${inquiry.message.trim()}`
+      : inquiry.message.trim()
+
+    const result = await submitContactLead({
+      name: inquiry.name.trim(),
+      email: inquiry.email.trim(),
+      phone: inquiry.phone.trim() || undefined,
+      session_type: inquiry.inquiryType || 'Other',
+      message: combinedMessage,
+    })
+
+    if (result.status !== 'success') {
+      throw new Error(result.message || 'Unable to send inquiry.')
     }
   }, [])
 
@@ -79,11 +111,31 @@ function App() {
     }
 
     load()
-    void Promise.resolve().then(() => loadBookingServices())
+
+    let idleHandle: number | null = null
+    let timeoutHandle: number | null = null
+    if (typeof window.requestIdleCallback === 'function') {
+      idleHandle = window.requestIdleCallback(() => {
+        idleHandle = null
+        void loadBookingServices()
+      }, { timeout: 1200 })
+    } else {
+      timeoutHandle = window.setTimeout(() => {
+        timeoutHandle = null
+        void loadBookingServices()
+      }, 250)
+    }
+
     window.addEventListener('focus', handleVisibilityChange)
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => {
       controller?.abort()
+      if (idleHandle !== null && typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(idleHandle)
+      }
+      if (timeoutHandle !== null) {
+        window.clearTimeout(timeoutHandle)
+      }
       window.removeEventListener('focus', handleVisibilityChange)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
@@ -143,7 +195,9 @@ function App() {
     return <div id="top" className="site-shell">
       <a className="skip-link" href="#legal-content">Skip to content</a>
       <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
-      <LegalPage page={legalPage} />
+      <Suspense fallback={null}>
+        <LegalPage page={legalPage} />
+      </Suspense>
       <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
     </div>
   }
@@ -155,7 +209,9 @@ function App() {
     return <div id="top" className="site-shell">
       <a className="skip-link" href="#faq-content">Skip to content</a>
       <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
-      <FaqPage />
+      <Suspense fallback={null}>
+        <FaqPage />
+      </Suspense>
       <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
     </div>
   }
@@ -169,14 +225,22 @@ function App() {
       </div>
       <AboutToRecent />
       <PortfolioGallery />
-      <BookingSection
-        services={bookingServices}
-        status={bookingStatus}
-        onRetry={loadBookingServices}
-        inquiryHref="#contact"
-        onProceedToDeposit={draft => setDepositDraft(draft)}
-      />
-      <ContactSection />
+      <Suspense fallback={null}>
+        <BookingSection
+          services={bookingServices}
+          pricing={pricing}
+          status={bookingStatus}
+          onRetry={loadBookingServices}
+          inquiryHref="#contact"
+          onProceedToDeposit={draft => setDepositDraft(draft)}
+        />
+      </Suspense>
+      <Suspense fallback={null}>
+        <FaqSection />
+      </Suspense>
+      <Suspense fallback={null}>
+        <ContactSection onSendInquiry={handleSendInquiry} />
+      </Suspense>
     </main>
     <SiteFooter />
     {depositDraft && (

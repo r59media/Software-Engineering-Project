@@ -17,7 +17,7 @@ export const heroDestinations: HeroDestinations = {
   contact: '#contact',
   booking: '#booking',
   portfolio: '#portfolio',
-  faq: `${import.meta.env.BASE_URL}faq`,
+  faq: '#faq',
   discover: '#about',
   explore: '#recent-photoshoot',
 }

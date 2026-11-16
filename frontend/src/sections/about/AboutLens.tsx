@@ -2,7 +2,8 @@ import { Component, lazy, Suspense, useContext, useEffect, useRef, useState, typ
 import { LensTransitionContext } from '../transition/LensTransitionContext'
 import { aboutLens } from '../../config/aboutLens'
 
-const LensScene = lazy(() => import('./LensScene'))
+const loadLensScene = () => import('./LensScene')
+const LensScene = lazy(loadLensScene)
 
 function LensFallback() {
   return <div className="about__lens-fallback" data-lens-state="fallback" />
@@ -27,7 +28,7 @@ export function AboutLens() {
     media.addEventListener('change', update)
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) { setReady(true); observer.disconnect() }
-    }, { rootMargin: '1800px' })
+    }, { rootMargin: '3200px' })
     if (host.current) observer.observe(host.current)
     return () => { media.removeEventListener('change', update); observer.disconnect() }
   }, [])
@@ -35,7 +36,22 @@ export function AboutLens() {
   const url = mobile ? aboutLens.mobileUrl : aboutLens.desktopUrl
 
   useEffect(() => {
+    let cancelled = false
     fetch(url, { credentials: 'omit' }).catch(() => {})
+    const warm = () => {
+      if (cancelled) return
+      void loadLensScene()
+        .then(mod => {
+          if (!cancelled) mod.preloadLensModel(url)
+        })
+        .catch(() => {})
+    }
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(warm, { timeout: 1500 })
+      return () => { cancelled = true; window.cancelIdleCallback(id) }
+    }
+    const timer = window.setTimeout(warm, 200)
+    return () => { cancelled = true; window.clearTimeout(timer) }
   }, [url])
 
   return <div ref={host} className="about__lens" data-about-part="lens-transition" aria-hidden="true">

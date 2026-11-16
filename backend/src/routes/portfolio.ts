@@ -313,7 +313,6 @@ export async function listPortfolio(
   query: PortfolioListQuery,
   { includeInactive = false }: { includeInactive?: boolean } = {}
 ): Promise<PortfolioListResult> {
-  await ensurePortfolioDefaults(db)
   await ensurePortfolioSchema(db)
 
   const limit = Math.max(1, Math.min(parseInt(query.limit || '50', 10) || 50, 100))
