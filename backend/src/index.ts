@@ -300,7 +300,7 @@ app.get('/admin/assets/wasm/*', async (c) => {
   }
   const headers = new Headers(assetRes.headers)
   headers.set('Content-Type', 'application/wasm')
-  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800')
   headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   headers.set('X-Content-Type-Options', 'nosniff')
   return new Response(assetRes.body, {
@@ -414,7 +414,13 @@ app.get('/admin/*', async (c) => {
 
   // Clone with mutable headers so global security header middleware attaches headers cleanly
   const headers = new Headers(assetRes.headers)
-  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  const isCacheableStatic =
+    /\.wasm$/i.test(url.pathname) ||
+    (url.pathname.startsWith('/admin/assets/fonts/') && /\.(woff2|woff|ttf)$/i.test(url.pathname))
+  headers.set(
+    'Cache-Control',
+    isCacheableStatic ? 'public, max-age=86400, stale-while-revalidate=604800' : 'no-store, no-cache, must-revalidate'
+  )
   headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   if (url.pathname.endsWith('.wasm')) {
     headers.set('Content-Type', 'application/wasm')

@@ -120,7 +120,9 @@ export function mapServiceRow(s: any) {
   }
 }
 
+let servicesSchemaReady = false
 export async function ensureServicesSchemaAndDefaults(db: D1Database): Promise<void> {
+  if (servicesSchemaReady) return
   try {
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS Services (
@@ -230,6 +232,7 @@ export async function ensureServicesSchemaAndDefaults(db: D1Database): Promise<v
         await db.batch(updates).catch(() => {})
       }
     }
+    servicesSchemaReady = true
   } catch (err) {
     console.error('[services] ensureServicesSchemaAndDefaults non-fatal error:', err)
   }

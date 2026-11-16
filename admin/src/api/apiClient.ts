@@ -633,6 +633,59 @@
 
   const mediaObjectUrlCache = new Map<string, string>();
   const mediaInflightRequests = new Map<string, Promise<string>>();
+  const pendingObservedMedia = new WeakMap<HTMLImageElement, { rawUrl: string; cacheKey: string }>();
+  let mediaIntersectionObserver: IntersectionObserver | null = null;
+
+  function unobserveAuthorizedImage(img: HTMLImageElement): void {
+    pendingObservedMedia.delete(img);
+    if (mediaIntersectionObserver) {
+      mediaIntersectionObserver.unobserve(img);
+    }
+  }
+
+  async function loadAuthorizedImageIntoElement(img: HTMLImageElement, rawUrl: string, cacheKey: string): Promise<void> {
+    if (img.dataset.authMediaUrl !== cacheKey) return;
+    const cached = mediaObjectUrlCache.get(cacheKey);
+    if (cached) {
+      if (img.getAttribute('src') !== cached) {
+        img.src = cached;
+      }
+      return;
+    }
+    try {
+      const objectUrl = await fetchAuthorizedMediaUrl(rawUrl);
+      if (img.dataset.authMediaUrl === cacheKey && img.getAttribute('src') !== objectUrl) {
+        img.src = objectUrl;
+      }
+    } catch {
+      if (img.dataset.authMediaUrl === cacheKey) {
+        img.dispatchEvent(new Event('error'));
+      }
+    }
+  }
+
+  function getMediaIntersectionObserver(): IntersectionObserver | null {
+    if (typeof IntersectionObserver === 'undefined') return null;
+    if (!mediaIntersectionObserver) {
+      mediaIntersectionObserver = new IntersectionObserver(
+        (entries, observer) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            const img = entry.target as HTMLImageElement;
+            observer.unobserve(img);
+            const pending = pendingObservedMedia.get(img);
+            pendingObservedMedia.delete(img);
+            if (!pending || img.dataset.authMediaUrl !== pending.cacheKey) {
+              continue;
+            }
+            void loadAuthorizedImageIntoElement(img, pending.rawUrl, pending.cacheKey);
+          }
+        },
+        { rootMargin: '300px 0px' }
+      );
+    }
+    return mediaIntersectionObserver;
+  }
 
   function resolveMediaRequestUrl(rawUrl: string): { fetchUrl: string; cacheKey: string } | null {
     const trimmed = typeof rawUrl === 'string' ? rawUrl.trim() : '';
@@ -728,11 +781,14 @@
   /**
    * Applies an image URL to an <img> element, fetching protected backend media
    * with authorization headers when required and caching Blob object URLs.
+   * Uncached protected images are deferred via a shared IntersectionObserver
+   * until near/inside the viewport to avoid eager background fetches.
    */
   async function applyAuthorizedImageSrc(img: HTMLImageElement | null, url: string): Promise<void> {
     if (!img) return;
     const trimmed = typeof url === 'string' ? url.trim() : '';
     if (!trimmed) {
+      unobserveAuthorizedImage(img);
       delete img.dataset.authMediaUrl;
       img.removeAttribute('src');
       return;
@@ -740,6 +796,7 @@
 
     const target = resolveMediaRequestUrl(trimmed);
     if (!target) {
+      unobserveAuthorizedImage(img);
       delete img.dataset.authMediaUrl;
       if (img.getAttribute('src') !== trimmed) {
         img.src = trimmed;
@@ -749,6 +806,7 @@
 
     const cached = mediaObjectUrlCache.get(target.cacheKey);
     if (cached) {
+      unobserveAuthorizedImage(img);
       img.dataset.authMediaUrl = target.cacheKey;
       if (img.getAttribute('src') !== cached) {
         img.src = cached;
@@ -756,17 +814,18 @@
       return;
     }
 
-    img.dataset.authMediaUrl = target.cacheKey;
-    try {
-      const objectUrl = await fetchAuthorizedMediaUrl(trimmed);
-      if (img.dataset.authMediaUrl === target.cacheKey && img.getAttribute('src') !== objectUrl) {
-        img.src = objectUrl;
-      }
-    } catch {
-      if (img.dataset.authMediaUrl === target.cacheKey) {
-        img.dispatchEvent(new Event('error'));
-      }
+    const observer = getMediaIntersectionObserver();
+    if (!observer) {
+      img.dataset.authMediaUrl = target.cacheKey;
+      await loadAuthorizedImageIntoElement(img, trimmed, target.cacheKey);
+      return;
     }
+
+    // Re-register cleanly so stale observations or rapid URL swaps never fire old fetches
+    unobserveAuthorizedImage(img);
+    img.dataset.authMediaUrl = target.cacheKey;
+    pendingObservedMedia.set(img, { rawUrl: trimmed, cacheKey: target.cacheKey });
+    observer.observe(img);
   }
 
   /**
