@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
@@ -15,6 +17,7 @@ import {
   timingSafeEqual,
   revokeTokenInDb,
   isTokenRevokedInDb,
+  consumeOneTimeTokenDigest,
   normalizeIpBucket,
   checkAndRecordLoginAttempt,
   clearLoginAttempts
@@ -463,4 +466,215 @@ test('/admin/assets/js/api/bookingsApi.js is present in backend/public/admin/ass
   assert.equal(resAuth.status, 200)
   assert.equal(resAuth.headers.get('Content-Type'), 'application/javascript')
   assert.equal(resAuth.headers.get('Cross-Origin-Opener-Policy'), 'same-origin-allow-popups')
+})
+
+function loadRealBackendApp(): { fetch: (req: Request, env?: any) => Promise<Response> } {
+  const req = createRequire(import.meta.url)
+  const esbuild = createRequire(req.resolve('wrangler'))('esbuild')
+  const out = esbuild.buildSync({
+    entryPoints: [fileURLToPath(new URL('../src/index.ts', import.meta.url))],
+    bundle: true,
+    write: false,
+    format: 'cjs',
+    platform: 'node',
+    packages: 'external'
+  })
+  const mod = { exports: {} as any }
+  new Function('require', 'exports', 'module', out.outputFiles[0].text)(req, mod.exports, mod)
+  return mod.exports.default
+}
+
+async function createSignedGoogleIdToken(claims: Record<string, unknown>, kid = 'replay-kid-1') {
+  const pair = await crypto.subtle.generateKey(
+    {
+      name: 'RSASSA-PKCS1-v1_5',
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: 'SHA-256'
+    },
+    true,
+    ['sign', 'verify']
+  )
+  const jwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
+  const mockJwk = { kty: jwk.kty!, alg: 'RS256', use: 'sig', kid, n: jwk.n!, e: jwk.e! }
+  const headerB64 = Buffer.from(JSON.stringify({ alg: 'RS256', kid, typ: 'JWT' })).toString('base64url')
+  const payloadB64 = Buffer.from(JSON.stringify(claims)).toString('base64url')
+  const sigBytes = await crypto.subtle.sign(
+    'RSASSA-PKCS1-v1_5',
+    pair.privateKey,
+    new TextEncoder().encode(`${headerB64}.${payloadB64}`)
+  )
+  return {
+    idToken: `${headerB64}.${payloadB64}.${Buffer.from(sigBytes).toString('base64url')}`,
+    mockJwk
+  }
+}
+
+test('OAuth Replay Attack: consumeOneTimeTokenDigest and POST /api/admin/google-login reject replayed Google ID tokens', async () => {
+  const db = setupDb()
+  const nowSec = Math.floor(Date.now() / 1000)
+  const exp = nowSec + 3600
+  const rawIdToken = 'header.payload.signature-one-time-test'
+
+  // 1. Direct consumeOneTimeTokenDigest replay protection check
+  const firstUse = await consumeOneTimeTokenDigest(db, rawIdToken, exp)
+  assert.equal(firstUse, true, 'First consumption of Google ID token digest must succeed')
+
+  const replayUse = await consumeOneTimeTokenDigest(db, rawIdToken, exp)
+  assert.equal(replayUse, false, 'Replayed Google ID token digest must be rejected')
+
+  const stored = await db.prepare("SELECT signature, expires_at FROM Revoked_Sessions WHERE signature LIKE 'oauth_replay:%'").all()
+  assert.equal(stored.results.length, 1, 'Revoked_Sessions must persist exactly one oauth_replay digest')
+
+  // 2. End-to-end POST /api/admin/google-login replay probe
+  const nonce = 'nonce-replay-probe-123'
+  const clientId = 'test-client-id.apps.googleusercontent.com'
+  const { idToken, mockJwk } = await createSignedGoogleIdToken({
+    iss: 'https://accounts.google.com',
+    aud: clientId,
+    exp,
+    iat: nowSec,
+    nonce,
+    email: ADMIN_EMAIL,
+    email_verified: true
+  })
+
+  const realApp = loadRealBackendApp()
+  const env = {
+    DB: db,
+    SESSION_SECRET: VALID_SECRET,
+    ADMIN_EMAIL,
+    GOOGLE_CLIENT_ID: clientId
+  }
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const target = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    if (target === 'https://www.googleapis.com/oauth2/v3/certs') {
+      return new Response(JSON.stringify({ keys: [mockJwk] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=3600' }
+      })
+    }
+    return originalFetch(input, init)
+  }
+
+  try {
+    const loginRes1 = await realApp.fetch(
+      new Request('http://localhost/api/admin/google-login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'CF-Connecting-IP': '198.51.100.10'
+        },
+        body: JSON.stringify({ idToken, nonce })
+      }),
+      env
+    )
+    assert.equal(loginRes1.status, 200, 'Initial Google login must succeed')
+    const loginJson1 = await loginRes1.json() as { ok: boolean; token?: string }
+    assert.equal(loginJson1.ok, true)
+    assert.ok(loginJson1.token)
+
+    const replayRes = await realApp.fetch(
+      new Request('http://localhost/api/admin/google-login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'CF-Connecting-IP': '198.51.100.10'
+        },
+        body: JSON.stringify({ idToken, nonce })
+      }),
+      env
+    )
+    assert.equal(replayRes.status, 401, 'Replayed Google ID token on POST /api/admin/google-login must return 401')
+  } finally {
+    globalThis.fetch = originalFetch
+    await clearLoginAttempts(db, '198.51.100.10')
+  }
+})
+
+test('SharedWorker Cross-Origin Exfiltration: isTrustedProxyUrl blocks untrusted origins and javascript: URLs', async () => {
+  const originalSelf = (globalThis as any).self
+  const mockLocation = {
+    origin: 'http://localhost:5173',
+    hostname: 'localhost'
+  }
+  ;(globalThis as any).self = { location: mockLocation }
+
+  try {
+    const { isTrustedProxyUrl } = await import('../../admin/src/api/authWorker.ts')
+
+    // Untrusted external origin must be rejected before Authorization header can be attached
+    assert.equal(
+      isTrustedProxyUrl(new URL('https://evil.example.com/steal')),
+      false,
+      'External origin must be rejected'
+    )
+
+    // Non-HTTP(S) schemes must be rejected
+    assert.equal(
+      isTrustedProxyUrl(new URL('javascript:alert(1)')),
+      false,
+      'javascript: scheme must be rejected'
+    )
+
+    // Local dev backend (:8787) on localhost (:5173) is trusted
+    assert.equal(
+      isTrustedProxyUrl(new URL('http://localhost:8787/api/admin/bookings')),
+      true,
+      'Local dev backend :8787 must be trusted from http://localhost:5173'
+    )
+
+    // Same-origin relative path resolved against worker origin is trusted
+    assert.equal(
+      isTrustedProxyUrl(new URL('/api/admin/bookings', mockLocation.origin)),
+      true,
+      'Same-origin /api/admin/bookings must be trusted'
+    )
+
+    // Production origin must NOT trust localhost:8787
+    mockLocation.origin = 'https://admin.r59media.com'
+    mockLocation.hostname = 'admin.r59media.com'
+    assert.equal(
+      isTrustedProxyUrl(new URL('http://localhost:8787/api/admin/bookings')),
+      false,
+      'Production origin must reject localhost:8787'
+    )
+    assert.equal(
+      isTrustedProxyUrl(new URL('/api/admin/bookings', mockLocation.origin)),
+      true,
+      'Production origin must allow same-origin path'
+    )
+  } finally {
+    if (originalSelf === undefined) {
+      delete (globalThis as any).self
+    } else {
+      ;(globalThis as any).self = originalSelf
+    }
+  }
+})
+
+test('Rate Limiter Fallback: checkAndRecordLoginAttempt fails closed to isolate memory when D1 throws', async () => {
+  const testIp = '198.51.100.77'
+  await clearLoginAttempts(undefined, testIp)
+
+  const brokenDb: any = {
+    prepare: () => {
+      throw new Error('D1_UNAVAILABLE')
+    }
+  }
+
+  try {
+    for (let i = 1; i <= 5; i++) {
+      const res = await checkAndRecordLoginAttempt(brokenDb, testIp)
+      assert.equal(res.allowed, true, `Fallback attempt ${i} within threshold should be allowed`)
+    }
+
+    const blocked = await checkAndRecordLoginAttempt(brokenDb, testIp)
+    assert.equal(blocked.allowed, false, '6th attempt during D1 outage must be blocked by isolate fallback')
+    assert.ok(blocked.retryAfterSeconds > 0, 'Blocked response must include positive retryAfterSeconds')
+  } finally {
+    await clearLoginAttempts(undefined, testIp)
+  }
 })

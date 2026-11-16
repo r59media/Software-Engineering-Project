@@ -111,6 +111,7 @@
     try {
       fallbackChannel = new BroadcastChannel('r59_admin_sync');
       fallbackChannel.onmessage = (event) => {
+        if (isWorkerMode) return;
         const data = event.data;
         if (!data || typeof data !== 'object') return;
 
@@ -123,8 +124,8 @@
             });
           }
         } else if (data.type === 'PROVIDE_AUTH') {
-          if (data.token) {
-            closureToken = String(data.token);
+          if (typeof data.token === 'string' && data.token.trim().length > 0) {
+            closureToken = data.token.trim();
             window.dispatchEvent(new CustomEvent('r59:auth-ready', {
               detail: { authenticated: true }
             }));
@@ -159,31 +160,36 @@
     }
   });
 
-  // Token accessors (in-memory closure)
+  // Token accessors (in-memory closure; empty when isolated in SharedWorker)
   function getAuthToken() {
+    if (isWorkerMode) return '';
     return closureToken || '';
   }
 
   function setAuthToken(token) {
-    if (isWorkerMode && workerPort) {
-      if (token) {
-        sendWorkerMessage('SET_TOKEN', { token: String(token) }).catch(() => {});
-      } else {
-        sendWorkerMessage('CLEAR_TOKEN').catch(() => {});
-      }
-    } else {
-      closureToken = token ? String(token).trim() : null;
-      if (fallbackChannel) {
-        if (closureToken) {
-          fallbackChannel.postMessage({ type: 'PROVIDE_AUTH', token: closureToken });
+    if (isWorkerMode) {
+      closureToken = null;
+      if (workerPort) {
+        if (token) {
+          sendWorkerMessage('SET_TOKEN', { token: String(token) }).catch(() => {});
         } else {
-          fallbackChannel.postMessage({ type: 'CLEAR_AUTH' });
+          sendWorkerMessage('CLEAR_TOKEN').catch(() => {});
         }
       }
-      window.dispatchEvent(new CustomEvent('r59:auth-ready', {
-        detail: { authenticated: Boolean(closureToken) }
-      }));
+      return;
     }
+
+    closureToken = token ? String(token).trim() : null;
+    if (fallbackChannel) {
+      if (closureToken) {
+        fallbackChannel.postMessage({ type: 'PROVIDE_AUTH', token: closureToken });
+      } else {
+        fallbackChannel.postMessage({ type: 'CLEAR_AUTH' });
+      }
+    }
+    window.dispatchEvent(new CustomEvent('r59:auth-ready', {
+      detail: { authenticated: Boolean(closureToken) }
+    }));
   }
 
   function clearMediaCache() {
@@ -200,17 +206,19 @@
 
   function clearAuthToken() {
     clearMediaCache();
-    if (isWorkerMode && workerPort) {
-      sendWorkerMessage('CLEAR_TOKEN').catch(() => {});
-    } else {
-      closureToken = null;
-      if (fallbackChannel) {
-        fallbackChannel.postMessage({ type: 'CLEAR_AUTH' });
+    closureToken = null;
+    if (isWorkerMode) {
+      if (workerPort) {
+        sendWorkerMessage('CLEAR_TOKEN').catch(() => {});
       }
-      window.dispatchEvent(new CustomEvent('r59:auth-ready', {
-        detail: { authenticated: false }
-      }));
+      return;
     }
+    if (fallbackChannel) {
+      fallbackChannel.postMessage({ type: 'CLEAR_AUTH' });
+    }
+    window.dispatchEvent(new CustomEvent('r59:auth-ready', {
+      detail: { authenticated: false }
+    }));
   }
 
   // Configurable base URL
@@ -340,6 +348,7 @@
           const error: any = new Error(
             (response.data && response.data.error && response.data.error.message) ||
             (response.data && response.data.message) ||
+            response.error ||
             `HTTP Error ${response.status}: ${response.statusText}`
           );
           error.status = response.status;
@@ -495,9 +504,14 @@
       if (data && (data.ok !== false && !data.error)) {
         if (data.token) {
           setAuthToken(data.token);
+          if (isWorkerMode) {
+            delete data.token;
+          }
         }
         setSessionHint(true);
-        return { ok: true, email: data.email, token: data.token };
+        return isWorkerMode
+          ? { ok: true, email: data.email }
+          : { ok: true, email: data.email, token: data.token };
       }
       return {
         ok: false,

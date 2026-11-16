@@ -5,6 +5,8 @@ import {
   createSessionToken,
   extractSessionToken,
   getSigningSecret,
+  getMediaSigningSecret,
+  consumeOneTimeTokenDigest,
   verifySessionToken,
   revokeSessionToken,
   revokeTokenInDb,
@@ -250,6 +252,12 @@ adminRouter.post('/google-login', async (c) => {
       return c.json({ error: 'Unauthorized' }, 401)
     }
 
+    const isFirstUse = await consumeOneTimeTokenDigest(c.env.DB, idToken, verified.exp)
+    if (!isFirstUse) {
+      console.warn('[auth] Google ID token replay rejected')
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
     // Clear failed login attempts on success
     await clearLoginAttempts(c.env.DB, clientIp)
 
@@ -369,7 +377,7 @@ adminRouter.post('/media-token', async (c) => {
       }, 400)
     }
 
-    const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || getSigningSecret(c.env)
+    const secret = await getMediaSigningSecret(c.env)
     if (!secret) {
       return c.json({
         error: {

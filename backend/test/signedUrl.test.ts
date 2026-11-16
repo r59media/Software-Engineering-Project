@@ -1,9 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { Hono, type Context } from 'hono'
 import { signMediaKey, verifyMediaSignature, parseRangeHeader } from '../src/utils/signedUrl.ts'
-import { adminAuth, createSessionToken, getSigningSecret, verifySessionToken, isTokenRevokedInDb } from '../src/middleware/auth.ts'
+import { adminAuth, createSessionToken, getSigningSecret, getMediaSigningSecret, verifySessionToken, isTokenRevokedInDb } from '../src/middleware/auth.ts'
 import type { Bindings } from '../src/index.ts'
 
 function createD1(sqlite: DatabaseSync): any {
@@ -407,4 +409,156 @@ test('Media handler validates HMAC signature and streams chunks via HTTP Range',
   }, env)
   assert.equal(res416.status, 416)
   assert.equal(res416.headers.get('Content-Range'), 'bytes */20')
+})
+
+function loadRealBackendApp(): { fetch: (req: Request, env?: any) => Promise<Response> } {
+  const req = createRequire(import.meta.url)
+  const esbuild = createRequire(req.resolve('wrangler'))('esbuild')
+  const out = esbuild.buildSync({
+    entryPoints: [fileURLToPath(new URL('../src/index.ts', import.meta.url))],
+    bundle: true,
+    write: false,
+    format: 'cjs',
+    platform: 'node',
+    packages: 'external'
+  })
+  const mod = { exports: {} as any }
+  new Function('require', 'exports', 'module', out.outputFiles[0].text)(req, mod.exports, mod)
+  return mod.exports.default
+}
+
+test('Private Media Bypass Probe: enforces Portfolio_Images.is_active and admin Bearer auth on /api/media/*', async () => {
+  const { sqlite, env } = setupTestEnv()
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS Services (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      image_url TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
+  `)
+
+  const privateBytes = Buffer.from('PRIVATE-SECRET-IMAGE-BYTES')
+  const hiddenBytes = Buffer.from('HIDDEN-INACTIVE-IMAGE-BYTES')
+  const activeBytes = Buffer.from('ACTIVE-PUBLIC-IMAGE-BYTES')
+
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)').run(
+    'private-secret.webp', 0, 'image/webp', privateBytes
+  )
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)').run(
+    'hidden-photo.webp', 0, 'image/webp', hiddenBytes
+  )
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)').run(
+    'active-photo.webp', 0, 'image/webp', activeBytes
+  )
+
+  sqlite.prepare('INSERT INTO Portfolio_Images (media_key, is_active) VALUES (?, ?)').run('hidden-photo.webp', 0)
+  sqlite.prepare('INSERT INTO Portfolio_Images (media_key, is_active) VALUES (?, ?)').run('active-photo.webp', 1)
+
+  const realApp = loadRealBackendApp()
+
+  // 1. Unlisted private media with X-R59-Client: media-viewer and NO admin token -> 302 redirect, no bytes leaked
+  const resPrivate = await realApp.fetch(
+    new Request('http://localhost/api/media/private-secret.webp', {
+      headers: { 'X-R59-Client': 'media-viewer' }
+    }),
+    env
+  )
+  assert.equal(resPrivate.status, 302)
+  assert.equal(resPrivate.headers.get('Location'), '/')
+  const privateBody = await resPrivate.text()
+  assert.ok(!privateBody.includes('PRIVATE-SECRET-IMAGE-BYTES'), 'Private image bytes must never leak')
+
+  // 2. Inactive portfolio media (is_active = 0) with X-R59-Client: media-viewer and NO admin token -> 302 redirect, no bytes leaked
+  const resHidden = await realApp.fetch(
+    new Request('http://localhost/api/media/hidden-photo.webp', {
+      headers: { 'X-R59-Client': 'media-viewer' }
+    }),
+    env
+  )
+  assert.equal(resHidden.status, 302)
+  assert.equal(resHidden.headers.get('Location'), '/')
+  const hiddenBody = await resHidden.text()
+  assert.ok(!hiddenBody.includes('HIDDEN-INACTIVE-IMAGE-BYTES'), 'Hidden image bytes must never leak')
+
+  // 3. Active portfolio media (is_active = 1) with X-R59-Client: media-viewer -> 200 and bytes served
+  const resActive = await realApp.fetch(
+    new Request('http://localhost/api/media/active-photo.webp', {
+      headers: { 'X-R59-Client': 'media-viewer' }
+    }),
+    env
+  )
+  assert.equal(resActive.status, 200)
+  assert.equal(await resActive.text(), 'ACTIVE-PUBLIC-IMAGE-BYTES')
+
+  // 4. Inactive portfolio media (is_active = 0) WITH valid Admin Bearer token -> 200 (Admin preview works)
+  const adminToken = await createSessionToken(env.SESSION_SECRET!, env.ADMIN_EMAIL!)
+  const resAdminPreview = await realApp.fetch(
+    new Request('http://localhost/api/media/hidden-photo.webp', {
+      headers: { Authorization: `Bearer ${adminToken}` }
+    }),
+    env
+  )
+  assert.equal(resAdminPreview.status, 200)
+  assert.equal(await resAdminPreview.text(), 'HIDDEN-INACTIVE-IMAGE-BYTES')
+})
+
+test('Cross-Protocol Key Confusion: getMediaSigningSecret rejects signatures forged with SQUARE_WEBHOOK_SIGNATURE_KEY or raw SESSION_SECRET', async () => {
+  const fileKey = 'private-proof.webp'
+  const sessionSecret = 'session-secret-at-least-32-characters-long'
+  const squareWebhookKey = 'square-webhook-key-at-least-32-chars-long'
+
+  // Case A: Domain-separated derivation from SESSION_SECRET when MEDIA_SIGNING_SECRET is unset
+  const derivedEnv: Bindings = {
+    DB: {} as any,
+    SESSION_SECRET: sessionSecret,
+    SQUARE_WEBHOOK_SIGNATURE_KEY: squareWebhookKey
+  }
+  const derivedMediaSecret = await getMediaSigningSecret(derivedEnv)
+  assert.ok(derivedMediaSecret, 'getMediaSigningSecret must derive a secret from SESSION_SECRET')
+  assert.notEqual(derivedMediaSecret, sessionSecret, 'Derived media secret must be domain-separated from SESSION_SECRET')
+  assert.notEqual(derivedMediaSecret, squareWebhookKey, 'Derived media secret must never equal SQUARE_WEBHOOK_SIGNATURE_KEY')
+
+  const forgedWithSquare = await signMediaKey(fileKey, squareWebhookKey, 30)
+  const forgedWithSession = await signMediaKey(fileKey, sessionSecret, 30)
+
+  assert.equal(
+    await verifyMediaSignature(fileKey, forgedWithSquare.exp, forgedWithSquare.sig, derivedMediaSecret!),
+    false,
+    'Signature forged with SQUARE_WEBHOOK_SIGNATURE_KEY must be rejected'
+  )
+  assert.equal(
+    await verifyMediaSignature(fileKey, forgedWithSession.exp, forgedWithSession.sig, derivedMediaSecret!),
+    false,
+    'Signature forged with raw SESSION_SECRET must be rejected'
+  )
+
+  const validDerived = await signMediaKey(fileKey, derivedMediaSecret!, 30)
+  assert.equal(
+    await verifyMediaSignature(fileKey, validDerived.exp, validDerived.sig, derivedMediaSecret!),
+    true,
+    'Signature generated with getMediaSigningSecret must verify'
+  )
+
+  // Case B: Dedicated MEDIA_SIGNING_SECRET configured
+  const dedicatedEnv: Bindings = {
+    DB: {} as any,
+    SESSION_SECRET: sessionSecret,
+    SQUARE_WEBHOOK_SIGNATURE_KEY: squareWebhookKey,
+    MEDIA_SIGNING_SECRET: 'dedicated-media-signing-secret-32-chars'
+  }
+  const dedicatedMediaSecret = await getMediaSigningSecret(dedicatedEnv)
+  assert.equal(dedicatedMediaSecret, dedicatedEnv.MEDIA_SIGNING_SECRET)
+  assert.equal(
+    await verifyMediaSignature(fileKey, forgedWithSquare.exp, forgedWithSquare.sig, dedicatedMediaSecret!),
+    false
+  )
+  assert.equal(
+    await verifyMediaSignature(fileKey, forgedWithSession.exp, forgedWithSession.sig, dedicatedMediaSecret!),
+    false
+  )
+  const validDedicated = await signMediaKey(fileKey, dedicatedMediaSecret!, 30)
+  assert.equal(
+    await verifyMediaSignature(fileKey, validDedicated.exp, validDedicated.sig, dedicatedMediaSecret!),
+    true
+  )
 })

@@ -12,7 +12,7 @@ import { servicesRouter } from './routes/services'
 import { adminRouter, DEFAULT_PROFILE, replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady } from './routes/admin'
 import { squareWebhookRouter } from './routes/squareWebhook'
 import { pricingRouter, couponsRouter } from './routes/pricing'
-import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret } from './middleware/auth'
+import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret, getMediaSigningSecret, getSessionsValidAfter, timingSafeEqual } from './middleware/auth'
 import { verifyMediaSignature, parseRangeHeader } from './utils/signedUrl'
 
 export { replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady }
@@ -107,20 +107,58 @@ function getCorpPolicy(c: Context<{ Bindings: Bindings }>): string {
   return c.env?.ENVIRONMENT === 'development' ? 'cross-origin' : 'same-origin'
 }
 
+async function isActivePortfolioMediaKey(db: D1Database, effectiveKey: string): Promise<boolean> {
+  try {
+    const row = await db.prepare(
+      'SELECT 1 AS found FROM Portfolio_Images WHERE is_active = 1 AND (media_key = ? OR media_key = ? OR media_key = ?) LIMIT 1'
+    ).bind(effectiveKey, `/api/media/${effectiveKey}`, `/${effectiveKey}`).first()
+    return Boolean(row)
+  } catch {
+    return false
+  }
+}
+
+async function isActivePublicMediaKey(db: D1Database, effectiveKey: string): Promise<boolean> {
+  if (await isActivePortfolioMediaKey(db, effectiveKey)) {
+    return true
+  }
+  try {
+    const escapedLikeKey = effectiveKey.replace(/[\\%_]/g, '\\$&')
+    const serviceRow = await db.prepare(
+      `SELECT 1 AS found FROM Services
+       WHERE is_active = 1
+         AND (image_url = ? OR image_url = ? OR image_url = ? OR image_url LIKE ? ESCAPE '\\')
+       LIMIT 1`
+    ).bind(
+      effectiveKey,
+      `/api/media/${effectiveKey}`,
+      `/${effectiveKey}`,
+      `%/api/media/${escapedLikeKey}`
+    ).first()
+    return Boolean(serviceRow)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Validates whether a media request is authorized (Finding 8).
- * Accepts requests with 'X-R59-Client: media-viewer', valid HMAC signed URL,
- * active public portfolio asset, or a cryptographically valid, non-revoked session token.
+ * Accepts valid HMAC signed URLs, valid non-revoked Admin session tokens,
+ * active public portfolio/service media for /api/media/*, or media-viewer / active portfolio for /assets/*.
  */
 async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, fileKey?: string): Promise<boolean> {
-  const clientHeader = c.req.header('X-R59-Client')
-  if (clientHeader === 'media-viewer') return true
+  let pathname = ''
+  try {
+    pathname = decodeURIComponent(new URL(c.req.url).pathname)
+  } catch {
+    return false
+  }
 
   const exp = c.req.query('exp')
   const sig = c.req.query('sig')
   if (exp && sig) {
-    const key = fileKey || decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-    const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || getSigningSecret(c.env)
+    const key = fileKey || pathname.replace(/^\/api\/media\//, '').replace(/^\/+/, '')
+    const secret = await getMediaSigningSecret(c.env)
     const valid = secret ? await verifyMediaSignature(key, Number(exp), sig, secret) : false
     if (valid) return true
   }
@@ -130,28 +168,38 @@ async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, file
     const secret = getSigningSecret(c.env)
     if (secret && !(await isTokenRevokedInDb(c.env.DB, token))) {
       const session = await verifySessionToken(token, secret)
-      if (session.valid) return true
+      if (session.valid) {
+        const adminEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
+        const sessionEmail = session.email ? session.email.trim().toLowerCase() : ''
+        if (adminEmail && sessionEmail && timingSafeEqual(sessionEmail, adminEmail)) {
+          const validAfter = await getSessionsValidAfter(c.env.DB)
+          if (!validAfter || session.issuedAt === undefined || session.issuedAt >= validAfter) {
+            return true
+          }
+        }
+      }
     }
   }
 
-  const pathname = decodeURIComponent(new URL(c.req.url).pathname)
-  const effectiveKey = fileKey || (
-    pathname.startsWith('/api/media/')
-      ? pathname.replace(/^\/api\/media\//, '').replace(/^\/+/, '')
-      : pathname.startsWith('/assets/')
-        ? pathname.replace(/^\/+/, '')
-        : ''
-  )
-  if (effectiveKey && c.env.DB) {
-    try {
-      const row = await c.env.DB.prepare(
-        'SELECT 1 AS found FROM Portfolio_Images WHERE is_active = 1 AND (media_key = ? OR media_key = ? OR media_key = ?) LIMIT 1'
-      ).bind(effectiveKey, `/api/media/${effectiveKey}`, `/${effectiveKey}`).first()
-      if (row) return true
-    } catch {}
+  const clientHeader = c.req.header('X-R59-Client')
+  const isApiMedia = pathname.startsWith('/api/media/') || Boolean(fileKey)
+
+  if (isApiMedia) {
+    const effectiveKey = (fileKey || pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+    if (!effectiveKey || !c.env.DB) return false
+    return await isActivePublicMediaKey(c.env.DB, effectiveKey)
   }
 
-  return false
+  if (pathname.startsWith('/assets/')) {
+    if (clientHeader === 'media-viewer') return true
+    const assetKey = pathname.replace(/^\/+/, '')
+    if (assetKey && c.env.DB) {
+      return await isActivePortfolioMediaKey(c.env.DB, assetKey)
+    }
+    return false
+  }
+
+  return clientHeader === 'media-viewer'
 }
 
 // Block sourcemap files everywhere & protect media/model assets from standalone scraping & hotlinking
@@ -182,7 +230,7 @@ app.use('*', async (c, next) => {
       const sigParam = url.searchParams.get('sig')
       if (expParam || sigParam) {
         const fileKey = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-        const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || getSigningSecret(c.env)
+        const secret = await getMediaSigningSecret(c.env)
         const isValid = secret && expParam && sigParam ? await verifyMediaSignature(fileKey, Number(expParam), sigParam, secret) : false
         if (!isValid) {
           return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
@@ -575,7 +623,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
 
   const exp = c.req.query('exp')
   const sig = c.req.query('sig')
-  const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || getSigningSecret(c.env)
+  const secret = await getMediaSigningSecret(c.env)
 
   if (exp || sig) {
     const isValid = secret && exp && sig ? await verifyMediaSignature(fileKey, Number(exp), sig, secret) : false
