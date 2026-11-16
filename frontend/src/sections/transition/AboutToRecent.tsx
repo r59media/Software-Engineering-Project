@@ -8,6 +8,10 @@ import './AboutToRecent.css'
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value))
 const smooth = (value: number) => value * value * (3 - 2 * value)
+const getViewportHeight = (host?: HTMLElement | null) => {
+  const probeHeight = host?.querySelector<HTMLElement>('.lens-transition__lvh-probe')?.offsetHeight || 0
+  return Math.max(probeHeight, window.innerHeight || 0, Math.round(window.visualViewport?.height || 0))
+}
 
 export function AboutToRecent() {
   const root = useRef<HTMLDivElement>(null)
@@ -32,7 +36,8 @@ export function AboutToRecent() {
     ready: () => setReadyUrl(url),
     fail: () => setFailed(true),
   }), [url])
-  const canAnimate = loaded && !failed && !reduced && fits
+  const canReserve = !failed && !reduced && fits
+  const canAnimate = loaded && canReserve
   const enabled = canAnimate && readyUrl === url
 
   useEffect(() => {
@@ -46,12 +51,17 @@ export function AboutToRecent() {
     const section = root.current?.querySelector<HTMLElement>('#recent-photoshoot')
     if (!section) return
     // Keep all gallery content scrollable on short/landscape viewports.
-    const measure = () => setFits(section.offsetHeight <= window.innerHeight + 1)
+    const measure = () => setFits(section.offsetHeight <= getViewportHeight(root.current) + 1)
     const observer = new ResizeObserver(measure)
     observer.observe(section)
     window.addEventListener('resize', measure)
+    window.visualViewport?.addEventListener('resize', measure)
     measure()
-    return () => { observer.disconnect(); window.removeEventListener('resize', measure) }
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+      window.visualViewport?.removeEventListener('resize', measure)
+    }
   }, [])
 
   useEffect(() => {
@@ -60,6 +70,40 @@ export function AboutToRecent() {
     media.addEventListener('change', update)
     return () => media.removeEventListener('change', update)
   }, [])
+
+  useEffect(() => {
+    const host = root.current
+    if (!host || !canReserve) return
+    const stage = host.querySelector<HTMLElement>('.lens-transition__stage')!
+    const about = host.querySelector<HTMLElement>('#about')!
+    const recent = host.querySelector<HTMLElement>('.lens-transition__recent')!
+    let lastViewport = 0
+    const reserve = () => {
+      const height = about.offsetHeight
+      const viewport = getViewportHeight(host)
+      lastViewport = viewport
+      host.style.height = `${height + viewport * 1.6}px`
+      stage.style.top = `${Math.min(0, viewport - height)}px`
+      recent.style.height = `${viewport}px`
+    }
+    const onResize = () => {
+      const nextViewport = getViewportHeight(host)
+      if (nextViewport !== lastViewport) reserve()
+    }
+    const resize = new ResizeObserver(reserve)
+    resize.observe(about)
+    window.addEventListener('resize', onResize)
+    window.visualViewport?.addEventListener('resize', onResize)
+    reserve()
+    return () => {
+      resize.disconnect()
+      window.removeEventListener('resize', onResize)
+      window.visualViewport?.removeEventListener('resize', onResize)
+      host.style.height = ''
+      stage.style.top = ''
+      recent.style.height = ''
+    }
+  }, [canReserve])
 
   useEffect(() => {
     const host = root.current
@@ -82,6 +126,8 @@ export function AboutToRecent() {
 
     let targetProgress = 0
     let displayedProgress = 0
+    let hasSnapped = false
+    let lastTime = 0
 
     const calculateTarget = () => {
       if (document.body.style.position === 'fixed') return targetProgress
@@ -108,15 +154,40 @@ export function AboutToRecent() {
       host.dataset.progress = progress.toFixed(3)
       subscribers.forEach(listener => listener(aperture))
     }
-    const tick = () => {
+    const syncViewportHeight = () => {
+      const nextViewport = getViewportHeight(host)
+      if (nextViewport === viewport) return false
+      viewport = nextViewport
+      stage.style.top = `${Math.min(0, viewport - height)}px`
+      recent.style.height = `${viewport}px`
+      start = host.getBoundingClientRect().top + window.scrollY + height - viewport
+      return true
+    }
+
+    const tick = (now: number) => {
       frame = 0
-      if (document.body.style.position === 'fixed') return
+      if (document.body.style.position === 'fixed') {
+        lastTime = 0
+        return
+      }
+      syncViewportHeight()
       targetProgress = calculateTarget()
+      if (!hasSnapped) {
+        hasSnapped = true
+        displayedProgress = targetProgress
+        lastTime = now
+        applyProgress(displayedProgress)
+        return
+      }
+      const dt = lastTime > 0 ? Math.min(64, Math.max(1, now - lastTime)) : 16.67
+      lastTime = now
       const diff = targetProgress - displayedProgress
       if (Math.abs(diff) < 0.0005) {
         displayedProgress = targetProgress
+        lastTime = 0
       } else {
-        displayedProgress += diff * 0.22
+        const alpha = Math.min(1, (Math.abs(diff) > 0.15 ? 0.45 : 0.28) * (dt / 16.67))
+        displayedProgress += diff * alpha
         frame = requestAnimationFrame(tick)
       }
       applyProgress(displayedProgress)
@@ -126,7 +197,7 @@ export function AboutToRecent() {
 
     const measure = () => {
       height = about.offsetHeight
-      viewport = window.innerHeight
+      viewport = getViewportHeight(host)
       width = host.clientWidth
       distance = viewport * 1.6
       const bounds = host.getBoundingClientRect()
@@ -141,14 +212,23 @@ export function AboutToRecent() {
       start = bounds.top + window.scrollY + height - viewport
       targetProgress = calculateTarget()
       displayedProgress = targetProgress
+      hasSnapped = true
+      lastTime = 0
       if (frame) cancelAnimationFrame(frame)
       frame = 0
       applyProgress(displayedProgress)
     }
     const onResize = () => {
-      // On mobile viewports (<= 1000px), scrolling dynamically hides/shows the address bar,
-      // changing innerHeight continuously. Ignore height-only resizes on mobile.
-      if (host.clientWidth <= 1000 && Math.abs(host.clientWidth - width) < 2) return
+      // On mobile viewports (<= 1000px), scrolling dynamically hides/shows the address bar.
+      // Sync viewport height in-place without resetting scroll distance or jumping the pin.
+      if (host.clientWidth <= 1000 && Math.abs(host.clientWidth - width) < 2) {
+        if (syncViewportHeight()) {
+          targetProgress = calculateTarget()
+          displayedProgress = targetProgress
+          applyProgress(displayedProgress)
+        }
+        return
+      }
       measure()
     }
 
@@ -180,6 +260,7 @@ export function AboutToRecent() {
     resize.observe(about)
     window.addEventListener('scroll', schedule, { passive: true })
     window.addEventListener('resize', onResize)
+    window.visualViewport?.addEventListener('resize', onResize)
     window.addEventListener('hashchange', navigate)
     document.addEventListener('click', handleRecentLinkClick)
     window.addEventListener('keydown', trackKey, true)
@@ -192,12 +273,13 @@ export function AboutToRecent() {
       resize.disconnect()
       window.removeEventListener('scroll', schedule)
       window.removeEventListener('resize', onResize)
+      window.visualViewport?.removeEventListener('resize', onResize)
       window.removeEventListener('hashchange', navigate)
       document.removeEventListener('click', handleRecentLinkClick)
       window.removeEventListener('keydown', trackKey, true)
       window.removeEventListener('pointerdown', trackPointer, true)
       recent.removeEventListener('focusin', focusRecent)
-      host.style.height = ''; stage.style.top = ''; recent.style.cssText = ''; lens.style.visibility = ''; overlay.style.cssText = ''
+      recent.style.clipPath = ''; recent.style.visibility = ''; lens.style.visibility = ''; overlay.style.cssText = ''
       delete host.dataset.progress
       recent.inert = false; about.inert = false
       subscribers.forEach(listener => listener(0))
@@ -205,7 +287,8 @@ export function AboutToRecent() {
   }, [enabled, listeners])
 
   return <LensTransitionContext.Provider value={controller}>
-    <div ref={root} className="lens-transition" data-enabled={enabled}>
+    <div ref={root} className="lens-transition" data-enabled={enabled} data-reserved={canReserve}>
+      <div className="lens-transition__lvh-probe" aria-hidden="true" />
       <div className="lens-transition__stage">
         {enabled && <a className="lens-transition__skip" href="#recent-photoshoot">Skip lens transition</a>}
         <About />

@@ -228,7 +228,7 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
                     step(offset < 0 ? -1 : 1)
                   }
                 }}>
-                <PhotoImage key={`${photo.id}:${photo.imageUrl}`} photo={photo} eager />
+                <PhotoImage key={`${photo.id}:${photo.imageUrl}`} photo={photo} eager={offset === 0} />
               </button>
             </div>
           </motion.div>

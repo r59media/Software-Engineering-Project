@@ -49,6 +49,7 @@ function HeroImage({ slide, fallbackImageUrl }: HeroImageProps) {
           className="hero__canvas"
           width={slide.width}
           height={slide.height}
+          eager={true}
           onError={handleImageError}
         />
       )}

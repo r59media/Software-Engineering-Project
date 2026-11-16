@@ -37,21 +37,28 @@ function StudioLighting() {
 
 type LensProps = { url: string; aperture: number; transition?: LensTransitionController | null }
 
-function LensModel({ url, aperture, transition }: LensProps) {
-  const gltf = useLoader(GLTFLoader, url, loader => {
-    loader.setRequestHeader({ 'X-R59-Client': 'media-viewer' })
-    loader.register(parser => ({
-      name: 'R59LensMetadata',
-      beforeRoot: async () => {
-        for (const node of parser.json.nodes ?? []) {
-          if (typeof node.extras?.pivot === 'string') {
-            node.extras.pivotDescription = node.extras.pivot
-            delete node.extras.pivot
-          }
+function configureLensLoader(loader: GLTFLoader) {
+  loader.setRequestHeader({ 'X-R59-Client': 'media-viewer' })
+  loader.register(parser => ({
+    name: 'R59LensMetadata',
+    beforeRoot: async () => {
+      for (const node of parser.json.nodes ?? []) {
+        if (typeof node.extras?.pivot === 'string') {
+          node.extras.pivotDescription = node.extras.pivot
+          delete node.extras.pivot
         }
-      },
-    }))
-  })
+      }
+    },
+  }))
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function preloadLensModel(url: string) {
+  useLoader.preload(GLTFLoader, url, configureLensLoader)
+}
+
+function LensModel({ url, aperture, transition }: LensProps) {
+  const gltf = useLoader(GLTFLoader, url, configureLensLoader)
   // Clone the hierarchy so future aperture/transform changes do not mutate the loader cache.
   const model = useMemo(() => gltf.scene.clone(true), [gltf.scene])
   const { gl, invalidate } = useThree()

@@ -58,33 +58,29 @@
             }
         }
     }
-    async function fetchGatedScript(src) {
-        if (document.querySelector(`script[data-gated-src="${src}"]`)) {
-            return { src, code: null };
+    function fetchGatedScript(src) {
+        const existing = document.querySelector(`script[data-gated-src="${src}"]`);
+        if (existing && existing.getAttribute('data-loaded') === 'true') {
+            return Promise.resolve(true);
         }
-        const token = R().apiClient?.getAuthToken?.();
-        const headers = { 'X-Requested-With': 'XMLHttpRequest' };
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-        const res = await fetch(src, {
-            headers,
-            credentials: 'omit'
-        });
-        if (!res.ok) {
-            throw new Error(`Failed to load ${src} (${res.status})`);
-        }
-        const code = await res.text();
-        return { src, code };
-    }
-    async function loadScriptSequential(src) {
-        const item = await fetchGatedScript(src);
-        if (item.code !== null && !document.querySelector(`script[data-gated-src="${item.src}"]`)) {
+        if (existing)
+            existing.remove();
+        return new Promise((resolve) => {
             const s = document.createElement('script');
-            s.setAttribute('data-gated-src', item.src);
-            s.textContent = `${item.code}\n//# sourceURL=${item.src}`;
+            s.async = false;
+            s.setAttribute('data-gated-src', src);
+            s.addEventListener('load', () => {
+                s.setAttribute('data-loaded', 'true');
+                resolve(true);
+            });
+            s.addEventListener('error', (err) => {
+                console.error('[R59 Admin] Failed to load module script:', src, err);
+                s.remove();
+                resolve(false);
+            });
+            s.src = src;
             document.body.appendChild(s);
-        }
+        });
     }
     async function ensureAdminModulesLoaded() {
         if (adminModulesLoaded)
@@ -93,18 +89,16 @@
             return adminModulesPromise;
         adminModulesPromise = (async () => {
             try {
-                // Fetch all gated scripts in parallel, preserving sequential execution order
-                const loadedScripts = await Promise.all(GATED_ADMIN_SCRIPTS.map(src => fetchGatedScript(src)));
-                for (const item of loadedScripts) {
-                    if (item.code !== null && !document.querySelector(`script[data-gated-src="${item.src}"]`)) {
-                        const s = document.createElement('script');
-                        s.setAttribute('data-gated-src', item.src);
-                        s.textContent = `${item.code}\n//# sourceURL=${item.src}`;
-                        document.body.appendChild(s);
-                    }
-                }
+                // Load all module scripts externally (CSP script-src 'self'), preserving execution order
+                const results = await Promise.all(GATED_ADMIN_SCRIPTS.map(src => fetchGatedScript(src)));
                 // Pages namespace & event aliases for compatibility
                 const r = R();
+                const allLoaded = results.every(Boolean);
+                const modulesReady = Boolean(r.dashboard && r.payments && r.photography && r.schedule && r.leads &&
+                    r.packagesApi && r.photographyApi && r.paymentsApi && r.scheduleApi && r.bookingsApi);
+                if (!allLoaded || !modulesReady) {
+                    throw new Error('One or more admin modules failed to initialize.');
+                }
                 r.pages = r.pages || {};
                 if (r.schedule) {
                     r.pages.schedule = r.schedule;
@@ -287,17 +281,57 @@
             const st = R().state;
             // Stored values only: a missing field stays empty (no placeholder defaults)
             const whole = v => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? '' : Number(v));
-            st.getState().packages = services.map(s => ({
-                id: s.id,
-                name: str(s.name ?? s.title),
-                description: str(s.description),
-                price: (s.price || 0) / 100, // cents to dollars
-                duration_minutes: whole(s.duration_minutes),
-                outfits: whole(s.outfits),
-                full_day: s.full_day === true || Number(s.full_day) === 1,
-                category: str(s.category),
-                active: s.is_active !== 0 && s.is_active !== false
-            }));
+            const normAp = ap => {
+                if (ap === undefined || ap === null || ap === '')
+                    return '';
+                if (typeof ap === 'object')
+                    return JSON.stringify(ap);
+                const trimmed = String(ap).trim();
+                if (!trimmed)
+                    return '';
+                try {
+                    return JSON.stringify(JSON.parse(trimmed));
+                }
+                catch {
+                    return trimmed;
+                }
+            };
+            st.getState().packages = services.map(s => {
+                const bookingMode = (s.booking_mode ?? s.bookingMode) === 'inquiry' ? 'inquiry' : 'direct';
+                const priceMissing = s.priceMinor === null || s.price === null || s.price === undefined;
+                const apParsed = s.additionalPeople ?? (typeof s.additional_people === 'object' ? s.additional_people : undefined);
+                const imgUrl = str(s.image_url ?? s.imageUrl ?? s.image?.url);
+                const imgAlt = str(s.image_alt ?? s.imageAlt ?? s.image?.alt);
+                const bestFor = str(s.best_for ?? s.bestFor);
+                const photoCount = whole(s.photo_count ?? s.photoCount);
+                const displayOrder = Number(s.display_order ?? s.displayOrder ?? 0) || 0;
+                const apStr = normAp(s.additional_people ?? s.additionalPeople);
+                return {
+                    id: s.id,
+                    name: str(s.name ?? s.title),
+                    description: str(s.description),
+                    price: priceMissing && bookingMode === 'inquiry' ? '' : (Number(s.price || 0) / 100),
+                    duration_minutes: whole(s.duration_minutes ?? s.durationMinutes),
+                    outfits: whole(s.outfits),
+                    full_day: s.full_day === true || Number(s.full_day) === 1 || s.fullDay === true,
+                    category: str(s.category),
+                    active: s.is_active !== 0 && s.is_active !== false && s.isActive !== false,
+                    best_for: bestFor,
+                    bestFor,
+                    booking_mode: bookingMode,
+                    bookingMode,
+                    photo_count: photoCount,
+                    photoCount,
+                    image_url: imgUrl,
+                    imageUrl: imgUrl,
+                    image_alt: imgAlt,
+                    imageAlt: imgAlt,
+                    additional_people: apStr,
+                    additionalPeople: apParsed,
+                    display_order: displayOrder,
+                    displayOrder
+                };
+            });
             st.commitSaved('packages', st.getSettings().packages);
         },
         async bookings() {
@@ -520,17 +554,23 @@
             const wholeOrNull = v => (str(v).trim() === '' ? null : Number(v));
             const sp = savedPkgs[id] || {};
             const fullDay = p.full_day === true;
+            const isInquiry = (p.booking_mode || 'direct') === 'inquiry';
             const typedLength = str(p.duration_minutes).trim() === '' ? NaN : Number(p.duration_minutes);
             const isLength = n => Number.isInteger(n) && n >= 15 && n <= 1440;
             const payload = {
                 name: str(p.name).trim(),
-                price: Number(p.price),
+                price: str(p.price).trim() === '' ? '' : Number(p.price),
                 description: str(p.description).trim(),
                 outfits: wholeOrNull(p.outfits),
                 // Entire day: the length inputs are disabled and not checked, so a length that is not valid
                 // keeps the saved one (the server keeps its stored length too)
-                duration_minutes: fullDay && !isLength(typedLength) ? sp.duration_minutes : typedLength,
-                full_day: fullDay
+                duration_minutes: fullDay && !isLength(typedLength) ? sp.duration_minutes : (Number.isNaN(typedLength) ? '' : typedLength),
+                full_day: fullDay,
+                best_for: str(p.best_for).trim(),
+                booking_mode: isInquiry ? 'inquiry' : 'direct',
+                photo_count: wholeOrNull(p.photo_count),
+                image_url: str(p.image_url).trim(),
+                additional_people: str(p.additional_people).trim()
             };
             const savedName = str(sp.name).trim() || payload.name || 'Untitled';
             const pkgId = Number.isNaN(Number(id)) ? id : Number(id);
@@ -538,7 +578,11 @@
             // outside 15–1440 is not re-sent, so a name or price edit still saves)
             const same = (a, b) => str(a ?? '').trim() === str(b ?? '').trim();
             const toServer = x => {
-                const out = Object.assign({}, x);
+                const out = Object.assign({}, x, {
+                    price: x.price === '' ? null : x.price,
+                    duration_minutes: x.duration_minutes === '' ? null : x.duration_minutes,
+                    additional_people: x.additional_people === '' ? null : x.additional_people
+                });
                 if (same(sp.outfits, x.outfits))
                     delete out.outfits;
                 if (same(sp.duration_minutes, x.duration_minutes))
@@ -697,7 +741,7 @@
     if (gsiScriptEl) {
         gsiScriptEl.addEventListener('load', onGsiReady, { once: true });
     }
-    function whenGsiReady() {
+    function whenGsiReady(timeoutMs = 8000) {
         if (typeof google !== 'undefined' && google?.accounts?.id) {
             gsiReady = true;
             return Promise.resolve();
@@ -705,8 +749,18 @@
         if (gsiReady) {
             return Promise.resolve();
         }
-        return new Promise(resolve => {
-            gsiReadyCallbacks.push(resolve);
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                const idx = gsiReadyCallbacks.indexOf(onReady);
+                if (idx !== -1)
+                    gsiReadyCallbacks.splice(idx, 1);
+                reject(new Error('Google Sign-In script timed out'));
+            }, timeoutMs);
+            const onReady = () => {
+                clearTimeout(timer);
+                resolve();
+            };
+            gsiReadyCallbacks.push(onReady);
         });
     }
     function generateNonce() {
@@ -784,11 +838,10 @@
     async function handleCredentialResponse(response) {
         setLoginStatus('');
         const nonceToSend = currentNonce;
-        // Regenerate nonce and re-initialize GIS after each login attempt
-        if (cachedGoogleClientId && typeof google !== 'undefined' && google?.accounts?.id) {
-            renderGsiButton(cachedGoogleClientId);
-        }
         if (!response || !response.credential) {
+            if (cachedGoogleClientId && typeof google !== 'undefined' && google?.accounts?.id) {
+                renderGsiButton(cachedGoogleClientId);
+            }
             setLoginStatus('Access denied: Account not authorized for admin access.');
             return;
         }
@@ -804,10 +857,16 @@
                 await initDashboard();
             }
             else {
+                if (cachedGoogleClientId && typeof google !== 'undefined' && google?.accounts?.id) {
+                    renderGsiButton(cachedGoogleClientId);
+                }
                 setLoginStatus(res?.error || 'Access denied: Account not authorized for admin access.');
             }
         }
         catch (err) {
+            if (cachedGoogleClientId && typeof google !== 'undefined' && google?.accounts?.id) {
+                renderGsiButton(cachedGoogleClientId);
+            }
             setLoginStatus(err?.message || 'Access denied: Account not authorized for admin access.');
         }
     }
@@ -819,6 +878,7 @@
             const clientId = await resolveGoogleClientId();
             if (!clientId) {
                 console.error('[R59 Admin] Google client ID not found in auth config');
+                setLoginStatus('Google Sign-In is not configured on the server.');
                 return;
             }
             await whenGsiReady();
@@ -826,6 +886,7 @@
         }
         catch (err) {
             console.error('[R59 Admin] Failed to initialize Google Sign-In:', err);
+            setLoginStatus('Google Sign-In failed to load. Check your connection or ad blocker and refresh.');
         }
     }
     /** Shows the login screen. In-memory edits are kept. */

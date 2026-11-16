@@ -4,7 +4,6 @@ import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 
 export function PhotoImage({ photo, eager = false }: { photo: PhotoshootPhoto; eager?: boolean }) {
   const [failed, setFailed] = useState(false)
-  void eager
 
   if (failed) return <span className="photo-unavailable" role="img" aria-label={photo.alt}>Photo unavailable</span>
 
@@ -16,6 +15,7 @@ export function PhotoImage({ photo, eager = false }: { photo: PhotoshootPhoto; e
       objectPosition={photo.objectPosition ?? '50% 50%'}
       width={photo.width}
       height={photo.height}
+      eager={eager}
       onError={() => setFailed(true)}
     />
   )

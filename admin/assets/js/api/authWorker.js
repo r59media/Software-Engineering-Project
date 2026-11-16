@@ -9,6 +9,28 @@
 const ctx = self;
 let bearerToken = null;
 const connectedPorts = new Set();
+const LOCAL_DEV_HOSTNAMES = new Set(['localhost', '127.0.0.1']);
+const ALLOWED_LOCAL_DEV_ORIGINS = new Set([
+    'http://localhost:8787',
+    'http://127.0.0.1:8787'
+]);
+/**
+ * Verifies that a parsed PROXY_FETCH target uses HTTP(S) and belongs to a trusted origin:
+ * same-origin as the worker, or local dev backend (:8787) when running on localhost/127.0.0.1.
+ */
+export function isTrustedProxyUrl(parsed) {
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return false;
+    }
+    if (parsed.origin === self.location.origin) {
+        return true;
+    }
+    if (LOCAL_DEV_HOSTNAMES.has(self.location.hostname) &&
+        ALLOWED_LOCAL_DEV_ORIGINS.has(parsed.origin)) {
+        return true;
+    }
+    return false;
+}
 /**
  * Broadcast an event payload to all connected tab MessagePorts.
  * Cleans up disconnected ports automatically on failure.
@@ -105,6 +127,34 @@ ctx.onconnect = (event) => {
                     }
                     break;
                 }
+                let parsedUrl;
+                try {
+                    parsedUrl = new URL(url, self.location.origin);
+                }
+                catch {
+                    if (id) {
+                        port.postMessage({
+                            id,
+                            ok: false,
+                            status: 400,
+                            statusText: 'Bad Request',
+                            error: 'Invalid URL for proxy fetch'
+                        });
+                    }
+                    break;
+                }
+                if (!isTrustedProxyUrl(parsedUrl)) {
+                    if (id) {
+                        port.postMessage({
+                            id,
+                            ok: false,
+                            status: 403,
+                            statusText: 'Forbidden Origin',
+                            error: 'Cross-origin proxy fetch denied'
+                        });
+                    }
+                    break;
+                }
                 // Attach Authorization header if bearer token exists
                 const headers = {};
                 if (init && init.headers) {
@@ -131,7 +181,7 @@ ctx.onconnect = (event) => {
                     credentials: 'omit'
                 };
                 try {
-                    const response = await fetch(url, fetchInit);
+                    const response = await fetch(parsedUrl.toString(), fetchInit);
                     const contentType = response.headers.get('content-type') || '';
                     let responseData = null;
                     if (init && (init.responseType === 'arraybuffer' || init.responseType === 'blob')) {

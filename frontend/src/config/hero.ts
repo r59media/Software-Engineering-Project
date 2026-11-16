@@ -17,6 +17,7 @@ export const heroDestinations: HeroDestinations = {
   contact: '#contact',
   booking: '#booking',
   portfolio: '#portfolio',
+  faq: '#faq',
   discover: '#about',
   explore: '#recent-photoshoot',
 }

@@ -609,7 +609,7 @@
         <article class="frame photo${it.busy ? ' is-busy' : ''}${hidden ? ' is-hidden' : ''}" ${it.busy || it.saving ? 'aria-busy="true"' : ''}>
           <div class="photo__img">
             <button class="photo__pick" type="button" data-act="replace" aria-label="Replace “${esc(label)}”" ${lock ? 'disabled' : ''}>
-              ${src ? `<img src="${src}" alt="" loading="lazy" decoding="async">` : '<span class="photo__missing caps">No preview</span>'}
+              ${src ? `<img src="${src}" data-auth-src="${src}" alt="" loading="lazy" decoding="async">` : '<span class="photo__missing caps">No preview</span>'}
             </button>
             ${hidden ? '<span class="tag photo__hidden">Hidden from site</span>' : ''}
             ${busyNoteHtml(it)}
@@ -681,7 +681,7 @@
     const print = target
       ? `<figure class="print" data-idx="${at}">
            <button class="photo__pick" type="button" data-act="replace" aria-label="Replace the About photo" ${lock ? 'disabled' : ''}>
-             ${src ? `<img src="${src}" alt="" loading="lazy" decoding="async">` : '<span class="photo__missing caps">No preview</span>'}
+             ${src ? `<img src="${src}" data-auth-src="${src}" alt="" loading="lazy" decoding="async">` : '<span class="photo__missing caps">No preview</span>'}
            </button>
            ${busyNoteHtml(target)}
            <figcaption class="caps"><span>Shown on site</span><span>1 / 1</span></figcaption>
@@ -738,7 +738,7 @@
               return `
               <li class="row about-extra" data-idx="${i}">
                 <div class="row__main">
-                  <span class="about-extra__thumb">${s ? `<img src="${s}" alt="" loading="lazy" decoding="async">` : ''}</span>
+                  <span class="about-extra__thumb">${s ? `<img src="${s}" data-auth-src="${s}" alt="" loading="lazy" decoding="async">` : ''}</span>
                   <strong>${esc(it.label || 'Photo')}</strong>
                 </div>
                 <div class="row__acts">
@@ -752,6 +752,19 @@
       </div>` : '';
 
     return main + legacy;
+  }
+
+  function hydrateAuthorizedImages(root) {
+    if (!root) return;
+    const apply = window.R59?.apiClient?.applyAuthorizedImageSrc;
+    root.querySelectorAll('img[data-auth-src]').forEach(img => {
+      const url = img.getAttribute('data-auth-src') || '';
+      if (apply) {
+        apply(img, url);
+      } else if (url) {
+        img.src = url;
+      }
+    });
   }
 
   function renderImages() {
@@ -779,6 +792,7 @@
 
     if (currentTab === 'about') {
       grid.innerHTML = aboutHtml(list);
+      hydrateAuthorizedImages(grid);
       photosChanged();
       return;
     }
@@ -793,6 +807,7 @@
       ? `<div class="slot photo-slot--wide">${edgeHtml(1)}<div class="frame"><div class="empty"><svg class="cam" width="110" height="96" viewBox="0 0 110 96" aria-hidden="true"><use href="#logo-camera"/></svg><p>No ${esc(currentFilter)} photos</p><small>Add one below or choose another category.</small></div></div></div>`
       : '';
     grid.innerHTML = slots + empty + addSlotHtml(shown.length + (empty ? 2 : 1), currentTab !== 'about');
+    hydrateAuthorizedImages(grid);
 
     photosChanged();
   }

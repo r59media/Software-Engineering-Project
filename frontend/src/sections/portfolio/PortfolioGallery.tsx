@@ -95,6 +95,7 @@ export function PortfolioGallery() {
                   className="portfolio-gallery__image"
                   loading="lazy"
                   decoding="async"
+                  eager={false}
                 />
                 {activeCategory.toLowerCase() === 'all' && (
                   <div className="portfolio-gallery__meta" aria-hidden="true">

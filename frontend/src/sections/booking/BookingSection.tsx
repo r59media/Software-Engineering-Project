@@ -65,6 +65,7 @@ function BookingStage({ children, stage, movement }: { children: ReactNode; stag
 
 function BookingFlow({
   services = previewBookingServices,
+  pricing = null,
   status = 'ready',
   onRetry,
   inquiryHref = '#contact',
@@ -136,6 +137,7 @@ function BookingFlow({
     return (
       <BookingStage movement={movement} stage="services"><BookingServices
         services={services}
+        pricing={pricing}
         status={status}
         onRetry={onRetry}
         onContinue={handleServicesContinue}
@@ -153,6 +155,7 @@ function BookingFlow({
           <BookingDateTime
             service={selectedService}
             people={attendees}
+            pricing={pricing}
             selection={dateTime}
             onSelectDateTime={dt => setDateTime(dt)}
             onBack={() => setStep('services')}
@@ -172,6 +175,7 @@ function BookingFlow({
           <BookingYourInfo
             service={selectedService}
             people={attendees}
+            pricing={pricing}
             dateTime={dateTime!}
             initialInfo={customerInfo}
             onDraftChange={setCustomerInfo}
@@ -190,6 +194,7 @@ function BookingFlow({
         {dateTime && customerInfo && <BookingSummary
           service={selectedService}
           people={attendees}
+          pricing={pricing}
           dateTime={dateTime}
           customerInfo={customerInfo}
           photoPermissions={photoPermissions}

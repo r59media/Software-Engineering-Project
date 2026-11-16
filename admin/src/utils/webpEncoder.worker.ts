@@ -95,10 +95,11 @@ export interface WorkerInputPayload {
   height: number;
   targetWidth?: number;
   targetHeight?: number;
+  quality?: number;
 }
 
 self.onmessage = async (e: MessageEvent<WorkerInputPayload>) => {
-  const { id, rgbaBuffer, width, height, targetWidth, targetHeight } = e.data;
+  const { id, rgbaBuffer, width, height, targetWidth, targetHeight, quality } = e.data;
 
   try {
     if (!rgbaBuffer || !width || !height) {
@@ -146,8 +147,14 @@ self.onmessage = async (e: MessageEvent<WorkerInputPayload>) => {
       preparedImageData = initialImageData;
     }
 
-    // Encode via @jsquash/webp using the Pristine Studio Preset
-    const webpBuffer = await encode(preparedImageData, PRISTINE_STUDIO_PRESET);
+    // Encode via @jsquash/webp using the Pristine Studio Preset (default quality 92)
+    const targetQuality = typeof quality === 'number' && Number.isFinite(quality)
+      ? Math.max(1, Math.min(100, Math.round(quality <= 1 ? quality * 100 : quality)))
+      : PRISTINE_STUDIO_PRESET.quality;
+    const webpBuffer = await encode(preparedImageData, {
+      ...PRISTINE_STUDIO_PRESET,
+      quality: targetQuality,
+    });
 
     // Return compressed WebP ArrayBuffer via Transferable postMessage
     (self as unknown as Worker).postMessage(

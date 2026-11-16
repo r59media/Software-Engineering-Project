@@ -211,7 +211,11 @@
     } else {
       if (photoErr) photoErr.innerHTML = '';
       if (src && imgEl) {
-        if (imgEl.getAttribute('src') !== src) imgEl.src = src;
+        if (window.R59?.apiClient?.applyAuthorizedImageSrc) {
+          void window.R59.apiClient.applyAuthorizedImageSrc(imgEl, src);
+        } else if (imgEl.getAttribute('src') !== src) {
+          imgEl.src = src;
+        }
         imgEl.alt = alt;
       } else if (imgEl) {
         imgEl.removeAttribute('src');

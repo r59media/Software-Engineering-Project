@@ -12,7 +12,7 @@ import { servicesRouter } from './routes/services'
 import { adminRouter, DEFAULT_PROFILE, replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady } from './routes/admin'
 import { squareWebhookRouter } from './routes/squareWebhook'
 import { pricingRouter, couponsRouter } from './routes/pricing'
-import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret } from './middleware/auth'
+import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret, getMediaSigningSecret, getSessionsValidAfter, timingSafeEqual } from './middleware/auth'
 import { verifyMediaSignature, parseRangeHeader } from './utils/signedUrl'
 
 export { replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady }
@@ -46,9 +46,9 @@ app.use('*', async (c, next) => {
   await next()
   c.header(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client https://web.squarecdn.com https://sandbox.web.squarecdn.com; connect-src 'self' https://accounts.google.com/gsi/ https://connect.squareup.com https://pci-connect.squareup.com https://pci-connect.squareupsandbox.com; frame-src https://accounts.google.com/gsi/ https://web.squarecdn.com https://sandbox.web.squarecdn.com; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; worker-src 'self'; object-src 'none'; base-uri 'self'"
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client https://cdn.jsdelivr.net https://web.squarecdn.com https://sandbox.web.squarecdn.com; connect-src 'self' https://accounts.google.com/gsi/ https://connect.squareup.com https://pci-connect.squareup.com https://pci-connect.squareupsandbox.com; frame-src https://accounts.google.com/gsi/ https://web.squarecdn.com https://sandbox.web.squarecdn.com; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; worker-src 'self'; object-src 'none'; base-uri 'self'"
   )
-  c.header('X-Frame-Options', 'DENY')
+  c.header('X-Frame-Options', 'SAMEORIGIN')
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin')
   c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
@@ -103,21 +103,63 @@ app.use('*', async (c, next) => {
   return corsMiddleware(c, next)
 })
 
+function getCorpPolicy(c: Context<{ Bindings: Bindings }>): string {
+  return c.env?.ENVIRONMENT === 'development' ? 'cross-origin' : 'same-origin'
+}
+
+async function isActivePortfolioMediaKey(db: D1Database, effectiveKey: string): Promise<boolean> {
+  try {
+    const row = await db.prepare(
+      'SELECT 1 AS found FROM Portfolio_Images WHERE is_active = 1 AND (media_key = ? OR media_key = ? OR media_key = ?) LIMIT 1'
+    ).bind(effectiveKey, `/api/media/${effectiveKey}`, `/${effectiveKey}`).first()
+    return Boolean(row)
+  } catch {
+    return false
+  }
+}
+
+async function isActivePublicMediaKey(db: D1Database, effectiveKey: string): Promise<boolean> {
+  if (await isActivePortfolioMediaKey(db, effectiveKey)) {
+    return true
+  }
+  try {
+    const escapedLikeKey = effectiveKey.replace(/[\\%_]/g, '\\$&')
+    const serviceRow = await db.prepare(
+      `SELECT 1 AS found FROM Services
+       WHERE is_active = 1
+         AND (image_url = ? OR image_url = ? OR image_url = ? OR image_url LIKE ? ESCAPE '\\')
+       LIMIT 1`
+    ).bind(
+      effectiveKey,
+      `/api/media/${effectiveKey}`,
+      `/${effectiveKey}`,
+      `%/api/media/${escapedLikeKey}`
+    ).first()
+    return Boolean(serviceRow)
+  } catch {
+    return false
+  }
+}
+
 /**
  * Validates whether a media request is authorized (Finding 8).
- * Accepts requests with 'X-R59-Client: media-viewer', valid HMAC signed URL,
- * active public portfolio asset, or a cryptographically valid, non-revoked session token.
+ * Accepts valid HMAC signed URLs, valid non-revoked Admin session tokens,
+ * active public portfolio/service media for /api/media/*, or media-viewer / active portfolio for /assets/*.
  */
 async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, fileKey?: string): Promise<boolean> {
-  const clientHeader = c.req.header('X-R59-Client')
-  if (clientHeader === 'media-viewer') return true
+  let pathname = ''
+  try {
+    pathname = decodeURIComponent(new URL(c.req.url).pathname)
+  } catch {
+    return false
+  }
 
   const exp = c.req.query('exp')
   const sig = c.req.query('sig')
   if (exp && sig) {
-    const key = fileKey || decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-    const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
-    const valid = await verifyMediaSignature(key, Number(exp), sig, secret)
+    const key = fileKey || pathname.replace(/^\/api\/media\//, '').replace(/^\/+/, '')
+    const secret = await getMediaSigningSecret(c.env)
+    const valid = secret ? await verifyMediaSignature(key, Number(exp), sig, secret) : false
     if (valid) return true
   }
 
@@ -126,23 +168,38 @@ async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, file
     const secret = getSigningSecret(c.env)
     if (secret && !(await isTokenRevokedInDb(c.env.DB, token))) {
       const session = await verifySessionToken(token, secret)
-      if (session.valid) return true
+      if (session.valid) {
+        const adminEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
+        const sessionEmail = session.email ? session.email.trim().toLowerCase() : ''
+        if (adminEmail && sessionEmail && timingSafeEqual(sessionEmail, adminEmail)) {
+          const validAfter = await getSessionsValidAfter(c.env.DB)
+          if (!validAfter || session.issuedAt === undefined || session.issuedAt >= validAfter) {
+            return true
+          }
+        }
+      }
     }
   }
 
-  const effectiveKey = fileKey || (new URL(c.req.url).pathname.startsWith('/api/media/')
-    ? decodeURIComponent(new URL(c.req.url).pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-    : '')
-  if (effectiveKey && c.env.DB) {
-    try {
-      const row = await c.env.DB.prepare(
-        'SELECT 1 AS found FROM Portfolio_Images WHERE is_active = 1 AND (media_key = ? OR media_key = ? OR media_key = ?) LIMIT 1'
-      ).bind(effectiveKey, `/api/media/${effectiveKey}`, `/${effectiveKey}`).first()
-      if (row) return true
-    } catch {}
+  const clientHeader = c.req.header('X-R59-Client')
+  const isApiMedia = pathname.startsWith('/api/media/') || Boolean(fileKey)
+
+  if (isApiMedia) {
+    const effectiveKey = (fileKey || pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+    if (!effectiveKey || !c.env.DB) return false
+    return await isActivePublicMediaKey(c.env.DB, effectiveKey)
   }
 
-  return false
+  if (pathname.startsWith('/assets/')) {
+    if (clientHeader === 'media-viewer') return true
+    const assetKey = pathname.replace(/^\/+/, '')
+    if (assetKey && c.env.DB) {
+      return await isActivePortfolioMediaKey(c.env.DB, assetKey)
+    }
+    return false
+  }
+
+  return clientHeader === 'media-viewer'
 }
 
 // Block sourcemap files everywhere & protect media/model assets from standalone scraping & hotlinking
@@ -173,13 +230,13 @@ app.use('*', async (c, next) => {
       const sigParam = url.searchParams.get('sig')
       if (expParam || sigParam) {
         const fileKey = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-        const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
-        const isValid = expParam && sigParam ? await verifyMediaSignature(fileKey, Number(expParam), sigParam, secret) : false
+        const secret = await getMediaSigningSecret(c.env)
+        const isValid = secret && expParam && sigParam ? await verifyMediaSignature(fileKey, Number(expParam), sigParam, secret) : false
         if (!isValid) {
           return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
         }
         await next()
-        c.header('Cross-Origin-Resource-Policy', 'same-origin')
+        c.header('Cross-Origin-Resource-Policy', getCorpPolicy(c))
         c.header('Content-Disposition', 'inline')
         c.header('X-Content-Type-Options', 'nosniff')
         return
@@ -216,7 +273,7 @@ app.use('*', async (c, next) => {
   await next()
 
   if ((isProtectedImage || is3DModel) && (c.req.method === 'GET' || c.req.method === 'HEAD')) {
-    c.header('Cross-Origin-Resource-Policy', 'same-origin')
+    c.header('Cross-Origin-Resource-Policy', getCorpPolicy(c))
     c.header('Content-Disposition', 'inline')
     c.header('X-Content-Type-Options', 'nosniff')
   }
@@ -243,7 +300,7 @@ app.get('/admin/assets/wasm/*', async (c) => {
   }
   const headers = new Headers(assetRes.headers)
   headers.set('Content-Type', 'application/wasm')
-  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  headers.set('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800')
   headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   headers.set('X-Content-Type-Options', 'nosniff')
   return new Response(assetRes.body, {
@@ -357,7 +414,13 @@ app.get('/admin/*', async (c) => {
 
   // Clone with mutable headers so global security header middleware attaches headers cleanly
   const headers = new Headers(assetRes.headers)
-  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
+  const isCacheableStatic =
+    /\.wasm$/i.test(url.pathname) ||
+    (url.pathname.startsWith('/admin/assets/fonts/') && /\.(woff2|woff|ttf)$/i.test(url.pathname))
+  headers.set(
+    'Cache-Control',
+    isCacheableStatic ? 'public, max-age=86400, stale-while-revalidate=604800' : 'no-store, no-cache, must-revalidate'
+  )
   headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   if (url.pathname.endsWith('.wasm')) {
     headers.set('Content-Type', 'application/wasm')
@@ -368,7 +431,7 @@ app.get('/admin/*', async (c) => {
     !url.pathname.startsWith('/favicon') &&
     (url.pathname.startsWith('/api/media/') || /\.(webp|png|jpe?g|glb)$/i.test(url.pathname))
   if (isProtectedAsset) {
-    headers.set('Cross-Origin-Resource-Policy', 'same-origin')
+    headers.set('Cross-Origin-Resource-Policy', getCorpPolicy(c))
     headers.set('Content-Disposition', 'inline')
     headers.set('X-Content-Type-Options', 'nosniff')
   }
@@ -566,10 +629,10 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
 
   const exp = c.req.query('exp')
   const sig = c.req.query('sig')
-  const secret = c.env.MEDIA_SIGNING_SECRET || c.env.SQUARE_WEBHOOK_SIGNATURE_KEY || 'default-secret'
+  const secret = await getMediaSigningSecret(c.env)
 
   if (exp || sig) {
-    const isValid = exp && sig ? await verifyMediaSignature(fileKey, Number(exp), sig, secret) : false
+    const isValid = secret && exp && sig ? await verifyMediaSignature(fileKey, Number(exp), sig, secret) : false
     if (!isValid) {
       return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
     }
@@ -654,7 +717,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
               'Content-Length': String(slice.byteLength),
               'Accept-Ranges': 'bytes',
               'Cache-Control': 'public, max-age=31536000, immutable',
-              'Cross-Origin-Resource-Policy': 'same-origin',
+              'Cross-Origin-Resource-Policy': getCorpPolicy(c),
               'Content-Disposition': 'inline',
               'X-Content-Type-Options': 'nosniff'
             }
@@ -669,7 +732,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
           'Content-Length': String(totalLength),
           'Accept-Ranges': 'bytes',
           'Cache-Control': 'public, max-age=31536000, immutable',
-          'Cross-Origin-Resource-Policy': 'same-origin',
+          'Cross-Origin-Resource-Policy': getCorpPolicy(c),
           'Content-Disposition': 'inline',
           'X-Content-Type-Options': 'nosniff'
         }
@@ -745,9 +808,12 @@ app.get('*', async (c) => {
   const headers = new Headers(assetRes.headers)
   headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   if (isProtectedAsset) {
-    headers.set('Cross-Origin-Resource-Policy', 'same-origin')
+    headers.set('Cross-Origin-Resource-Policy', getCorpPolicy(c))
     headers.set('Content-Disposition', 'inline')
     headers.set('X-Content-Type-Options', 'nosniff')
+  }
+  if (assetRes.ok && (url.pathname.startsWith('/assets/') || is3DModel) && !headers.has('Cache-Control')) {
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable')
   }
   return new Response(assetRes.body, {
     status: assetRes.status,
