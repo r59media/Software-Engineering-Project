@@ -4,6 +4,7 @@ import { computeSessionPricing } from '../../api/client'
 import { previewBookingServices } from '../../config/booking'
 import type { BookingServicesProps, ServiceSelection } from '../../types/booking'
 import { BookingProgressBar } from './BookingProgressBar'
+import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import './BookingServices.css'
 
 export function BookingServices({
@@ -181,7 +182,12 @@ export function BookingServices({
                       data-selected={active}
                     >
                       {service.image ? (
-                        <img className="booking__image" src={service.image.url} alt={service.image.alt} loading="lazy" />
+                        <ProtectedCanvasImage
+                          src={service.image.url}
+                          alt={service.image.alt}
+                          className="booking__image-canvas"
+                          containerClassName="booking__image"
+                        />
                       ) : (
                         <div className="booking__image booking__placeholder" aria-hidden="true" />
                       )}

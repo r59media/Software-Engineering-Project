@@ -584,7 +584,7 @@
                   <input type="file" accept="image/*" class="sr-only" data-pkg-image-file="${id}">
                 </label>
               </div>
-              <div class="pay-pkg-img-preview" style="margin-top:0.5rem;"${imgUrl ? '' : ' hidden'}><img data-auth-src="${esc(imgUrl)}" alt="${esc(name || 'Package')} preview" style="max-height:80px;border-radius:2px;object-fit:cover;"></div>
+              <div class="pay-pkg-img-preview" style="margin-top:0.5rem;"${imgUrl ? '' : ' hidden'}><img data-auth-src="${esc(imgUrl)}" alt="${esc(name || 'Package')} preview" style="aspect-ratio: 16 / 7; width: 100%; max-width: 240px; object-fit: cover; border-radius: 6px;"></div>
             </div>
             <div class="field">
               <label class="field__label" for="${pkgField(id, 'additional_people')}">Additional people</label>
@@ -695,30 +695,46 @@
   async function onPackageImageUpload(fileInput) {
     const file = fileInput.files?.[0];
     if (!file) return;
+    const converter = window.R59?.webpConverter;
+    if (converter?.isSupportedImageFile && !converter.isSupportedImageFile(file)) {
+      toast('Unsupported file format. Please upload JPG, PNG, WebP, HEIC, or RAW.', { type: 'error' });
+      fileInput.value = '';
+      return;
+    }
+
     const id = fileInput.dataset.pkgImageFile;
     const isNew = id === 'new';
     const targetInput = isNew ? $('#pkgNewImage') : document.getElementById(pkgField(id, 'image_url'));
 
     fileInput.disabled = true;
-    toast(`Uploading ${file.name}…`, { type: 'info' });
 
     try {
+      let uploadFile = file;
+      if (converter?.convertToWebP) {
+        toast(`Converting ${file.name} → WebP…`, { type: 'info' });
+        const { file: webpFile } = await converter.convertToWebP(file, { quality: 0.92, maxDimension: 2560 });
+        uploadFile = webpFile;
+      }
+
+      toast(`Uploading ${uploadFile.name}…`, { type: 'info' });
+
       let url = '';
       if (R().photographyApi?.uploadMedia) {
-        const res = await R().photographyApi.uploadMedia(file);
+        const res = await R().photographyApi.uploadMedia(uploadFile);
         url = res.url || (res.key ? `/api/media/${res.key}` : '');
       } else {
         url = await new Promise((resolve, reject) => {
           const reader = new FileReader();
           reader.onload = () => resolve(reader.result);
           reader.onerror = reject;
-          reader.readAsDataURL(file);
+          reader.readAsDataURL(uploadFile);
         });
       }
 
       if (targetInput) {
         targetInput.value = url;
         targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+        targetInput.dispatchEvent(new Event('change', { bubbles: true }));
       }
       toast('Image uploaded', { type: 'success' });
     } catch (err) {

@@ -17,7 +17,7 @@
 .booking__service:last-child { border-bottom: 0; }
 .booking__service[data-selected="true"] { background: var(--color-brand-yellow); }
 .booking__service:has(:focus-visible) { box-shadow: inset 0 0 0 1px var(--color-brand-red); }
-.booking__image { width: 100%; aspect-ratio: 16/7; object-fit: cover; border-radius: .375rem; }
+.booking__image { width: 100%; height: auto; aspect-ratio: 16/7; object-fit: cover; border-radius: .375rem; }
 .booking__placeholder { background: var(--booking-placeholder); }
 .booking__description p, .booking__best { font-size: .75rem; margin-top: .25rem; }
 .booking__details { font-size: .875rem; }
