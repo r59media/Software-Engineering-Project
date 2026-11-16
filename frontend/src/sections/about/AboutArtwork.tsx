@@ -1,12 +1,30 @@
+import type { PointerEvent } from 'react'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import type { AboutImage } from '../../types/about'
 
-export function AboutArtwork({ image, className = '' }: { image: AboutImage; className?: string }) {
+export interface AboutArtworkProps {
+  image: AboutImage
+  className?: string
+  onPointerMove?: (e: PointerEvent<HTMLDivElement>) => void
+  onPointerLeave?: (e: PointerEvent<HTMLDivElement>) => void
+  onPointerCancel?: (e: PointerEvent<HTMLDivElement>) => void
+}
+
+export function AboutArtwork({
+  image,
+  className = '',
+  onPointerMove,
+  onPointerLeave,
+  onPointerCancel,
+}: AboutArtworkProps) {
   return (
     <div
       className={`about__artwork ${className}`}
       data-about-part={image.id}
       onContextMenu={(e) => e.preventDefault()}
+      onPointerMove={onPointerMove}
+      onPointerLeave={onPointerLeave}
+      onPointerCancel={onPointerCancel}
     >
       <div className="about__motion" data-about-motion={image.id}>
         <ProtectedCanvasImage

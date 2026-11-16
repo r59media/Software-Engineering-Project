@@ -14,14 +14,44 @@
 .about__layout { display: grid; grid-template-columns: 49.1% 45.6%; min-height: max(100svh, 53.98cqw); }
 .about__collage { position: relative; align-self: start; width: 100%; aspect-ratio: 710 / 780; }
 .about__collage > .about__artwork, .about__portrait { position: absolute; }
-.about__collage [data-about-part="yellow-card"] { left: 12.2%; top: 11.5%; width: 37.6%; }
-.about__collage [data-about-part="yellow-card"] .about__art { transform: rotate(-7.91deg); }
-.about__collage [data-about-part="red-card"] { left: 51.9%; top: 38.1%; width: 41.55%; }
-.about__collage [data-about-part="red-card"] .about__art { transform: rotate(7.91deg); }
-.about__collage [data-about-part="signature-seal"] { left: 70.9%; top: 10.7%; width: 28.27%; }
-.about__collage [data-about-part="signature-seal"] .about__art { transform: scale(1.25); filter: drop-shadow(4px 6px 5px var(--color-black-30)); }
-.about__portrait { left: 17.75%; top: 16%; width: 65.35%; aspect-ratio: 464 / 552; }
-.about__portrait-pose { position: relative; width: 100%; height: 100%; transform: rotate(-2deg); }
+.about__collage [data-about-part="yellow-card"] { left: 12.2%; top: 11.5%; width: 37.6%; cursor: pointer; }
+.about__collage [data-about-part="yellow-card"] .about__art {
+  transform: rotate(calc(-7.91deg + var(--local-rot, 0deg)))
+             translate3d(var(--local-tx, 0px), var(--local-ty, 0px), 0);
+  transform-origin: center center;
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
+}
+.about__collage [data-about-part="red-card"] { left: 51.9%; top: 38.1%; width: 41.55%; cursor: pointer; }
+.about__collage [data-about-part="red-card"] .about__art {
+  transform: rotate(calc(7.91deg + var(--local-rot, 0deg)))
+             translate3d(var(--local-tx, 0px), var(--local-ty, 0px), 0);
+  transform-origin: center center;
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
+}
+.about__collage [data-about-part="signature-seal"] { left: 70.9%; top: 10.7%; width: 28.27%; cursor: pointer; }
+.about__collage [data-about-part="signature-seal"] .about__art {
+  transform: scale(1.25) rotate(var(--local-rot, 0deg))
+             translate3d(var(--local-tx, 0px), var(--local-ty, 0px), 0);
+  filter: drop-shadow(4px 6px 5px var(--color-black-30));
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: transform;
+}
+.about__portrait { left: 17.75%; top: 16%; width: 65.35%; aspect-ratio: 464 / 552; cursor: pointer; }
+.about__portrait-pose {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform: rotate(calc(-2deg + var(--local-rot, 0deg)))
+             translate3d(var(--local-tx, 0px), var(--local-ty, 0px), 0);
+  transform-origin: center center;
+  filter: drop-shadow(0 4px 6px rgba(17, 17, 17, 0.12))
+          drop-shadow(0 14px 24px rgba(17, 17, 17, 0.22))
+          drop-shadow(4px 20px 32px rgba(17, 17, 17, 0.12));
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.35s ease;
+  will-change: transform, filter;
+}
 .about__portrait [data-about-part="portrait"] { position: absolute; left: 12%; top: 9%; width: 76%; height: 69%; }
 .about__portrait [data-about-part="portrait"] .about__art { height: 100%; object-fit: cover; }
 .about__portrait [data-about-part="portrait-frame"] { position: absolute; inset: 0; }
@@ -79,3 +109,58 @@
 
 .about__lens-canvas { pointer-events: none; }
 .about__lens-fallback { width: 92%; height: 92%; margin: 4%; border-radius: 50%; background: radial-gradient(circle, #202629 0 48%, #111719 49% 54%, #343c40 55% 65%, #191f22 66%); }
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .about__collage [data-about-part="yellow-card"]:hover .about__art {
+    transform: rotate(calc(-7.91deg + var(--local-rot, -2deg)))
+               translate3d(var(--local-tx, 0px), calc(var(--local-ty, 0px) - 8px), 0)
+               scale(1.025);
+    transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .about__collage [data-about-part="red-card"]:hover .about__art {
+    transform: rotate(calc(7.91deg + var(--local-rot, 2deg)))
+               translate3d(var(--local-tx, 0px), calc(var(--local-ty, 0px) - 8px), 0)
+               scale(1.025);
+    transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .about__collage [data-about-part="signature-seal"]:hover .about__art {
+    transform: scale(1.3) rotate(calc(var(--local-rot, 6deg)))
+               translate3d(var(--local-tx, 0px), calc(var(--local-ty, 0px) - 6px), 0);
+    filter: drop-shadow(6px 10px 8px var(--color-black-30));
+    transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .about__portrait:hover .about__portrait-pose {
+    transform: rotate(calc(-2deg + var(--local-rot, 1.2deg)))
+               translate3d(var(--local-tx, 0px), calc(var(--local-ty, 0px) - 10px), 0)
+               scale(1.02);
+    filter: drop-shadow(0 8px 12px rgba(17, 17, 17, 0.16))
+            drop-shadow(0 22px 36px rgba(17, 17, 17, 0.28))
+            drop-shadow(6px 30px 48px rgba(17, 17, 17, 0.16));
+    transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.3s ease;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .about__collage [data-about-part="yellow-card"] .about__art,
+  .about__collage [data-about-part="red-card"] .about__art,
+  .about__collage [data-about-part="signature-seal"] .about__art,
+  .about__portrait-pose {
+    transition: none !important;
+    transform: none !important;
+  }
+  .about__collage [data-about-part="yellow-card"] .about__art {
+    transform: rotate(-7.91deg) !important;
+  }
+  .about__collage [data-about-part="red-card"] .about__art {
+    transform: rotate(7.91deg) !important;
+  }
+  .about__portrait-pose {
+    transform: rotate(-2deg) !important;
+  }
+  .about__collage [data-about-part="signature-seal"] .about__art {
+    transform: scale(1.25) !important;
+  }
+}
