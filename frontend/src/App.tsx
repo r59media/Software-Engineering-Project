@@ -17,6 +17,7 @@ const ContactSection = lazy(() => import('./sections/contact/ContactSection').th
 const BookingSection = lazy(() => import('./sections/booking/BookingSection').then(m => ({ default: m.BookingSection })))
 const LegalPage = lazy(() => import('./pages/legal/LegalPage').then(m => ({ default: m.LegalPage })))
 const FaqPage = lazy(() => import('./pages/faq/FaqPage').then(m => ({ default: m.FaqPage })))
+const FaqSection = lazy(() => import('./pages/faq/FaqPage').then(m => ({ default: m.FaqSection })))
 
 function App() {
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
@@ -233,6 +234,9 @@ function App() {
           inquiryHref="#contact"
           onProceedToDeposit={draft => setDepositDraft(draft)}
         />
+      </Suspense>
+      <Suspense fallback={null}>
+        <FaqSection />
       </Suspense>
       <Suspense fallback={null}>
         <ContactSection onSendInquiry={handleSendInquiry} />

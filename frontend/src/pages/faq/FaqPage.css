@@ -7,6 +7,15 @@
   box-sizing: border-box;
 }
 
+.faq-page--inline {
+  min-height: auto;
+  padding: clamp(4rem, 7vw, 6.5rem) clamp(1.25rem, 5vw, 3rem);
+}
+
+.faq-page--inline .faq-page__inquiry {
+  padding-bottom: 0;
+}
+
 .faq-page__inner {
   max-width: 960px;
   margin: 0 auto;
@@ -212,6 +221,10 @@
 @media (max-width: 767px) {
   .faq-page {
     padding: clamp(110px, 14vh, 130px) 1.25rem 3rem;
+  }
+
+  .faq-page--inline {
+    padding: 3.5rem 1.25rem;
   }
 
   .faq-page__header {
