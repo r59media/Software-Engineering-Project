@@ -1,12 +1,15 @@
 .lens-transition__stage { position: relative; overflow: clip; }
+.lens-transition[data-reserved="true"] .lens-transition__stage,
 .lens-transition[data-enabled="true"] .lens-transition__stage {
   position: sticky;
 }
+.lens-transition[data-reserved="true"] .lens-transition__recent,
 .lens-transition[data-enabled="true"] .lens-transition__recent {
   position: absolute;
   bottom: 0;
   left: 0;
   width: 100%;
+  min-height: 100dvh;
   z-index: 2;
   overflow: clip;
   visibility: hidden;

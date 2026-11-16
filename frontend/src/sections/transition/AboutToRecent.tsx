@@ -8,6 +8,7 @@ import './AboutToRecent.css'
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value))
 const smooth = (value: number) => value * value * (3 - 2 * value)
+const getViewportHeight = () => Math.max(window.innerHeight || 0, Math.round(window.visualViewport?.height || 0))
 
 export function AboutToRecent() {
   const root = useRef<HTMLDivElement>(null)
@@ -47,12 +48,17 @@ export function AboutToRecent() {
     const section = root.current?.querySelector<HTMLElement>('#recent-photoshoot')
     if (!section) return
     // Keep all gallery content scrollable on short/landscape viewports.
-    const measure = () => setFits(section.offsetHeight <= window.innerHeight + 1)
+    const measure = () => setFits(section.offsetHeight <= getViewportHeight() + 1)
     const observer = new ResizeObserver(measure)
     observer.observe(section)
     window.addEventListener('resize', measure)
+    window.visualViewport?.addEventListener('resize', measure)
     measure()
-    return () => { observer.disconnect(); window.removeEventListener('resize', measure) }
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', measure)
+      window.visualViewport?.removeEventListener('resize', measure)
+    }
   }, [])
 
   useEffect(() => {
@@ -68,26 +74,28 @@ export function AboutToRecent() {
     const stage = host.querySelector<HTMLElement>('.lens-transition__stage')!
     const about = host.querySelector<HTMLElement>('#about')!
     const recent = host.querySelector<HTMLElement>('.lens-transition__recent')!
-    let width = host.clientWidth
+    let lastViewport = 0
     const reserve = () => {
       const height = about.offsetHeight
-      const viewport = window.innerHeight
-      width = host.clientWidth
+      const viewport = getViewportHeight()
+      lastViewport = viewport
       host.style.height = `${height + viewport * 1.6}px`
       stage.style.top = `${Math.min(0, viewport - height)}px`
       recent.style.height = `${viewport}px`
     }
     const onResize = () => {
-      if (host.clientWidth <= 1000 && Math.abs(host.clientWidth - width) < 2) return
-      reserve()
+      const nextViewport = getViewportHeight()
+      if (nextViewport !== lastViewport) reserve()
     }
     const resize = new ResizeObserver(reserve)
     resize.observe(about)
     window.addEventListener('resize', onResize)
+    window.visualViewport?.addEventListener('resize', onResize)
     reserve()
     return () => {
       resize.disconnect()
       window.removeEventListener('resize', onResize)
+      window.visualViewport?.removeEventListener('resize', onResize)
       host.style.height = ''
       stage.style.top = ''
       recent.style.height = ''
@@ -143,12 +151,23 @@ export function AboutToRecent() {
       host.dataset.progress = progress.toFixed(3)
       subscribers.forEach(listener => listener(aperture))
     }
+    const syncViewportHeight = () => {
+      const nextViewport = getViewportHeight()
+      if (nextViewport === viewport) return false
+      viewport = nextViewport
+      stage.style.top = `${Math.min(0, viewport - height)}px`
+      recent.style.height = `${viewport}px`
+      start = host.getBoundingClientRect().top + window.scrollY + height - viewport
+      return true
+    }
+
     const tick = (now: number) => {
       frame = 0
       if (document.body.style.position === 'fixed') {
         lastTime = 0
         return
       }
+      syncViewportHeight()
       targetProgress = calculateTarget()
       if (!hasSnapped) {
         hasSnapped = true
@@ -175,7 +194,7 @@ export function AboutToRecent() {
 
     const measure = () => {
       height = about.offsetHeight
-      viewport = window.innerHeight
+      viewport = getViewportHeight()
       width = host.clientWidth
       distance = viewport * 1.6
       const bounds = host.getBoundingClientRect()
@@ -197,9 +216,16 @@ export function AboutToRecent() {
       applyProgress(displayedProgress)
     }
     const onResize = () => {
-      // On mobile viewports (<= 1000px), scrolling dynamically hides/shows the address bar,
-      // changing innerHeight continuously. Ignore height-only resizes on mobile.
-      if (host.clientWidth <= 1000 && Math.abs(host.clientWidth - width) < 2) return
+      // On mobile viewports (<= 1000px), scrolling dynamically hides/shows the address bar.
+      // Sync viewport height in-place without resetting scroll distance or jumping the pin.
+      if (host.clientWidth <= 1000 && Math.abs(host.clientWidth - width) < 2) {
+        if (syncViewportHeight()) {
+          targetProgress = calculateTarget()
+          displayedProgress = targetProgress
+          applyProgress(displayedProgress)
+        }
+        return
+      }
       measure()
     }
 
@@ -231,6 +257,7 @@ export function AboutToRecent() {
     resize.observe(about)
     window.addEventListener('scroll', schedule, { passive: true })
     window.addEventListener('resize', onResize)
+    window.visualViewport?.addEventListener('resize', onResize)
     window.addEventListener('hashchange', navigate)
     document.addEventListener('click', handleRecentLinkClick)
     window.addEventListener('keydown', trackKey, true)
@@ -243,6 +270,7 @@ export function AboutToRecent() {
       resize.disconnect()
       window.removeEventListener('scroll', schedule)
       window.removeEventListener('resize', onResize)
+      window.visualViewport?.removeEventListener('resize', onResize)
       window.removeEventListener('hashchange', navigate)
       document.removeEventListener('click', handleRecentLinkClick)
       window.removeEventListener('keydown', trackKey, true)
@@ -256,7 +284,7 @@ export function AboutToRecent() {
   }, [enabled, listeners])
 
   return <LensTransitionContext.Provider value={controller}>
-    <div ref={root} className="lens-transition" data-enabled={enabled}>
+    <div ref={root} className="lens-transition" data-enabled={enabled} data-reserved={canReserve}>
       <div className="lens-transition__stage">
         {enabled && <a className="lens-transition__skip" href="#recent-photoshoot">Skip lens transition</a>}
         <About />
