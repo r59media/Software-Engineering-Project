@@ -151,11 +151,12 @@ export function PhotoLightbox({ photos, selectedIndex, onClose, onSelect }: Phot
       )}
 
       <div className="photo-lightbox__caption">
-        {photo.title && <span className="photo-lightbox__title">{photo.title}</span>}
-        {photo.category && <span className="photo-lightbox__category">{photo.category}</span>}
-        <p className="photo-viewer__count" role="status" aria-live="polite">
+        {photo.category && (
+          <span className="photo-lightbox__category">{photo.category}</span>
+        )}
+        <span className="photo-lightbox__count" role="status" aria-live="polite">
           {position + 1} / {total}
-        </p>
+        </span>
       </div>
     </dialog>,
     document.body

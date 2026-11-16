@@ -184,7 +184,7 @@ async function main() {
     // About me photographic assets
     'frontend/src/assets/aboutMeImages/128MmrCard_IMG.webp',
     'frontend/src/assets/aboutMeImages/1TMmrCard_IMG.webp',
-    'frontend/src/assets/aboutMeImages/32MmrCard_IMG.webp',
+    'frontend/src/assets/aboutMeImages/r59media-32memCard.webp',
     'frontend/src/assets/aboutMeImages/EOS-90D-top-w-lens 2.webp',
     'frontend/src/assets/aboutMeImages/about-paper.webp',
     'frontend/src/assets/aboutMeImages/aboutMe_portraitFrame_img.webp',
@@ -193,9 +193,9 @@ async function main() {
     'frontend/src/assets/aboutMeImages/kevin_Logo_IMG.webp',
     'frontend/src/assets/aboutMeImages/r59media-dslr.webp',
     'frontend/src/assets/aboutMeImages/r59media-large-lens.webp',
+    'frontend/src/assets/aboutMeImages/r59media-medium-lens.webp',
     'frontend/src/assets/aboutMeImages/redCard_img.webp',
-    'frontend/src/assets/aboutMeImages/smalLense_IMG.webp',
-    'frontend/src/assets/aboutMeImages/speedlight_IMG.webp',
+    'frontend/src/assets/aboutMeImages/r59media-speedlight.webp',
     'frontend/src/assets/aboutMeImages/yellowCard_img.webp',
   ];
 
