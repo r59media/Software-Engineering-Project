@@ -15,6 +15,7 @@ import type { BookingReviewDraft, BookingService } from './types/booking'
 import type { ContactInquiry } from './types/contact'
 import { DepositCheckoutModal } from './sections/booking/DepositCheckoutModal'
 import { LegalPage } from './pages/legal/LegalPage'
+import { FaqPage } from './pages/faq/FaqPage'
 
 function App() {
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
@@ -31,7 +32,7 @@ function App() {
       : path === `${cleanBase}/terms-and-conditions` || path === `${cleanBase}/terms`
         ? 'terms'
         : null
-
+  const isFaqPage = path === `${cleanBase}/faq`
   const loadBookingServices = useCallback(async () => {
     try {
       const [services, livePricing] = await Promise.all([
@@ -77,7 +78,8 @@ function App() {
 
   useEffect(() => {
     if (legalPage) document.title = legalPage === 'privacy' ? 'Privacy Policy | R59 Media' : 'Terms and Conditions | R59 Media'
-  }, [legalPage])
+    if (isFaqPage) document.title = 'FAQ | R59 Media'
+  }, [legalPage, isFaqPage])
 
   useEffect(() => {
     if (legalPage) return
@@ -192,6 +194,18 @@ function App() {
       <a className="skip-link" href="#legal-content">Skip to content</a>
       <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
       <LegalPage page={legalPage} />
+      <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+    </div>
+  }
+
+  if (isFaqPage) {
+    const homeDestinations = Object.fromEntries(
+      Object.entries(heroDestinations).map(([key, href]) => [key, href?.startsWith('#') ? `${baseUrl}${href}` : href])
+    )
+    return <div id="top" className="site-shell">
+      <a className="skip-link" href="#faq-content">Skip to content</a>
+      <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
+      <FaqPage />
       <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
     </div>
   }
