@@ -69,14 +69,16 @@
 }
 @media (max-width: 850px) {
   .site-header {
-    position: fixed;
+    position: absolute;
     inset: 0 0 auto;
     padding: 0;
     top: max(1rem, env(safe-area-inset-top));
     pointer-events: none;
     z-index: 30;
+    transform: none !important;
+    transition: none;
   }
-  .site-header[data-hidden="true"] { transform: none; }
+  .site-header[data-hidden="true"] { transform: none !important; }
   .site-header__desktop { display: none; }
 
   .site-header__bar {
@@ -118,8 +120,8 @@
 
   .site-header__toggle {
     pointer-events: auto;
-    position: absolute;
-    top: 0;
+    position: fixed;
+    top: max(1rem, env(safe-area-inset-top));
     right: 0;
     display: grid;
     place-items: center;
