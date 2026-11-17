@@ -876,7 +876,8 @@
         text: 'signin_with',
         shape: 'rectangular',
         width: 280,
-        logo_alignment: 'left'
+        logo_alignment: 'left',
+        locale: 'en'
       });
     }
   }
