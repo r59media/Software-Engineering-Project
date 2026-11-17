@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono'
 import type { Bindings } from '../index'
 import { ensureSchemaReady } from './admin'
 import { isSlotInWeeklyAvailability } from './schedule'
-import { getMediaSigningSecret, getSigningSecret } from '../middleware/auth'
+import { getMediaSigningSecret, getSigningSecret, getTrustedClientIp, normalizeIpBucket } from '../middleware/auth'
 import {
   signRescheduleToken,
   verifyRescheduleToken,
@@ -18,11 +18,16 @@ import {
 import {
   addDaysISO,
   BookingPolicySettings,
+  countRescheduleIdentityMatches,
   daysBetweenISO,
   DEFAULT_BOOKING_POLICY,
+  DynamicFeeRule,
+  evaluateDynamicFees,
   localDateTimeToRFC3339,
-  normalizeBookingPolicy
+  normalizeBookingPolicy,
+  normalizeFeeRules
 } from '../lib/billingMath'
+export { countRescheduleIdentityMatches }
 import {
   buildBookingIcs,
   buildGoogleCalendarTemplateUrl,
@@ -34,6 +39,36 @@ export const rescheduleRoutes = new Hono<{ Bindings: Bindings }>()
 
 export { signRescheduleToken, verifyRescheduleToken, signCalendarFeedToken, verifyCalendarFeedToken }
 
+const RESCHEDULE_RATE_WINDOW_MS = 60_000
+const RESCHEDULE_RATE_MAX_ATTEMPTS = 15
+const rescheduleRateAttempts = new Map<string, { count: number; windowStart: number }>()
+
+function checkRescheduleRateLimit(c: Context<{ Bindings: Bindings }>): { allowed: boolean; retryAfterSeconds: number } {
+  const now = Date.now()
+  if (rescheduleRateAttempts.size > 500) {
+    for (const [k, v] of rescheduleRateAttempts.entries()) {
+      if (now - v.windowStart > RESCHEDULE_RATE_WINDOW_MS) {
+        rescheduleRateAttempts.delete(k)
+      }
+    }
+  }
+  const bucket = normalizeIpBucket(getTrustedClientIp(c))
+  const existing = rescheduleRateAttempts.get(bucket)
+  if (!existing || now - existing.windowStart > RESCHEDULE_RATE_WINDOW_MS) {
+    rescheduleRateAttempts.set(bucket, { count: 1, windowStart: now })
+    return { allowed: true, retryAfterSeconds: 0 }
+  }
+  existing.count += 1
+  if (existing.count > RESCHEDULE_RATE_MAX_ATTEMPTS) {
+    const remainingMs = Math.max(1000, RESCHEDULE_RATE_WINDOW_MS - (now - existing.windowStart))
+    return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
+  }
+  return { allowed: true, retryAfterSeconds: 0 }
+}
+
+/**
+ * Counts how many of the 3 identity fields (name, email, phone) match the booking record.
+ */
 async function resolveSigningSecret(env: Bindings): Promise<string | null> {
   return getSigningSecret(env) || (await getMediaSigningSecret(env))
 }
@@ -87,17 +122,20 @@ async function loadWeeklyAvailability(db: D1Database): Promise<any[]> {
   return []
 }
 
-async function loadBookingPolicy(db: D1Database): Promise<BookingPolicySettings> {
+async function loadPricingConfig(db: D1Database): Promise<{ policy: BookingPolicySettings; feeRules: DynamicFeeRule[] }> {
   try {
     const row = await db
       .prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'")
       .first<{ setting_value: string }>()
     if (row?.setting_value) {
       const parsed = JSON.parse(row.setting_value)
-      return normalizeBookingPolicy(parsed?.policy)
+      return {
+        policy: normalizeBookingPolicy(parsed?.policy),
+        feeRules: normalizeFeeRules(parsed?.feeRules)
+      }
     }
   } catch {}
-  return DEFAULT_BOOKING_POLICY
+  return { policy: DEFAULT_BOOKING_POLICY, feeRules: [] }
 }
 
 async function loadAvailableSlots(db: D1Database, timeZone: string): Promise<any[]> {
@@ -122,7 +160,7 @@ async function loadBookingWithSlot(db: D1Database, bookingId: number) {
   return db
     .prepare(
       `SELECT b.id, b.service_id, b.slot_id, b.client_name, b.client_email, b.customer_phone,
-              b.location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
+              COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
               ss.date AS slot_date, ss.start_time AS slot_start_time, ss.end_time AS slot_end_time,
               s.name AS service_name, s.title AS service_title
        FROM Bookings b
@@ -160,7 +198,7 @@ rescheduleRoutes.get('/calendar.ics', async (c) => {
 
     const timeZone = await getStudioTimeZone(c.env.DB)
     const { results: bookingRows } = await c.env.DB.prepare(
-      `SELECT b.id, b.client_name, b.client_email, b.customer_phone, b.location, b.notes,
+      `SELECT b.id, b.client_name, b.client_email, b.customer_phone, COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes,
               b.attendees, b.status, ss.date, ss.start_time, ss.end_time,
               s.name AS service_name, s.title AS service_title
        FROM Bookings b
@@ -205,9 +243,250 @@ rescheduleRoutes.get('/calendar.ics', async (c) => {
   }
 })
 
+async function buildReschedulePayload(
+  c: Context<{ Bindings: Bindings }>,
+  booking: any,
+  token: string
+) {
+  const timeZone = await getStudioTimeZone(c.env.DB)
+  const { policy, feeRules } = await loadPricingConfig(c.env.DB)
+  const cutoffDays = policy.rescheduleCutoffDays
+  const { currentDate } = getStudioCurrentDateTime(timeZone)
+  const daysUntilSession = booking.slot_date ? daysBetweenISO(currentDate, booking.slot_date) : null
+  const withinCutoff = daysUntilSession !== null && daysUntilSession < cutoffDays
+  const isCancelled = String(booking.status || '').trim().toLowerCase() === 'cancelled'
+  const rescheduleAllowed = !isCancelled && !withinCutoff
+  const rescheduleRules = feeRules.filter((r) => r.triggerType === 'reschedule')
+  const rescheduleFeeEval = evaluateDynamicFees(rescheduleRules, {
+    subtotalCents: Number(booking.price_at_booking) || 0,
+    sessionDate: booking.slot_date || currentDate,
+    todayDate: currentDate,
+    timeZone,
+    attendees: Number(booking.attendees) || 1,
+    isReschedule: true
+  })
+  const rescheduleFeeCents = rescheduleFeeEval.totalFeeCents
+  const rescheduleFeeItems = rescheduleFeeEval.appliedFees
+  const slots = rescheduleAllowed ? await loadAvailableSlots(c.env.DB, timeZone) : []
+  const origin = new URL(c.req.url).origin
+  const rescheduleUrl = `${origin}/reschedule?booking=${booking.id}&token=${encodeURIComponent(token)}`
+  const icsUrl = `${origin}/api/bookings/${booking.id}/calendar.ics?token=${encodeURIComponent(token)}`
+  const googleCalendarUrl = booking.slot_date
+    ? buildGoogleCalendarTemplateUrl(
+        {
+          id: booking.id,
+          date: booking.slot_date,
+          start_time: booking.slot_start_time,
+          end_time: booking.slot_end_time,
+          client_name: booking.client_name,
+          client_email: booking.client_email,
+          customer_phone: booking.customer_phone,
+          package_name: booking.service_title || booking.service_name,
+          service_name: booking.service_name,
+          status: booking.status,
+          location: booking.location,
+          attendees: booking.attendees,
+          timeZone
+        },
+        rescheduleUrl
+      )
+    : ''
+
+  const summary = {
+    id: booking.id,
+    slot_id: booking.slot_id,
+    date: booking.slot_date,
+    start_time: booking.slot_start_time,
+    end_time: booking.slot_end_time,
+    client_name: booking.client_name,
+    client_email: booking.client_email,
+    package_name: booking.service_title || booking.service_name || 'Photography Session',
+    status: booking.status,
+    can_reschedule: rescheduleAllowed,
+    rescheduleAllowed,
+    cutoffDays,
+    reschedule_url: rescheduleUrl,
+    ics_url: icsUrl,
+    google_calendar_url: googleCalendarUrl
+  }
+
+  return {
+    status: 'success',
+    bookingId: booking.id,
+    token,
+    booking: summary,
+    slots,
+    timezone: timeZone,
+    rescheduleAllowed,
+    cutoffDays,
+    rescheduleFeeCents,
+    rescheduleFeeItems,
+    data: {
+      bookingId: booking.id,
+      token,
+      booking: summary,
+      slots,
+      timezone: timeZone,
+      rescheduleAllowed,
+      cutoffDays,
+      rescheduleFeeCents,
+      rescheduleFeeItems
+    }
+  }
+}
+
+// 2a. Unlock / lookup booking for client self-service rescheduling (requires 2-of-3 identity match)
+rescheduleRoutes.post('/reschedule/unlock', async (c) => {
+  try {
+    const rateLimit = checkRescheduleRateLimit(c)
+    if (!rateLimit.allowed) {
+      c.header('Retry-After', String(rateLimit.retryAfterSeconds))
+      return c.json({
+        error: {
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Too many verification attempts. Please wait 1 minute before trying again.',
+          details: []
+        }
+      }, 429)
+    }
+
+    await ensureSchemaReady(c.env.DB)
+    const secret = await resolveSigningSecret(c.env)
+    if (!secret) {
+      return c.json({ error: { code: 'NOT_CONFIGURED', message: 'Reschedule signing is not configured.', details: [] } }, 503)
+    }
+
+    const body = await c.req.json().catch(() => ({} as any))
+    const name = typeof body?.name === 'string' ? body.name.trim() : ''
+    const email = typeof body?.email === 'string' ? body.email.trim() : ''
+    const phone = typeof body?.phone === 'string' ? body.phone.trim() : ''
+    const rawBookingId = body?.bookingId !== undefined ? body.bookingId : body?.booking_id
+    const parsedBookingId =
+      typeof rawBookingId === 'number' && Number.isInteger(rawBookingId)
+        ? rawBookingId
+        : typeof rawBookingId === 'string' && /^[1-9]\d*$/.test(rawBookingId.trim())
+          ? parseInt(rawBookingId.trim(), 10)
+          : 0
+    const token = typeof body?.token === 'string' ? body.token.trim() : ''
+
+    if (parsedBookingId > 0 && token) {
+      const booking = await loadBookingWithSlot(c.env.DB, parsedBookingId)
+      if (!booking) {
+        return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
+      }
+      if (!(await verifyRescheduleToken(booking.id, booking.client_email, token, secret))) {
+        return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired reschedule token.', details: [] } }, 401)
+      }
+      if (countRescheduleIdentityMatches(booking, { name, email, phone }) < 2) {
+        return c.json({
+          error: {
+            code: 'VERIFICATION_FAILED',
+            message: 'Verification failed. Please match at least 2 of your Name, Email, and Phone Number.',
+            details: []
+          }
+        }, 403)
+      }
+      const payload = await buildReschedulePayload(c, booking, token)
+      c.header('Cache-Control', 'no-store')
+      return c.json(payload)
+    }
+
+    const providedCount = [name, email, phone].filter((v) => v.length > 0).length
+    if (providedCount < 2) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Please provide at least 2 of your Name, Email, and Phone Number.',
+          details: []
+        }
+      }, 400)
+    }
+
+    const identityInput = { name, email, phone }
+    let matchedBooking: any = null
+
+    if (email) {
+      const { results: emailRows } = await c.env.DB.prepare(
+        `SELECT b.id, b.service_id, b.slot_id, b.client_name, b.client_email, b.customer_phone,
+                COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
+                ss.date AS slot_date, ss.start_time AS slot_start_time, ss.end_time AS slot_end_time,
+                s.name AS service_name, s.title AS service_title
+         FROM Bookings b
+         LEFT JOIN Schedule_Slots ss ON b.slot_id = ss.id
+         LEFT JOIN Services s ON b.service_id = s.id
+         WHERE COALESCE(LOWER(TRIM(b.status)), '') != 'cancelled'
+           AND LOWER(TRIM(b.client_email)) = ?
+         ORDER BY b.id DESC
+         LIMIT 50`
+      )
+        .bind(email.toLowerCase())
+        .all<any>()
+
+      matchedBooking = (emailRows || []).find(
+        (row) => countRescheduleIdentityMatches(row, identityInput) >= 2
+      ) || null
+    }
+
+    if (!matchedBooking) {
+      const { results: recentRows } = await c.env.DB.prepare(
+        `SELECT b.id, b.service_id, b.slot_id, b.client_name, b.client_email, b.customer_phone,
+                COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
+                ss.date AS slot_date, ss.start_time AS slot_start_time, ss.end_time AS slot_end_time,
+                s.name AS service_name, s.title AS service_title
+         FROM Bookings b
+         LEFT JOIN Schedule_Slots ss ON b.slot_id = ss.id
+         LEFT JOIN Services s ON b.service_id = s.id
+         WHERE COALESCE(LOWER(TRIM(b.status)), '') != 'cancelled'
+         ORDER BY b.id DESC
+         LIMIT 500`
+      ).all<any>()
+
+      matchedBooking = (recentRows || []).find(
+        (row) => countRescheduleIdentityMatches(row, identityInput) >= 2
+      ) || null
+    }
+
+    if (!matchedBooking) {
+      return c.json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'No matching booking found. Please verify at least 2 of your Name, Email, and Phone Number.',
+          details: []
+        }
+      }, 404)
+    }
+
+    const signedToken = await signRescheduleToken(matchedBooking.id, matchedBooking.client_email, secret)
+    const payload = await buildReschedulePayload(c, matchedBooking, signedToken)
+    c.header('Cache-Control', 'no-store')
+    return c.json(payload)
+  } catch (err) {
+    console.error('POST reschedule unlock error:', err)
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not verify booking details.', details: [] } }, 500)
+  }
+})
+
 // 2. Get booking summary + available slots for client self-service rescheduling
 rescheduleRoutes.get('/:id/reschedule', async (c) => {
   try {
+    const name = (c.req.query('name') || '').trim()
+    const email = (c.req.query('email') || '').trim()
+    const phone = (c.req.query('phone') || '').trim()
+
+    if (name || email || phone) {
+      const rateLimit = checkRescheduleRateLimit(c)
+      if (!rateLimit.allowed) {
+        c.header('Retry-After', String(rateLimit.retryAfterSeconds))
+        return c.json({
+          error: {
+            code: 'TOO_MANY_REQUESTS',
+            message: 'Too many verification attempts. Please wait 1 minute before trying again.',
+            details: []
+          }
+        }, 429)
+      }
+    }
+
     await ensureSchemaReady(c.env.DB)
     const bookingId = Number(c.req.param('id'))
     if (!Number.isInteger(bookingId) || bookingId <= 0) {
@@ -229,67 +508,19 @@ rescheduleRoutes.get('/:id/reschedule', async (c) => {
       return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired reschedule token.', details: [] } }, 401)
     }
 
-    const timeZone = await getStudioTimeZone(c.env.DB)
-    const policy = await loadBookingPolicy(c.env.DB)
-    const cutoffDays = policy.rescheduleCutoffDays
-    const { currentDate } = getStudioCurrentDateTime(timeZone)
-    const daysUntilSession = booking.slot_date ? daysBetweenISO(currentDate, booking.slot_date) : null
-    const withinCutoff = daysUntilSession !== null && daysUntilSession < cutoffDays
-    const isCancelled = String(booking.status || '').trim().toLowerCase() === 'cancelled'
-    const rescheduleAllowed = !isCancelled && !withinCutoff
-    const slots = rescheduleAllowed ? await loadAvailableSlots(c.env.DB, timeZone) : []
-    const origin = new URL(c.req.url).origin
-    const rescheduleUrl = `${origin}/reschedule?booking=${booking.id}&token=${encodeURIComponent(token)}`
-    const icsUrl = `${origin}/api/bookings/${booking.id}/calendar.ics?token=${encodeURIComponent(token)}`
-    const googleCalendarUrl = booking.slot_date
-      ? buildGoogleCalendarTemplateUrl(
-          {
-            id: booking.id,
-            date: booking.slot_date,
-            start_time: booking.slot_start_time,
-            end_time: booking.slot_end_time,
-            client_name: booking.client_name,
-            client_email: booking.client_email,
-            customer_phone: booking.customer_phone,
-            package_name: booking.service_title || booking.service_name,
-            service_name: booking.service_name,
-            status: booking.status,
-            location: booking.location,
-            attendees: booking.attendees,
-            timeZone
-          },
-          rescheduleUrl
-        )
-      : ''
-
-    const summary = {
-      id: booking.id,
-      slot_id: booking.slot_id,
-      date: booking.slot_date,
-      start_time: booking.slot_start_time,
-      end_time: booking.slot_end_time,
-      client_name: booking.client_name,
-      client_email: booking.client_email,
-      package_name: booking.service_title || booking.service_name || 'Photography Session',
-      status: booking.status,
-      can_reschedule: rescheduleAllowed,
-      rescheduleAllowed,
-      cutoffDays,
-      reschedule_url: rescheduleUrl,
-      ics_url: icsUrl,
-      google_calendar_url: googleCalendarUrl
+    if ((!name && !email && !phone) || countRescheduleIdentityMatches(booking, { name, email, phone }) < 2) {
+      c.header('Cache-Control', 'no-store')
+      return c.json({
+        status: 'success',
+        requiresVerification: true,
+        id: booking.id,
+        serviceName: booking.service_title || booking.service_name || 'Photography Session'
+      })
     }
 
+    const payload = await buildReschedulePayload(c, booking, token)
     c.header('Cache-Control', 'no-store')
-    return c.json({
-      status: 'success',
-      booking: summary,
-      slots,
-      timezone: timeZone,
-      rescheduleAllowed,
-      cutoffDays,
-      data: { booking: summary, slots, timezone: timeZone, rescheduleAllowed, cutoffDays }
-    })
+    return c.json(payload)
   } catch (err) {
     console.error('GET reschedule error:', err)
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not load reschedule details.', details: [] } }, 500)
@@ -299,6 +530,18 @@ rescheduleRoutes.get('/:id/reschedule', async (c) => {
 // 3. Reschedule a booking to a new available slot
 rescheduleRoutes.post('/:id/reschedule', async (c) => {
   try {
+    const rateLimit = checkRescheduleRateLimit(c)
+    if (!rateLimit.allowed) {
+      c.header('Retry-After', String(rateLimit.retryAfterSeconds))
+      return c.json({
+        error: {
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Too many verification attempts. Please wait 1 minute before trying again.',
+          details: []
+        }
+      }, 429)
+    }
+
     await ensureSchemaReady(c.env.DB)
     const bookingId = Number(c.req.param('id'))
     if (!Number.isInteger(bookingId) || bookingId <= 0) {
@@ -307,6 +550,9 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
 
     const body = await c.req.json().catch(() => ({} as any))
     const token = String(body?.token ?? c.req.query('token') ?? '').trim()
+    const verifyName = typeof (body?.verifyName ?? body?.name) === 'string' ? String(body?.verifyName ?? body?.name).trim() : ''
+    const verifyEmail = typeof (body?.verifyEmail ?? body?.email) === 'string' ? String(body?.verifyEmail ?? body?.email).trim() : ''
+    const verifyPhone = typeof (body?.verifyPhone ?? body?.phone) === 'string' ? String(body?.verifyPhone ?? body?.phone).trim() : ''
     const rawSlotId = body?.slot_id !== undefined ? body.slot_id : body?.slotId
     const newSlotId =
       typeof rawSlotId === 'number' && Number.isInteger(rawSlotId)
@@ -333,12 +579,22 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
       return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired reschedule token.', details: [] } }, 401)
     }
 
+    if (countRescheduleIdentityMatches(booking, { name: verifyName, email: verifyEmail, phone: verifyPhone }) < 2) {
+      return c.json({
+        error: {
+          code: 'VERIFICATION_FAILED',
+          message: 'Identity verification failed. Please verify at least 2 of your Name, Email, and Phone Number.',
+          details: []
+        }
+      }, 403)
+    }
+
     if (String(booking.status || '').trim().toLowerCase() === 'cancelled') {
       return c.json({ error: { code: 'BOOKING_CANCELLED', message: 'Cancelled bookings cannot be rescheduled.', details: [] } }, 409)
     }
 
     const timeZone = await getStudioTimeZone(c.env.DB)
-    const policy = await loadBookingPolicy(c.env.DB)
+    const { policy, feeRules } = await loadPricingConfig(c.env.DB)
     const cutoffDays = policy.rescheduleCutoffDays
     const { currentDate, currentTime } = getStudioCurrentDateTime(timeZone)
     const daysUntilSession = booking.slot_date ? daysBetweenISO(currentDate, booking.slot_date) : null
@@ -396,6 +652,32 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
       // Rollback new slot lock on failure
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(newSlotId).run().catch(() => {})
       throw dbErr
+    }
+
+    // Evaluate active 'reschedule' fee rules server-side and record into Booking_Charges
+    const rescheduleRules = feeRules.filter((r) => r.triggerType === 'reschedule')
+    const rescheduleFeeEval = evaluateDynamicFees(rescheduleRules, {
+      subtotalCents: Number(booking.price_at_booking) || 0,
+      sessionDate: targetSlot.date,
+      todayDate: currentDate,
+      timeZone,
+      attendees: Number(booking.attendees) || 1,
+      isReschedule: true
+    })
+    const rescheduleFeeCents = rescheduleFeeEval.totalFeeCents
+    const rescheduleFeeItems = rescheduleFeeEval.appliedFees
+
+    if (rescheduleFeeCents > 0) {
+      for (const fee of rescheduleFeeItems) {
+        if (fee.amountCents > 0) {
+          const desc = String(fee.name || 'Reschedule Fee').trim().slice(0, 120) || 'Reschedule Fee'
+          await c.env.DB.prepare(
+            'INSERT INTO Booking_Charges (booking_id, description, amount_cents) VALUES (?, ?, ?)'
+          )
+            .bind(booking.id, desc, fee.amountCents)
+            .run()
+        }
+      }
     }
 
     // Cancel any open/scheduled Square invoice for the old date and re-schedule for the new date
@@ -467,6 +749,8 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
     return c.json({
       status: 'success',
       booking: updatedBooking,
+      rescheduleFeeCents,
+      rescheduleFeeItems,
       data: updatedBooking
     })
   } catch (err) {

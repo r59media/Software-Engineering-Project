@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { signRescheduleToken, verifyRescheduleToken } from '../src/utils/signedUrl.ts'
 import { buildStudioIcsFeed, buildGoogleCalendarTemplateUrl } from '../src/lib/googleCalendar.ts'
+import { countRescheduleIdentityMatches } from '../src/lib/billingMath.ts'
 
 test('signRescheduleToken / verifyRescheduleToken: valid, tampered bookingId, tampered token', async () => {
   const secret = 'test-signing-secret-123'
@@ -73,4 +74,46 @@ test('buildGoogleCalendarTemplateUrl: includes r59mediatesting@gmail.com and boo
   assert.ok((parsed.searchParams.get('text') || '').includes('Portrait Session'))
   assert.ok((parsed.searchParams.get('details') || '').includes(rescheduleUrl))
   assert.ok(parsed.searchParams.get('dates'))
+})
+
+test('countRescheduleIdentityMatches: 0/3, 1/3 fail (< 2); 2/3 and 3/3 pass', () => {
+  const booking = {
+    client_name: 'Jane   Doe',
+    client_email: 'Jane.Doe@Example.com',
+    customer_phone: '+1 (404) 555-1234'
+  }
+
+  // 0/3 match
+  const zeroMatch = countRescheduleIdentityMatches(booking, {
+    name: 'John Smith',
+    email: 'other@example.com',
+    phone: '4045559999'
+  })
+  assert.equal(zeroMatch, 0)
+  assert.ok(zeroMatch < 2)
+
+  // 1/3 match (email only)
+  const oneMatch = countRescheduleIdentityMatches(booking, {
+    name: 'John Smith',
+    email: ' jane.doe@example.com ',
+    phone: '4045559999'
+  })
+  assert.equal(oneMatch, 1)
+  assert.ok(oneMatch < 2)
+
+  // 2/3 match (different name, matching email + phone)
+  const twoMatch = countRescheduleIdentityMatches(booking, {
+    name: 'Wrong Name',
+    email: 'jane.doe@example.com',
+    phone: '404-555-1234'
+  })
+  assert.equal(twoMatch, 2)
+
+  // 3/3 match (whitespace-normalized name, case-insensitive email, formatted phone)
+  const threeMatch = countRescheduleIdentityMatches(booking, {
+    name: '  jane doe  ',
+    email: 'JANE.DOE@example.com',
+    phone: '14045551234'
+  })
+  assert.equal(threeMatch, 3)
 })

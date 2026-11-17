@@ -412,3 +412,83 @@ test('normalizeFeeRules: filters invalid rules and preserves valid ones', () => 
   assert.equal(normalized.length, 1)
   assert.equal(normalized[0].id, 'valid_1')
 })
+
+test('evaluateDynamicFees: on_location triggers when isOnLocation is true and stays $0 when false', () => {
+  const rules = normalizeFeeRules([
+    {
+      id: 'transport_fee',
+      name: 'On-Location Transport Fee',
+      triggerType: 'on_location',
+      amountType: 'fixed_cents',
+      amountValue: 4500,
+      active: true
+    }
+  ])
+  assert.equal(rules.length, 1)
+  assert.equal(rules[0].triggerType, 'on_location')
+
+  const onLocationResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19',
+    isOnLocation: true
+  })
+  assert.equal(onLocationResult.totalFeeCents, 4500)
+  assert.deepEqual(
+    onLocationResult.appliedFees.map((f) => ({ id: f.id, amountCents: f.amountCents })),
+    [{ id: 'transport_fee', amountCents: 4500 }]
+  )
+
+  const studioResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19',
+    isOnLocation: false
+  })
+  assert.equal(studioResult.totalFeeCents, 0)
+  assert.deepEqual(studioResult.appliedFees, [])
+})
+
+test('evaluateDynamicFees: reschedule triggers only when isReschedule is true and stays $0 at initial checkout', () => {
+  const rules = normalizeFeeRules([
+    {
+      id: 'reschedule_fee',
+      name: 'Client Self-Reschedule Fee',
+      triggerType: 'reschedule',
+      amountType: 'fixed_cents',
+      amountValue: 3500,
+      active: true
+    }
+  ])
+  assert.equal(rules.length, 1)
+  assert.equal(rules[0].triggerType, 'reschedule')
+
+  const rescheduleResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19',
+    isReschedule: true
+  })
+  assert.equal(rescheduleResult.totalFeeCents, 3500)
+  assert.deepEqual(
+    rescheduleResult.appliedFees.map((f) => ({ id: f.id, amountCents: f.amountCents })),
+    [{ id: 'reschedule_fee', amountCents: 3500 }]
+  )
+
+  const checkoutFalseResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19',
+    isReschedule: false
+  })
+  assert.equal(checkoutFalseResult.totalFeeCents, 0)
+  assert.deepEqual(checkoutFalseResult.appliedFees, [])
+
+  const checkoutOmittedResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19'
+  })
+  assert.equal(checkoutOmittedResult.totalFeeCents, 0)
+  assert.deepEqual(checkoutOmittedResult.appliedFees, [])
+})

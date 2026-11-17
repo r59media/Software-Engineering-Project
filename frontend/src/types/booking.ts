@@ -121,6 +121,8 @@ export type DynamicFeeTrigger =
   | 'privacy_declined'
   | 'weekend'
   | 'client_selectable'
+  | 'on_location'
+  | 'reschedule'
 
 export interface DynamicFeeRule {
   id: string
@@ -140,7 +142,7 @@ export interface DynamicFeeRule {
 export interface AppliedFeeItem {
   id: string
   name: string
-  trigger: string
+  trigger: DynamicFeeTrigger | string
   amountMinor: number
   amountDollars: number
 }
@@ -205,6 +207,8 @@ export interface RescheduleBookingData {
   ics_url?: string
   google_calendar_url?: string
   available_slots: RescheduleSlotOption[]
+  rescheduleFeeCents?: number
+  rescheduleFeeItems?: { name: string; amountCents: number }[]
 }
 
 export interface RescheduleResultData {
@@ -217,4 +221,23 @@ export interface RescheduleResultData {
   reschedule_url?: string
   ics_url?: string
   google_calendar_url?: string
+  rescheduleFeeCents?: number
+  rescheduleFeeItems?: { name: string; amountCents: number }[]
+}
+
+export interface RescheduleIdentityInput {
+  name?: string
+  email?: string
+  phone?: string
+}
+
+export interface RescheduleUnlockRequest extends RescheduleIdentityInput {
+  bookingId?: number | string
+  token?: string
+}
+
+export interface RescheduleUnlockData {
+  bookingId: number | string
+  token: string
+  booking: RescheduleBookingData
 }

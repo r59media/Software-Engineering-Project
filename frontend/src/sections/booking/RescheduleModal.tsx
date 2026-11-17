@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import {
-  fetchRescheduleBooking,
   submitRescheduleBooking,
+  unlockRescheduleBooking,
   type RescheduleBookingData,
   type RescheduleResultData,
 } from '../../api/client'
@@ -9,8 +9,8 @@ import type { RescheduleSlotOption } from '../../types/booking'
 import { formatSlotTime, parseYMD } from './bookingUtils'
 
 interface RescheduleModalProps {
-  bookingId: string | number
-  token: string
+  bookingId?: string | number
+  token?: string
   onClose: () => void
 }
 
@@ -30,6 +30,10 @@ function formatDateLabel(dateStr: string): string {
   }
 }
 
+function formatCents(cents: number, currency = 'USD'): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(cents / 100)
+}
+
 function formatDeposit(booking: RescheduleBookingData): string {
   const currency = booking.currency || 'USD'
   let dollars: number | null = null
@@ -43,8 +47,13 @@ function formatDeposit(booking: RescheduleBookingData): string {
 }
 
 export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalProps) {
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState<string | null>(null)
+  const [verifyName, setVerifyName] = useState('')
+  const [verifyEmail, setVerifyEmail] = useState('')
+  const [verifyPhone, setVerifyPhone] = useState('')
+  const [verifying, setVerifying] = useState(false)
+  const [verifyError, setVerifyError] = useState<string | null>(null)
+  const [unlockedBookingId, setUnlockedBookingId] = useState<string | number | undefined>(bookingId)
+  const [unlockedToken, setUnlockedToken] = useState<string>(token || '')
   const [booking, setBooking] = useState<RescheduleBookingData | null>(null)
   const [selectedDate, setSelectedDate] = useState('')
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null)
@@ -53,47 +62,54 @@ export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalPr
   const [rescheduledResult, setRescheduledResult] = useState<RescheduleResultData | null>(null)
 
   useEffect(() => {
-    const controller = new AbortController()
-    let active = true
-
-    async function load() {
-      setLoading(true)
-      setLoadError(null)
-      const res = await fetchRescheduleBooking(bookingId, token, controller.signal)
-      if (!active || controller.signal.aborted) return
-
-      if (res.status !== 'success' || !res.data) {
-        setLoadError(res.message || 'Unable to load booking details. Your reschedule link may be invalid or expired.')
-        setLoading(false)
-        return
-      }
-
-      const data = res.data
-      setBooking(data)
-      const slots = Array.isArray(data.available_slots) ? data.available_slots : []
-      if (slots.length > 0) {
-        const sortedDates = Array.from(new Set(slots.map(s => s.date))).sort()
-        setSelectedDate(sortedDates[0] || '')
-      }
-      setLoading(false)
-    }
-
-    void load()
-    return () => {
-      active = false
-      controller.abort()
-    }
-  }, [bookingId, token])
-
-  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !submitting) {
+      if (e.key === 'Escape' && !submitting && !verifying) {
         onClose()
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [submitting, onClose])
+  }, [submitting, verifying, onClose])
+
+  const filledIdentityCount = [verifyName, verifyEmail, verifyPhone].filter(v => v.trim().length > 0).length
+
+  const handleUnlockBooking = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    if (verifying) return
+    if (filledIdentityCount < 2) {
+      setVerifyError('Please enter at least 2 of the 3 details used when booking to unlock your reschedule calendar.')
+      return
+    }
+
+    setVerifying(true)
+    setVerifyError(null)
+    const res = await unlockRescheduleBooking({
+      bookingId,
+      token,
+      name: verifyName.trim(),
+      email: verifyEmail.trim(),
+      phone: verifyPhone.trim(),
+    })
+
+    if (res.status !== 'success' || !res.data?.booking) {
+      setVerifyError(
+        res.message || 'Unable to verify your booking details. Please double-check your information and try again.'
+      )
+      setVerifying(false)
+      return
+    }
+
+    const unlocked = res.data
+    setUnlockedBookingId(unlocked.bookingId ?? bookingId ?? unlocked.booking.booking_id)
+    setUnlockedToken(unlocked.token ?? token ?? '')
+    setBooking(unlocked.booking)
+    const slots = Array.isArray(unlocked.booking.available_slots) ? unlocked.booking.available_slots : []
+    if (slots.length > 0) {
+      const sortedDates = Array.from(new Set(slots.map(s => s.date))).sort()
+      setSelectedDate(sortedDates[0] || '')
+    }
+    setVerifying(false)
+  }
 
   const slotsByDate = useMemo(() => {
     const map = new Map<string, RescheduleSlotOption[]>()
@@ -119,10 +135,17 @@ export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalPr
   }, [booking, selectedSlotId])
 
   const handleConfirmReschedule = async () => {
-    if (!selectedSlotId || submitting) return
+    const activeBookingId = unlockedBookingId ?? booking?.booking_id
+    if (!selectedSlotId || submitting || activeBookingId === undefined || activeBookingId === '' || !unlockedToken) {
+      return
+    }
     setSubmitting(true)
     setSubmitError(null)
-    const res = await submitRescheduleBooking(bookingId, token, selectedSlotId)
+    const res = await submitRescheduleBooking(activeBookingId, unlockedToken, selectedSlotId, {
+      name: verifyName.trim() || undefined,
+      email: verifyEmail.trim() || undefined,
+      phone: verifyPhone.trim() || undefined,
+    })
     if (res.status === 'success') {
       setRescheduledResult(res.data ?? { slot_id: selectedSlotId })
     } else {
@@ -151,7 +174,7 @@ export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalPr
         padding: '16px',
       }}
       onClick={e => {
-        if (e.target === e.currentTarget && !submitting) onClose()
+        if (e.target === e.currentTarget && !submitting && !verifying) onClose()
       }}
     >
       <div
@@ -173,7 +196,7 @@ export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalPr
         <button
           type="button"
           onClick={onClose}
-          disabled={submitting}
+          disabled={submitting || verifying}
           aria-label="Close reschedule modal"
           style={{
             position: 'absolute',
@@ -182,7 +205,7 @@ export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalPr
             background: 'transparent',
             border: 'none',
             fontSize: '22px',
-            cursor: submitting ? 'not-allowed' : 'pointer',
+            cursor: submitting || verifying ? 'not-allowed' : 'pointer',
             lineHeight: 1,
             color: '#6b7280',
           }}
@@ -190,41 +213,154 @@ export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalPr
           ×
         </button>
 
-        {loading ? (
-          <div style={{ padding: '24px 0', textAlign: 'center' }}>
-            <h3 id="reschedule-modal-title" style={{ fontSize: '20px', margin: '0 0 8px 0', fontWeight: 700 }}>
-              Loading Your Booking…
+        {!booking ? (
+          <form onSubmit={handleUnlockBooking} noValidate>
+            <h3 id="reschedule-modal-title" style={{ fontSize: '22px', margin: '0 0 8px 0', fontWeight: 700 }}>
+              Verify Your Booking
             </h3>
-            <p style={{ margin: 0, color: '#6b7280', fontSize: '14px' }}>
-              Fetching your appointment details and open timeslots.
+            <p style={{ margin: '0 0 18px 0', color: '#4b5563', fontSize: '14px', lineHeight: 1.5 }}>
+              Enter at least 2 of the 3 details used when booking to unlock your reschedule calendar.
             </p>
-          </div>
-        ) : loadError || !booking ? (
-          <div>
-            <h3 id="reschedule-modal-title" style={{ fontSize: '22px', margin: '0 0 12px 0', fontWeight: 700 }}>
-              Unable to Load Reschedule Link
-            </h3>
-            <p role="alert" style={{ color: '#dc2626', fontSize: '14px', margin: '0 0 20px 0' }}>
-              {loadError || 'Booking details could not be loaded.'}
-            </p>
-            <button
-              type="button"
-              onClick={onClose}
-              style={{
-                width: '100%',
-                padding: '12px',
-                borderRadius: '8px',
-                background: '#111827',
-                color: '#ffffff',
-                border: 'none',
-                fontWeight: 600,
-                fontSize: '15px',
-                cursor: 'pointer',
-              }}
-            >
-              Close
-            </button>
-          </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '16px' }}>
+              <div>
+                <label
+                  htmlFor="reschedule-verify-name"
+                  style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}
+                >
+                  Full Name
+                </label>
+                <input
+                  id="reschedule-verify-name"
+                  type="text"
+                  autoComplete="name"
+                  value={verifyName}
+                  disabled={verifying}
+                  onChange={e => {
+                    setVerifyName(e.target.value)
+                    setVerifyError(null)
+                  }}
+                  placeholder="Jane Doe"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    background: '#ffffff',
+                    color: '#111827',
+                    fontSize: '14px',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="reschedule-verify-email"
+                  style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}
+                >
+                  Email
+                </label>
+                <input
+                  id="reschedule-verify-email"
+                  type="email"
+                  autoComplete="email"
+                  value={verifyEmail}
+                  disabled={verifying}
+                  onChange={e => {
+                    setVerifyEmail(e.target.value)
+                    setVerifyError(null)
+                  }}
+                  placeholder="jane@example.com"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    background: '#ffffff',
+                    color: '#111827',
+                    fontSize: '14px',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="reschedule-verify-phone"
+                  style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}
+                >
+                  Phone Number
+                </label>
+                <input
+                  id="reschedule-verify-phone"
+                  type="tel"
+                  autoComplete="tel"
+                  value={verifyPhone}
+                  disabled={verifying}
+                  onChange={e => {
+                    setVerifyPhone(e.target.value)
+                    setVerifyError(null)
+                  }}
+                  placeholder="(555) 123-4567"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: '1px solid #d1d5db',
+                    background: '#ffffff',
+                    color: '#111827',
+                    fontSize: '14px',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+            </div>
+
+            {verifyError && (
+              <p role="alert" style={{ color: '#dc2626', fontSize: '14px', margin: '0 0 14px 0' }}>
+                {verifyError}
+              </p>
+            )}
+
+            <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={verifying}
+                style={{
+                  flex: 1,
+                  padding: '12px',
+                  borderRadius: '8px',
+                  background: '#f3f4f6',
+                  color: '#374151',
+                  border: '1px solid #d1d5db',
+                  fontWeight: 600,
+                  fontSize: '14px',
+                  cursor: verifying ? 'not-allowed' : 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={verifying}
+                style={{
+                  flex: 2,
+                  padding: '12px',
+                  borderRadius: '8px',
+                  background: verifying ? '#9ca3af' : '#111827',
+                  color: '#ffffff',
+                  border: 'none',
+                  fontWeight: 600,
+                  fontSize: '14px',
+                  cursor: verifying ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {verifying ? 'Verifying…' : 'Unlock Booking'}
+              </button>
+            </div>
+          </form>
         ) : rescheduledResult ? (
           <div>
             <div style={{ textAlign: 'center', marginBlock: '16px' }}>
@@ -233,7 +369,7 @@ export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalPr
                 Appointment Rescheduled!
               </h3>
               <p style={{ color: '#4b5563', margin: 0, fontSize: '15px' }}>
-                Your booking #{booking.booking_id || bookingId} has been updated.
+                Your booking #{booking.booking_id || unlockedBookingId} has been updated.
               </p>
             </div>
 
@@ -468,6 +604,38 @@ export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalPr
                 </div>
               </>
             )}
+
+            {booking.rescheduleFeeCents && booking.rescheduleFeeCents > 0 ? (
+              <div
+                role="note"
+                style={{
+                  background: '#fffbeb',
+                  border: '1px solid #fcd34d',
+                  borderRadius: '8px',
+                  padding: '12px 14px',
+                  marginBottom: '16px',
+                  fontSize: '13px',
+                  color: '#92400e',
+                }}
+              >
+                <div style={{ fontWeight: 700, marginBottom: '6px' }}>
+                  Reschedule Fee Notice
+                </div>
+                {Array.isArray(booking.rescheduleFeeItems) && booking.rescheduleFeeItems.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '6px' }}>
+                    {booking.rescheduleFeeItems.map((item, idx) => (
+                      <div key={`${item.name}-${idx}`} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                        <span>{item.name}</span>
+                        <span>+{formatCents(item.amountCents, booking.currency || 'USD')}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ fontWeight: 600 }}>
+                  +{formatCents(booking.rescheduleFeeCents, booking.currency || 'USD')} added to your remaining balance
+                </div>
+              </div>
+            ) : null}
 
             {submitError && (
               <p role="alert" style={{ color: '#dc2626', fontSize: '14px', margin: '0 0 12px 0' }}>

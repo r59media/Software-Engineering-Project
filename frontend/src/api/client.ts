@@ -8,11 +8,20 @@ import type {
   CheckoutResponseData,
   DynamicFeeRule,
   RescheduleBookingData,
+  RescheduleIdentityInput,
   RescheduleResultData,
+  RescheduleUnlockData,
+  RescheduleUnlockRequest,
   SquareConfig,
 } from '../types/booking'
 
-export type { RescheduleBookingData, RescheduleResultData }
+export type {
+  RescheduleBookingData,
+  RescheduleIdentityInput,
+  RescheduleResultData,
+  RescheduleUnlockData,
+  RescheduleUnlockRequest,
+}
 
 /** Which part of the site a portfolio photo is shown in (matches the admin "Photos" tabs). */
 export type PortfolioSection = 'recent' | 'gallery' | 'about' | 'hero'
@@ -73,6 +82,7 @@ export interface CheckoutPayload {
   attendees?: number
   coupon_code?: string
   selectedFeeIds?: string[]
+  locationMode?: 'studio' | 'on_location'
   eventLocation?: string
   agreementSignatureName?: string
   photoPermissions?: {
@@ -428,17 +438,73 @@ export async function fetchRescheduleBooking(
   }
 }
 
+export async function unlockRescheduleBooking(
+  params: RescheduleUnlockRequest,
+  signal?: AbortSignal
+): Promise<ApiResponse<RescheduleUnlockData>> {
+  try {
+    const body: Record<string, unknown> = {
+      name: params.name?.trim() || '',
+      email: params.email?.trim() || '',
+      phone: params.phone?.trim() || '',
+    }
+    if (params.bookingId !== undefined && params.bookingId !== '') {
+      body.bookingId = params.bookingId
+    }
+    if (params.token) {
+      body.token = params.token
+    }
+
+    const res = await fetch(`${API_BASE}/bookings/reschedule/unlock`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(body),
+      credentials: 'omit',
+      signal,
+    })
+    const json = (await res.json()) as Record<string, unknown>
+    if (!res.ok || json.status === 'error') {
+      return {
+        status: 'error',
+        code: typeof json.code === 'string' ? json.code : 'REQUEST_FAILED',
+        message:
+          typeof json.message === 'string'
+            ? json.message
+            : 'Unable to verify your booking details. Please check your information and try again.',
+      }
+    }
+    const payload = (json.data !== undefined && typeof json.data === 'object' ? json.data : json) as RescheduleUnlockData
+    return {
+      status: 'success',
+      data: payload,
+      message: typeof json.message === 'string' ? json.message : undefined,
+    }
+  } catch {
+    return {
+      status: 'error',
+      code: 'NETWORK_ERROR',
+      message: 'Unable to verify your booking details. Please check your connection and try again.',
+    }
+  }
+}
+
 export async function submitRescheduleBooking(
   bookingId: number | string,
   token: string,
   slotId: number,
+  identity?: RescheduleIdentityInput,
   signal?: AbortSignal
 ): Promise<ApiResponse<RescheduleResultData>> {
   try {
+    const body: Record<string, unknown> = { token, slot_id: slotId }
+    if (identity?.name?.trim()) body.verifyName = identity.name.trim()
+    if (identity?.email?.trim()) body.verifyEmail = identity.email.trim()
+    if (identity?.phone?.trim()) body.verifyPhone = identity.phone.trim()
+
     const res = await fetch(`${API_BASE}/bookings/${encodeURIComponent(String(bookingId))}/reschedule`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ token, slot_id: slotId }),
+      body: JSON.stringify(body),
       credentials: 'omit',
       signal,
     })
@@ -480,6 +546,7 @@ export interface SessionPricingOptions {
   photoPermissions?: BookingPhotoPermissions | null
   selectedFeeIds?: readonly string[] | null
   referenceDate?: Date
+  isOnLocation?: boolean
 }
 
 export interface SessionPricingBreakdown {
@@ -572,6 +639,11 @@ export function evaluateDynamicFees(
       triggered = isWeekend
     } else if (trigger === 'client_selectable') {
       triggered = selectedIds.includes(rule.id)
+    } else if (trigger === 'on_location') {
+      triggered = Boolean(options?.isOnLocation)
+    } else if (trigger === 'reschedule') {
+      // Never auto-applied at initial checkout; evaluated only during client self-reschedule
+      triggered = false
     }
 
     if (!triggered) continue

@@ -87,6 +87,7 @@ export function DepositCheckoutModal({
   const [cardLoading, setCardLoading] = useState(true)
   const [cardError, setCardError] = useState<string | null>(null)
   const [pricing, setPricing] = useState<PricingData | null>(initialPricing)
+  const [locationMode, setLocationMode] = useState<'studio' | 'on_location'>('studio')
   const [eventLocation, setEventLocation] = useState('')
   const [agreementExpanded, setAgreementExpanded] = useState(false)
   const [agreementSignatureName, setAgreementSignatureName] = useState('')
@@ -215,10 +216,13 @@ export function DepositCheckoutModal({
 
   const attendees = draft.people || 1
   const effectiveSelectedFeeIds = draft.selectedFeeIds ?? propSelectedFeeIds ?? []
+  const isOnLocation = locationMode === 'on_location'
+  const resolvedEventLocation = isOnLocation ? eventLocation.trim() : 'R59 Media Studio'
   const breakdown = computeSessionPricing(service, attendees, pricing, fallbackBookingDepositPercent, {
     sessionDate: draft.dateTime.date,
     photoPermissions: draft.photoPermissions,
     selectedFeeIds: effectiveSelectedFeeIds,
+    isOnLocation,
   })
   const depositPercent = breakdown.depositPercent
   const baseFeeDollars = breakdown.baseFeeMinor / 100
@@ -294,6 +298,11 @@ export function DepositCheckoutModal({
       return
     }
 
+    if (locationMode === 'on_location' && !eventLocation.trim()) {
+      setError('Please enter the venue or street address for your on-location session.')
+      return
+    }
+
     if (requireSignature && !agreementSignatureName.trim()) {
       setError('Please enter your Full Legal Name to sign the Photography Services Agreement.')
       return
@@ -334,7 +343,8 @@ export function DepositCheckoutModal({
           attendees: draft.people,
           coupon_code: appliedCoupon ? appliedCoupon.code : undefined,
           selectedFeeIds: effectiveSelectedFeeIds.length > 0 ? effectiveSelectedFeeIds : undefined,
-          eventLocation: eventLocation.trim() || undefined,
+          locationMode,
+          eventLocation: resolvedEventLocation,
           agreementSignatureName: agreementSignatureName.trim() || undefined,
           photoPermissions: {
             websitePortfolio: Boolean(draft.photoPermissions?.websitePortfolio),
@@ -691,34 +701,104 @@ export function DepositCheckoutModal({
             </div>
 
             <div style={{ marginBottom: '16px' }}>
-              <label
-                htmlFor="event-location-input"
+              <div
                 style={{
                   display: 'block',
                   fontSize: '13px',
                   fontWeight: 600,
                   color: '#374151',
-                  marginBottom: '6px',
+                  marginBottom: '8px',
                 }}
               >
-                Event / Session Location <span style={{ fontWeight: 400, color: '#6b7280' }}>(Optional)</span>
-              </label>
-              <input
-                id="event-location-input"
-                type="text"
-                placeholder="Studio, venue name, or street address"
-                value={eventLocation}
-                onChange={e => setEventLocation(e.target.value)}
-                disabled={busy}
+                Session Location <span style={{ color: '#dc2626' }}>*</span>
+              </div>
+              <div
+                role="group"
+                aria-label="Session Location"
                 style={{
-                  width: '100%',
-                  boxSizing: 'border-box',
-                  padding: '8px 12px',
-                  borderRadius: '6px',
-                  border: '1px solid #d1d5db',
-                  fontSize: '14px',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                  gap: '8px',
                 }}
-              />
+              >
+                <button
+                  type="button"
+                  aria-pressed={locationMode === 'studio'}
+                  disabled={busy}
+                  onClick={() => {
+                    setLocationMode('studio')
+                    setError(null)
+                  }}
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: locationMode === 'studio' ? '2px solid #2563eb' : '1px solid #d1d5db',
+                    background: locationMode === 'studio' ? '#eff6ff' : '#ffffff',
+                    color: locationMode === 'studio' ? '#1e40af' : '#374151',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: busy ? 'not-allowed' : 'pointer',
+                    textAlign: 'left',
+                  }}
+                >
+                  At R59 Media Studio
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={locationMode === 'on_location'}
+                  disabled={busy}
+                  onClick={() => {
+                    setLocationMode('on_location')
+                    setError(null)
+                  }}
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: locationMode === 'on_location' ? '2px solid #2563eb' : '1px solid #d1d5db',
+                    background: locationMode === 'on_location' ? '#eff6ff' : '#ffffff',
+                    color: locationMode === 'on_location' ? '#1e40af' : '#374151',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: busy ? 'not-allowed' : 'pointer',
+                    textAlign: 'left',
+                  }}
+                >
+                  On-Location / Custom Address
+                </button>
+              </div>
+              {locationMode === 'on_location' && (
+                <div style={{ marginTop: '10px' }}>
+                  <label
+                    htmlFor="event-location-input"
+                    style={{
+                      display: 'block',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      color: '#374151',
+                      marginBottom: '6px',
+                    }}
+                  >
+                    Venue / Street Address <span style={{ color: '#dc2626' }}>*</span>
+                  </label>
+                  <input
+                    id="event-location-input"
+                    type="text"
+                    required
+                    placeholder="Enter venue name and street address"
+                    value={eventLocation}
+                    onChange={e => setEventLocation(e.target.value)}
+                    disabled={busy}
+                    style={{
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: '1px solid #d1d5db',
+                      fontSize: '14px',
+                    }}
+                  />
+                </div>
+              )}
             </div>
 
             <div
@@ -916,7 +996,7 @@ export function DepositCheckoutModal({
                     <strong>{clientFullName}</strong> (&ldquo;Client&rdquo;) for{' '}
                     <strong>{service?.name || draft.serviceId}</strong> on{' '}
                     <strong>{draft.dateTime.date}</strong> ({draft.dateTime.timeSlot}) at{' '}
-                    <strong>{eventLocation.trim() || 'Location to be confirmed'}</strong>. Payment of the
+                    <strong>{resolvedEventLocation || 'Location to be confirmed'}</strong>. Payment of the
                     Non-Refundable Retainer reserves the Photographer&rsquo;s exclusive availability for this session
                     and creates a binding reservation.
                   </p>

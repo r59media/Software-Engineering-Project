@@ -28,21 +28,29 @@ function App() {
   const [depositDraft, setDepositDraft] = useState<BookingReviewDraft | null>(null)
   const [rescheduleParams, setRescheduleParams] = useState<{ bookingId: string; token: string } | null>(() => {
     const params = new URLSearchParams(window.location.search)
-    const bookingId = params.get('reschedule')?.trim()
-    const token = params.get('token')?.trim()
+    const bookingId = (params.get('booking') || params.get('bookingId') || params.get('reschedule') || '').trim()
+    const token = (params.get('token') || '').trim()
     return bookingId && token ? { bookingId, token } : null
   })
+  const baseUrl = import.meta.env.BASE_URL
+  const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
+  const cleanBase = baseUrl.replace(/\/$/, '')
+  const isRescheduleRoute =
+    normalizedPath === '/reschedule' || (cleanBase !== '' && normalizedPath === `${cleanBase}/reschedule`)
   const handleCloseReschedule = useCallback(() => {
     setRescheduleParams(null)
+    if (isRescheduleRoute) {
+      window.location.assign(baseUrl)
+      return
+    }
     const url = new URL(window.location.href)
+    url.searchParams.delete('booking')
+    url.searchParams.delete('bookingId')
     url.searchParams.delete('reschedule')
     url.searchParams.delete('token')
     const nextUrl = `${url.pathname}${url.search}${url.hash}`
     window.history.replaceState(window.history.state, '', nextUrl)
-  }, [])
-  const baseUrl = import.meta.env.BASE_URL
-  const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
-  const cleanBase = baseUrl.replace(/\/$/, '')
+  }, [baseUrl, isRescheduleRoute])
   const legalPage =
     normalizedPath === `${cleanBase}/privacy-policy` || normalizedPath === `${cleanBase}/privacy`
       ? 'privacy'
@@ -203,6 +211,24 @@ function App() {
     }
   }, [])
 
+  if (isRescheduleRoute || rescheduleParams) {
+    const homeDestinations = Object.fromEntries(
+      Object.entries(heroDestinations).map(([key, href]) => [key, href?.startsWith('#') ? `${baseUrl}${href}` : href])
+    )
+    return <div id="top" className="site-shell">
+      <a className="skip-link" href="#reschedule-content">Skip to content</a>
+      <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
+      <main id="reschedule-content" style={{ minHeight: '75vh', padding: '7rem 1.5rem 4rem', display: 'grid', placeItems: 'center', background: 'var(--color-brand-black, #0c0c0c)' }}>
+        <RescheduleModal
+          bookingId={rescheduleParams?.bookingId}
+          token={rescheduleParams?.token}
+          onClose={handleCloseReschedule}
+        />
+      </main>
+      <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+    </div>
+  }
+
   if (legalPage) {
     const homeDestinations = Object.fromEntries(
       Object.entries(heroDestinations).map(([key, href]) => [key, href?.startsWith('#') ? `${baseUrl}${href}` : href])
@@ -268,13 +294,6 @@ function App() {
         pricing={pricing}
         squareConfig={pricing?.squareConfig ?? null}
         onClose={() => setDepositDraft(null)}
-      />
-    )}
-    {rescheduleParams && (
-      <RescheduleModal
-        bookingId={rescheduleParams.bookingId}
-        token={rescheduleParams.token}
-        onClose={handleCloseReschedule}
       />
     )}
   </div>

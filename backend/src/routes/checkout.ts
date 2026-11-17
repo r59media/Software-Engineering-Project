@@ -110,8 +110,12 @@ checkoutRouter.post('/', async (c) => {
 
     const rawSelectedFeeIds = body.selectedFeeIds ?? body.selected_fee_ids
     const selectedFeeIds = Array.isArray(rawSelectedFeeIds) ? rawSelectedFeeIds.map((id: unknown) => String(id).trim()).filter(Boolean) : []
+    const rawLocationMode = body.locationMode ?? body.location_mode
+    const locationMode: 'studio' | 'on_location' = rawLocationMode === 'on_location' ? 'on_location' : 'studio'
+    const isOnLocation = locationMode === 'on_location'
     const rawEventLocation = body.eventLocation ?? body.event_location ?? body.location
-    const eventLocation = typeof rawEventLocation === 'string' ? rawEventLocation.trim().slice(0, 500) : ''
+    const trimmedEventLocation = typeof rawEventLocation === 'string' ? rawEventLocation.trim().slice(0, 500) : ''
+    const eventLocation = trimmedEventLocation || 'R59 Media Studio'
     const rawAgreementSig = body.agreementSignatureName ?? body.agreement_signature_name
     const agreementSignatureName = typeof rawAgreementSig === 'string' ? rawAgreementSig.trim().slice(0, 200) : ''
 
@@ -157,6 +161,10 @@ checkoutRouter.post('/', async (c) => {
         message: 'Idempotency key must be 8 to 36 alphanumeric, hyphen, or underscore characters.',
         code: 'INVALID_FORMAT'
       })
+    }
+
+    if (isOnLocation && trimmedEventLocation.length === 0) {
+      errors.push({ field: 'eventLocation', message: 'Event location is required for on-location sessions.', code: 'REQUIRED_FIELD' })
     }
 
     if (errors.length > 0) {
@@ -431,7 +439,9 @@ checkoutRouter.post('/', async (c) => {
       attendees,
       photoPermissionPortfolio: Boolean(photoPermissionPortfolio),
       photoPermissionSocial: Boolean(photoPermissionSocial),
-      selectedFeeIds
+      selectedFeeIds,
+      isOnLocation,
+      isReschedule: false
     })
     const appliedFees = feeEval.appliedFees
     const totalFeeCents = feeEval.totalFeeCents

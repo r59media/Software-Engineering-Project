@@ -170,6 +170,8 @@
     { value: 'days_before_max', label: 'Days Before Session ≤ N' },
     { value: 'privacy_declined', label: 'Privacy Declined (No Photo Consent)' },
     { value: 'weekend', label: 'Weekend (Sat/Sun)' },
+    { value: 'on_location', label: 'On-Location / Travel (Away from Studio)' },
+    { value: 'reschedule', label: 'Client Self-Reschedule' },
     { value: 'always', label: 'Every Booking' },
     { value: 'client_selectable', label: 'Optional Client Add-On' }
   ];

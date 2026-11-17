@@ -278,6 +278,8 @@
         days_before_max: r => `Days ≤ ${norm(r.daysBefore) || '?'}`,
         privacy_declined: () => 'Privacy declined',
         weekend: () => 'Weekend',
+        on_location: () => 'On-Location / Travel',
+        reschedule: () => 'Client Self-Reschedule',
         always: () => 'Every booking',
         client_selectable: () => 'Optional add-on'
       };

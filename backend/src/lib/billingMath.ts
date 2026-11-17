@@ -273,6 +273,8 @@ export type DynamicFeeTriggerType =
   | 'weekend'
   | 'always'
   | 'client_selectable'
+  | 'on_location'
+  | 'reschedule'
 
 export type DynamicFeeAmountType =
   | 'fixed_cents'
@@ -313,6 +315,8 @@ export interface DynamicFeeContext {
   photoPermissionPortfolio?: boolean
   photoPermissionSocial?: boolean
   selectedFeeIds?: string[]
+  isOnLocation?: boolean
+  isReschedule?: boolean
 }
 
 export interface AppliedDynamicFee {
@@ -335,7 +339,9 @@ const VALID_TRIGGER_TYPES: readonly DynamicFeeTriggerType[] = [
   'privacy_declined',
   'weekend',
   'always',
-  'client_selectable'
+  'client_selectable',
+  'on_location',
+  'reschedule'
 ]
 
 const VALID_AMOUNT_TYPES: readonly DynamicFeeAmountType[] = [
@@ -485,6 +491,12 @@ export function evaluateDynamicFees(
       case 'client_selectable':
         matches = selectedSet.has(rule.id)
         break
+      case 'on_location':
+        matches = Boolean(context.isOnLocation)
+        break
+      case 'reschedule':
+        matches = Boolean(context.isReschedule)
+        break
       case 'days_before_max':
         matches =
           daysUntilSession !== null &&
@@ -527,4 +539,35 @@ export function evaluateDynamicFees(
     totalFeeCents,
     daysUntilSession
   }
+}
+
+export function countRescheduleIdentityMatches(
+  booking: { client_name?: string | null; client_email?: string | null; customer_phone?: string | null },
+  input: { name?: string; email?: string; phone?: string }
+): number {
+  let matches = 0
+
+  const bEmail = String(booking.client_email ?? '').trim().toLowerCase()
+  const iEmail = String(input.email ?? '').trim().toLowerCase()
+  if (bEmail && iEmail && bEmail === iEmail) {
+    matches += 1
+  }
+
+  const bPhone = String(booking.customer_phone ?? '').replace(/\D/g, '')
+  const iPhone = String(input.phone ?? '').replace(/\D/g, '')
+  if (
+    bPhone.length >= 7 &&
+    iPhone.length >= 7 &&
+    (bPhone === iPhone || (bPhone.length >= 10 && iPhone.length >= 10 && bPhone.slice(-10) === iPhone.slice(-10)))
+  ) {
+    matches += 1
+  }
+
+  const bName = String(booking.client_name ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+  const iName = String(input.name ?? '').trim().toLowerCase().replace(/\s+/g, ' ')
+  if (bName && iName && bName === iName) {
+    matches += 1
+  }
+
+  return matches
 }
