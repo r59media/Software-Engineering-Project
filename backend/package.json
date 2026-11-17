@@ -23,11 +23,11 @@
   },
   "dependencies": {
     "hono": "4.13.13",
-    "square": "45.1.0"
+    "square": "46.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "4.20260702.1",
-    "typescript": "5.9.3",
+    "@cloudflare/workers-types": "5.20261116.1",
+    "typescript": "7.0.2",
     "wrangler": "4.151.1"
   },
   "overrides": {
