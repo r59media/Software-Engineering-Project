@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import type { Bindings } from '../index'
 import { ensureSchemaReady } from './admin'
 import { getTrustedClientIp, hasForbiddenPaymentFields } from '../middleware/auth'
-import { getSquare } from '../lib/squareBilling'
+import { buildHybridSquareNote, getSquare } from '../lib/squareBilling'
 import { depositFor, normalizeDepositPercent } from '../lib/billingMath'
 import { isSlotInWeeklyAvailability } from './schedule'
 
@@ -400,6 +400,19 @@ checkoutRouter.post('/', async (c) => {
     const depositCents = Math.round((finalPriceCents * depositPercent) / 100)
     const squareChargeCents = finalPriceCents > 0 ? Math.min(finalPriceCents, Math.max(100, depositCents)) : 0
     const lineItemName = depositPercent === 100 ? service.name : `${service.name} – ${depositPercent}% deposit`
+    const serviceCategory = String(service.category ?? service.best_for ?? '').trim() || 'Photography'
+    const packageTitle = String(service.title ?? service.name ?? '').trim()
+    const hybridNote = buildHybridSquareNote({
+      category: serviceCategory,
+      packageName: packageTitle,
+      date: slot.date,
+      time: slot.start_time,
+      guests: attendees,
+      couponCode: validCouponCode || couponCode,
+      photoPermissionPortfolio,
+      photoPermissionSocial,
+      bookingId: null
+    })
 
     // Throws SquareNotConfiguredError when the token or location is missing; the catch below
     // answers 500 PAYMENT_FAILED and releases the slot.
@@ -413,12 +426,20 @@ checkoutRouter.post('/', async (c) => {
           {
             name: lineItemName,
             quantity: '1',
+            note: hybridNote,
             basePriceMoney: {
               amount: BigInt(squareChargeCents),
               currency: 'USD'
             }
           }
-        ]
+        ],
+        metadata: {
+          booking_id: 'pending',
+          category: serviceCategory.slice(0, 255),
+          session_type: (packageTitle || 'Custom Session').slice(0, 255),
+          photo_permission_portfolio: photoPermissionPortfolio ? 'YES' : 'NO',
+          photo_permission_social: photoPermissionSocial ? 'YES' : 'NO'
+        }
       },
       idempotencyKey: idempotencyKey + '_order'
     })
@@ -437,6 +458,8 @@ checkoutRouter.post('/', async (c) => {
       locationId: squareLocationId,
       autocomplete: true,
       acceptPartialAuthorization: false,
+      note: hybridNote,
+      buyerEmailAddress: clientEmail,
       amountMoney: {
         amount: BigInt(squareChargeCents),
         currency: 'USD'

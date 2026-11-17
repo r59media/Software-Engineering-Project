@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { BookingReviewDraft, BookingService } from '../../types/booking'
+import type { BookingReviewDraft, BookingService, SquareConfig } from '../../types/booking'
 import { computeSessionPricing, submitCheckout, fetchPricing, validateCoupon, type PricingData } from '../../api/client'
 import { fallbackBookingDepositPercent } from '../../config/booking'
 
@@ -27,22 +27,24 @@ interface SquarePayments {
   card: (options?: Record<string, unknown>) => Promise<SquareCard>
 }
 
-function loadSquareSdk(): Promise<void> {
+function loadSquareSdk(environment: 'sandbox' | 'production'): Promise<void> {
   if (typeof window === 'undefined') return Promise.resolve()
   if (window.Square) return Promise.resolve()
 
-  const isProduction = import.meta.env.VITE_SQUARE_ENVIRONMENT === 'production'
-  const scriptUrl = isProduction
+  const scriptUrl = environment === 'production'
     ? 'https://web.squarecdn.com/v1/square.js'
     : 'https://sandbox.web.squarecdn.com/v1/square.js'
 
   const existing = document.querySelector<HTMLScriptElement>('script[src*="squarecdn.com"]')
   if (existing) {
-    if (window.Square) return Promise.resolve()
-    return new Promise((resolve, reject) => {
-      existing.addEventListener('load', () => resolve(), { once: true })
-      existing.addEventListener('error', () => reject(new Error('Failed to load Square Web Payments SDK script.')), { once: true })
-    })
+    if (existing.src === scriptUrl) {
+      if (window.Square) return Promise.resolve()
+      return new Promise((resolve, reject) => {
+        existing.addEventListener('load', () => resolve(), { once: true })
+        existing.addEventListener('error', () => reject(new Error('Failed to load Square Web Payments SDK script.')), { once: true })
+      })
+    }
+    existing.remove()
   }
 
   return new Promise((resolve, reject) => {
@@ -62,6 +64,7 @@ interface DepositCheckoutModalProps {
   service: BookingService | null
   onClose: () => void
   onSuccess?: (bookingId?: number) => void
+  squareConfig?: SquareConfig | null
   appId?: string
   locationId?: string
 }
@@ -71,6 +74,7 @@ export function DepositCheckoutModal({
   service,
   onClose,
   onSuccess,
+  squareConfig,
   appId,
   locationId,
 }: DepositCheckoutModalProps) {
@@ -96,15 +100,21 @@ export function DepositCheckoutModal({
   const modalRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<SquareCard | null>(null)
 
+  const resolvedSquareConfig = pricing?.squareConfig ?? squareConfig ?? null
   const resolvedAppId =
+    resolvedSquareConfig?.applicationId ||
     appId ||
     import.meta.env.VITE_SQUARE_APPLICATION_ID ||
     import.meta.env.VITE_SQUARE_APP_ID ||
     'sandbox-sq0idb-placeholder'
   const resolvedLocationId =
+    resolvedSquareConfig?.locationId ||
     locationId ||
     import.meta.env.VITE_SQUARE_LOCATION_ID ||
     'sandbox-location-placeholder'
+  const resolvedEnvironment: 'sandbox' | 'production' =
+    resolvedSquareConfig?.environment ||
+    (import.meta.env.VITE_SQUARE_ENVIRONMENT === 'production' ? 'production' : 'sandbox')
 
   useEffect(() => {
     let active = true
@@ -135,7 +145,7 @@ export function DepositCheckoutModal({
       setCardError(null)
 
       try {
-        await loadSquareSdk()
+        await loadSquareSdk(resolvedEnvironment)
         if (!isMounted) return
 
         if (!window.Square) {
@@ -174,7 +184,7 @@ export function DepositCheckoutModal({
         cardRef.current = null
       }
     }
-  }, [resolvedAppId, resolvedLocationId, confirmedResult])
+  }, [resolvedAppId, resolvedLocationId, resolvedEnvironment, confirmedResult])
 
   const slotId = draft.dateTime?.slotId ?? draft.slotId ?? draft.slot_id
 

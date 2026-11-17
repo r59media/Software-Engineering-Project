@@ -12,6 +12,7 @@ import {
   parseMoneyToCents
 } from '../src/lib/billingMath.ts'
 import { verifySquareSignature } from '../src/lib/squareWebhookAuth.ts'
+import { buildHybridSquareNote } from '../src/lib/squareBilling.ts'
 
 test('normalizeDepositPercent', () => {
   assert.equal(normalizeDepositPercent('60'), 60)
@@ -187,4 +188,44 @@ test('verifySquareSignature', async () => {
   assert.equal(await verifySquareSignature({ body: body + ' ', signature, key, url }), false)
   assert.equal(await verifySquareSignature({ body, signature, key, url: url + '/' }), false)
   assert.equal(await verifySquareSignature({ body, signature: '', key, url }), false)
+})
+
+test('buildHybridSquareNote: formats all hybrid fields and enforces 500-char limit', () => {
+  const full = buildHybridSquareNote({
+    category: 'Portrait',
+    packageName: 'Golden Hour',
+    date: '2026-11-20',
+    time: '15:00',
+    guests: 3,
+    couponCode: 'FALL20',
+    photoPermissionPortfolio: 1,
+    photoPermissionSocial: 0,
+    bookingId: 42
+  })
+  assert.equal(
+    full,
+    '[Category: Portrait] Golden Hour | 2026-11-20 15:00 | Guests: 3 | Coupon: FALL20 | Photo Consent: Website=YES, Social=NO | Booking #42'
+  )
+  assert.ok(full.length <= 500)
+
+  const minimal = buildHybridSquareNote({
+    packageName: 'Mini Session',
+    photoPermissionPortfolio: false,
+    photoPermissionSocial: false
+  })
+  assert.equal(minimal, 'Mini Session | Photo Consent: Website=NO, Social=NO')
+
+  const oversized = buildHybridSquareNote({
+    category: 'A'.repeat(200),
+    packageName: 'B'.repeat(250),
+    date: '2026-11-20',
+    time: '15:00',
+    guests: 5,
+    couponCode: 'LONGCOUPONCODE12345',
+    photoPermissionPortfolio: true,
+    photoPermissionSocial: true,
+    bookingId: 999999
+  })
+  assert.equal(oversized.length, 500)
+  assert.ok(oversized.endsWith('...'))
 })

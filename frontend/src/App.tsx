@@ -231,6 +231,7 @@ function App() {
         <BookingSection
           services={bookingServices}
           pricing={pricing}
+          squareConfig={pricing?.squareConfig ?? null}
           status={bookingStatus}
           onRetry={loadBookingServices}
           inquiryHref="#contact"
@@ -249,6 +250,7 @@ function App() {
       <DepositCheckoutModal
         draft={depositDraft}
         service={bookingServices.find(s => s.id === depositDraft.serviceId) || null}
+        squareConfig={pricing?.squareConfig ?? null}
         onClose={() => setDepositDraft(null)}
       />
     )}

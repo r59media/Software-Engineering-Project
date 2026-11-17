@@ -999,6 +999,23 @@
     return opts.join('');
   }
 
+  function renderPhotoConsentBadges(portfolioGranted, socialGranted) {
+    const badgesEl = $('#bkPhotoConsentBadges');
+    if (!badgesEl) return;
+    const greenStyle = 'display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: rgba(34, 197, 94, 0.12); color: #15803d; border: 1px solid rgba(34, 197, 94, 0.3);';
+    const neutralStyle = 'display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; background: var(--ink-4, #f3f4f6); color: var(--ink-2, #6b7280); border: 1px solid var(--rule, #d1d5db);';
+
+    const portfolioBadge = portfolioGranted
+      ? `<span style="${greenStyle}">✓ Allowed for Website / Portfolio</span>`
+      : `<span style="${neutralStyle}">✕ Declined for Website / Portfolio</span>`;
+
+    const socialBadge = socialGranted
+      ? `<span style="${greenStyle}">✓ Allowed for Social Media</span>`
+      : `<span style="${neutralStyle}">✕ Declined for Social Media</span>`;
+
+    badgesEl.innerHTML = `${portfolioBadge} ${socialBadge}`;
+  }
+
   function openBookingEditor(id) {
     const b = findBooking(id);
     if (!b) return;
@@ -1027,21 +1044,12 @@
     const acceptedAt = b.photo_permission_accepted_at || b.photoPermissionAcceptedAt;
     const version = b.photo_permission_version || b.photoPermissionVersion || 'v1';
 
-    const badgesEl = $('#bkPhotoConsentBadges');
-    if (badgesEl) {
-      const greenStyle = 'display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: rgba(34, 197, 94, 0.12); color: #15803d; border: 1px solid rgba(34, 197, 94, 0.3);';
-      const neutralStyle = 'display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.25rem 0.65rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; background: var(--ink-4, #f3f4f6); color: var(--ink-2, #6b7280); border: 1px solid var(--rule, #d1d5db);';
+    const portfolioChk = $('#bkPhotoConsentPortfolio');
+    if (portfolioChk) portfolioChk.checked = portfolioGranted;
+    const socialChk = $('#bkPhotoConsentSocial');
+    if (socialChk) socialChk.checked = socialGranted;
 
-      const portfolioBadge = portfolioGranted
-        ? `<span style="${greenStyle}">✓ Allowed for Website / Portfolio</span>`
-        : `<span style="${neutralStyle}">✕ Declined for Website / Portfolio</span>`;
-
-      const socialBadge = socialGranted
-        ? `<span style="${greenStyle}">✓ Allowed for Social Media</span>`
-        : `<span style="${neutralStyle}">✕ Declined for Social Media</span>`;
-
-      badgesEl.innerHTML = `${portfolioBadge} ${socialBadge}`;
-    }
+    renderPhotoConsentBadges(portfolioGranted, socialGranted);
 
     const metaEl = $('#bkPhotoConsentMeta');
     if (metaEl) {
@@ -1984,6 +1992,8 @@
       const attendees = attendeesRaw ? parseInt(attendeesRaw, 10) : undefined;
       const location = $('#bkLocation').value.trim();
       const notes = $('#bkNotes').value.trim();
+      const photo_permission_portfolio = Boolean($('#bkPhotoConsentPortfolio')?.checked);
+      const photo_permission_social = Boolean($('#bkPhotoConsentSocial')?.checked);
       const payload = {
         customer_name: customer,
         customer_email: email,
@@ -1996,7 +2006,9 @@
         endTime: end || undefined,
         price,
         deposit,
-        status
+        status,
+        photo_permission_portfolio,
+        photo_permission_social
       };
       // Only send the package when the admin changed it (an unchanged choice keeps the stored one)
       const prevPackage = b.packageId === null || b.packageId === undefined ? 'none' : String(b.packageId);
@@ -2025,7 +2037,11 @@
             end_time: end || target.end_time || '',
             price,
             deposit,
-            status
+            status,
+            photo_permission_portfolio: photo_permission_portfolio ? 1 : 0,
+            photo_permission_social: photo_permission_social ? 1 : 0,
+            photoPermissionPortfolio: photo_permission_portfolio,
+            photoPermissionSocial: photo_permission_social
           });
           // Same conversion the server makes: dollars -> whole cents
           target.baseCents = Math.max(0, Math.round(price * 100));
@@ -2382,6 +2398,14 @@
     });
 
     // Edit booking modal
+    const syncConsentBadges = () => {
+      renderPhotoConsentBadges(
+        Boolean($('#bkPhotoConsentPortfolio')?.checked),
+        Boolean($('#bkPhotoConsentSocial')?.checked)
+      );
+    };
+    $('#bkPhotoConsentPortfolio')?.addEventListener('change', syncConsentBadges);
+    $('#bkPhotoConsentSocial')?.addEventListener('change', syncConsentBadges);
     const bkStatusEl = $('#bkStatus');
     bkStatusEl?.addEventListener('change', () => {
       const b = findBooking(editingBookingId);

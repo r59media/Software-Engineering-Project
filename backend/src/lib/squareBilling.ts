@@ -22,6 +22,53 @@ type SquareSdk = typeof import('square')
 export type SquareClient = InstanceType<SquareSdk['SquareClient']>
 
 const GENERIC_SQUARE_ERROR = 'Square request failed. Try again in a minute.'
+const SQUARE_NOTE_MAX = 500
+
+export interface HybridSquareNoteInput {
+  category?: string | null
+  packageName?: string | null
+  date?: string | null
+  time?: string | null
+  guests?: number | null
+  couponCode?: string | null
+  photoPermissionPortfolio?: boolean | number | null
+  photoPermissionSocial?: boolean | number | null
+  bookingId?: string | number | null
+}
+
+/**
+ * Formats a concise, <= 500 char hybrid booking/category/consent note for Square Orders, Payments, and Invoices.
+ */
+export function buildHybridSquareNote(input: HybridSquareNoteInput): string {
+  const cat = typeof input.category === 'string' ? input.category.trim() : ''
+  const pkg = typeof input.packageName === 'string' && input.packageName.trim() ? input.packageName.trim() : 'Custom Session'
+  const header = cat ? `[Category: ${cat}] ${pkg}` : pkg
+
+  const parts: string[] = [header]
+  const dateTime = [input.date, input.time]
+    .map((v) => (typeof v === 'string' ? v.trim() : ''))
+    .filter(Boolean)
+    .join(' ')
+  if (dateTime) parts.push(dateTime)
+
+  if (input.guests != null && Number.isFinite(Number(input.guests)) && Number(input.guests) > 0) {
+    parts.push(`Guests: ${Math.round(Number(input.guests))}`)
+  }
+
+  const coupon = typeof input.couponCode === 'string' ? input.couponCode.trim() : ''
+  if (coupon) parts.push(`Coupon: ${coupon}`)
+
+  const websiteConsent = input.photoPermissionPortfolio ? 'YES' : 'NO'
+  const socialConsent = input.photoPermissionSocial ? 'YES' : 'NO'
+  parts.push(`Photo Consent: Website=${websiteConsent}, Social=${socialConsent}`)
+
+  if (input.bookingId !== undefined && input.bookingId !== null && String(input.bookingId).trim() !== '') {
+    parts.push(`Booking #${String(input.bookingId).trim()}`)
+  }
+
+  const full = parts.join(' | ')
+  return full.length > SQUARE_NOTE_MAX ? `${full.slice(0, SQUARE_NOTE_MAX - 3)}...` : full
+}
 
 /** An error with an API error code and HTTP status, mapped to `{ error: { code, message, details } }`. */
 export class BillingError extends Error {
@@ -113,6 +160,7 @@ ORDER BY p.paid_on ASC, p.id ASC`
 
 const BOOKING_SELECT_SQL = `SELECT b.id, b.status, b.client_name, b.client_email, b.service_id, b.custom_price,
        b.price_at_booking, b.deposit_paid, b.deposit_percent,
+       b.photo_permission_portfolio, b.photo_permission_social,
        s.price AS service_price, s.name AS service_name, sl.date AS date
 FROM Bookings b
 LEFT JOIN Services s ON b.service_id = s.id
@@ -507,7 +555,7 @@ export async function sendBalanceInvoice(
   // 3. Compute the balance now, after the claim (every lock checks for this row).
   let booking: any
   let balance: number
-  let charges: { description: string; amount_cents: number }[]
+  let charges: { description: string; amount_cents: number; category?: string }[]
   try {
     const fresh = await loadBookingTotals(db, id)
     if (!fresh) throw new BillingError('NOT_FOUND', 404, 'Booking not found.')
@@ -523,12 +571,35 @@ export async function sendBalanceInvoice(
     const { results } = await db.prepare(CHARGES_SELECT_SQL).bind(id).all<any>()
     charges = (results || []).map((row: any) => ({
       description: String(row.description),
-      amount_cents: Number(row.amount_cents) || 0
+      amount_cents: Number(row.amount_cents) || 0,
+      category: typeof row.category === 'string' && row.category.trim() ? row.category.trim() : undefined
     }))
   } catch (err) {
     await deleteClaim()
     throw err
   }
+
+  // Optional context for hybrid Square metadata/descriptions (safe if legacy test DB omits these columns).
+  const extraContext = await db.prepare(
+    `SELECT b.attendees, b.coupon_code, sl.start_time, s.best_for
+     FROM Bookings b
+     LEFT JOIN Services s ON b.service_id = s.id
+     LEFT JOIN Schedule_Slots sl ON b.slot_id = sl.id
+     WHERE b.id = ?`
+  ).bind(id).first<any>().catch(() => null)
+
+  const serviceCategory = String(extraContext?.best_for || '').trim() || 'Photography'
+  const hybridNote = buildHybridSquareNote({
+    category: serviceCategory,
+    packageName: booking.service_name,
+    date: booking.date,
+    time: extraContext?.start_time,
+    guests: extraContext?.attendees,
+    couponCode: extraContext?.coupon_code,
+    photoPermissionPortfolio: booking.photo_permission_portfolio,
+    photoPermissionSocial: booking.photo_permission_social,
+    bookingId: id
+  })
 
   // Steps 4–7 talk to Square.
   let client: SquareClient | null = null
@@ -543,7 +614,11 @@ export async function sendBalanceInvoice(
     const customerId = await ensureCustomer(client, booking, attemptKey)
 
     // 5. Order.
-    const lines = buildInvoiceLines({ balanceCents: balance, packageName: booking.service_name, charges })
+    const annotatedCharges = charges.map((charge) => ({
+      description: charge.category ? `[${charge.category}] ${charge.description}` : charge.description,
+      amount_cents: charge.amount_cents
+    }))
+    const lines = buildInvoiceLines({ balanceCents: balance, packageName: booking.service_name, charges: annotatedCharges })
     const orderRes = await client.orders.create({
       idempotencyKey: `${attemptKey}-order`,
       order: {
@@ -554,6 +629,13 @@ export async function sendBalanceInvoice(
           quantity: '1',
           basePriceMoney: { amount: BigInt(line.amountCents), currency: 'USD' }
         })),
+        metadata: {
+          booking_id: String(id),
+          category: serviceCategory.slice(0, 255),
+          session_type: String(booking.service_name || 'Custom Session').slice(0, 255),
+          photo_permission_portfolio: booking.photo_permission_portfolio ? 'YES' : 'NO',
+          photo_permission_social: booking.photo_permission_social ? 'YES' : 'NO'
+        },
         pricingOptions: { autoApplyTaxes: false }
       }
     })
@@ -585,7 +667,8 @@ export async function sendBalanceInvoice(
           buyNowPayLater: false,
           cashAppPay: false
         },
-        title: invoiceTitle(booking)
+        title: invoiceTitle(booking),
+        description: hybridNote
       }
     })
     const created = createRes.invoice

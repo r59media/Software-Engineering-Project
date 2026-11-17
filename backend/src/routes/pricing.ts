@@ -33,6 +33,14 @@ function checkCouponRateLimit(ip: string): boolean {
   return true
 }
 
+function getSquareConfig(env: Bindings) {
+  return {
+    applicationId: env.SQUARE_APPLICATION_ID || '',
+    locationId: env.SQUARE_LOCATION_ID || '',
+    environment: (env.SQUARE_ENVIRONMENT || 'sandbox').toLowerCase() === 'production' ? 'production' : 'sandbox'
+  }
+}
+
 // GET /api/pricing (public)
 pricingRouter.get('/', async (c) => {
   try {
@@ -64,7 +72,8 @@ pricingRouter.get('/', async (c) => {
       depositPercent,
       baseFee,
       perPerson,
-      currency: 'USD'
+      currency: 'USD',
+      squareConfig: getSquareConfig(c.env)
     })
   } catch {
     c.header('Cache-Control', 'no-store')
@@ -72,7 +81,8 @@ pricingRouter.get('/', async (c) => {
       depositPercent: DEFAULT_DEPOSIT_PERCENT,
       baseFee: 0,
       perPerson: 0,
-      currency: 'USD'
+      currency: 'USD',
+      squareConfig: getSquareConfig(c.env)
     })
   }
 })

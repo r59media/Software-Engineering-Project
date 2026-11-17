@@ -22,6 +22,7 @@ export type Bindings = {
   ASSETS?: Fetcher
   ENVIRONMENT?: string
   SQUARE_ACCESS_TOKEN?: string
+  SQUARE_APPLICATION_ID?: string
   SQUARE_ENVIRONMENT?: string
   SQUARE_LOCATION_ID?: string
   CLOUDFLARE_ACCOUNT_ID?: string
@@ -46,7 +47,7 @@ app.use('*', async (c, next) => {
   await next()
   c.header(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client https://cdn.jsdelivr.net https://web.squarecdn.com https://sandbox.web.squarecdn.com; connect-src 'self' https://accounts.google.com/gsi/ https://connect.squareup.com https://pci-connect.squareup.com https://pci-connect.squareupsandbox.com; frame-src https://accounts.google.com/gsi/ https://web.squarecdn.com https://sandbox.web.squarecdn.com; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; worker-src 'self'; object-src 'none'; base-uri 'self'"
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client https://cdn.jsdelivr.net https://web.squarecdn.com https://sandbox.web.squarecdn.com; connect-src 'self' https://accounts.google.com/gsi/ https://connect.squareup.com https://pci-connect.squareup.com https://pci-connect.squareupsandbox.com; frame-src https://accounts.google.com/gsi/ https://web.squarecdn.com https://sandbox.web.squarecdn.com; frame-ancestors 'self'; img-src 'self' data: blob: https://web.squarecdn.com https://sandbox.web.squarecdn.com; font-src 'self' https://fonts.gstatic.com data: https://web.squarecdn.com https://sandbox.web.squarecdn.com; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style https://web.squarecdn.com https://sandbox.web.squarecdn.com; worker-src 'self'; object-src 'none'; base-uri 'self'"
   )
   c.header('X-Frame-Options', 'SAMEORIGIN')
   c.header('X-Content-Type-Options', 'nosniff')
