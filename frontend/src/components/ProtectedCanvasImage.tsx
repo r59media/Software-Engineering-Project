@@ -316,9 +316,9 @@ export function ProtectedCanvasImage({
     onLoadRef.current = onLoad
   }, [onLoad])
 
-  const [loadedSrc, setLoadedSrc] = useState<string | null>(() => (src && (bitmapCache.has(src) || blobCache.has(src)) ? src : null))
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(() => (src && (drawableCache.has(src) || blobCache.has(src)) ? src : null))
   const [errorSrc, setErrorSrc] = useState<string | null>(null)
-  const isLoaded = Boolean(src) && (loadedSrc === src || bitmapCache.has(src) || blobCache.has(src))
+  const isLoaded = Boolean(src) && (loadedSrc === src || drawableCache.has(src) || blobCache.has(src))
   const hasError = Boolean(src && errorSrc === src)
 
   useEffect(() => {
