@@ -1,12 +1,26 @@
 import { useEffect, useState } from 'react'
 import { fetchGalleryPhotos, type GalleryPhoto } from '../../api/client'
+import { preloadProtectedImage } from '../../components/ProtectedCanvasImage'
 import { recentPhotos } from '../../config/recentPhotoshoot'
+import type { PhotoshootPhoto } from '../../types/recentPhotoshoot'
+
+const FALLBACK_CATEGORIES = ['Portrait', 'Editorial', 'Commercial', 'Events']
 
 const signature = (photos: readonly GalleryPhoto[]) =>
   photos.map(p => `${p.id}|${p.src}|${p.category}|${p.title || ''}|${p.alt}`).join('\n')
 
-export function useGalleryPhotos(): { photos: GalleryPhoto[]; loading: boolean } {
-  const [photos, setPhotos] = useState<GalleryPhoto[]>([])
+function mapFallbackPhotos(fallbackPhotos?: readonly PhotoshootPhoto[]): GalleryPhoto[] {
+  if (!fallbackPhotos?.length) return []
+  return fallbackPhotos.map((photo, index) => ({
+    ...photo,
+    src: photo.imageUrl,
+    category: FALLBACK_CATEGORIES[index % FALLBACK_CATEGORIES.length],
+    title: photo.alt.replace(/\.$/, ''),
+  }))
+}
+
+export function useGalleryPhotos(fallbackPhotos?: readonly PhotoshootPhoto[]): { photos: GalleryPhoto[]; loading: boolean } {
+  const [photos, setPhotos] = useState<GalleryPhoto[]>(() => mapFallbackPhotos(fallbackPhotos))
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -17,11 +31,16 @@ export function useGalleryPhotos(): { photos: GalleryPhoto[]; loading: boolean }
       const current = new AbortController()
       controller = current
 
-      void fetchGalleryPhotos(recentPhotos, current.signal)
+      void fetchGalleryPhotos(fallbackPhotos ?? recentPhotos, current.signal)
         .then(next => {
           if (current.signal.aborted) return
           setPhotos(prev => (signature(prev) === signature(next) ? prev : next))
           setLoading(false)
+          next.slice(0, 4).forEach(photo => {
+            if (photo.src) {
+              void preloadProtectedImage(photo.src)
+            }
+          })
         })
         .catch(() => {
           if (!current.signal.aborted) {
@@ -34,34 +53,15 @@ export function useGalleryPhotos(): { photos: GalleryPhoto[]; loading: boolean }
       if (document.visibilityState === 'visible') load()
     }
 
-    let idleHandle: number | null = null
-    let timeoutHandle: number | null = null
-    if (typeof window.requestIdleCallback === 'function') {
-      idleHandle = window.requestIdleCallback(() => {
-        idleHandle = null
-        load()
-      }, { timeout: 1200 })
-    } else {
-      timeoutHandle = window.setTimeout(() => {
-        timeoutHandle = null
-        load()
-      }, 250)
-    }
-
+    load()
     window.addEventListener('focus', onRevalidate)
     document.addEventListener('visibilitychange', onRevalidate)
     return () => {
       controller?.abort()
-      if (idleHandle !== null && typeof window.cancelIdleCallback === 'function') {
-        window.cancelIdleCallback(idleHandle)
-      }
-      if (timeoutHandle !== null) {
-        window.clearTimeout(timeoutHandle)
-      }
       window.removeEventListener('focus', onRevalidate)
       document.removeEventListener('visibilitychange', onRevalidate)
     }
-  }, [])
+  }, [fallbackPhotos])
 
   return { photos, loading }
 }

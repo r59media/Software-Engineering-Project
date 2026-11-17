@@ -141,12 +141,24 @@ async function isActivePublicMediaKey(db: D1Database, effectiveKey: string): Pro
   }
 }
 
+const mediaAuthMemo = new WeakMap<object, boolean>()
+
 /**
  * Validates whether a media request is authorized (Finding 8).
  * Accepts valid HMAC signed URLs, valid non-revoked Admin session tokens,
  * active public portfolio/service media for /api/media/*, or media-viewer / active portfolio for /assets/*.
+ * Memoizes the decision per Request so middleware and route handlers do not re-query D1.
  */
 async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, fileKey?: string): Promise<boolean> {
+  if (mediaAuthMemo.has(c.req.raw)) {
+    return mediaAuthMemo.get(c.req.raw)!
+  }
+  const authorized = await evaluateMediaAuthorization(c, fileKey)
+  mediaAuthMemo.set(c.req.raw, authorized)
+  return authorized
+}
+
+async function evaluateMediaAuthorization(c: Context<{ Bindings: Bindings }>, fileKey?: string): Promise<boolean> {
   let pathname = ''
   try {
     pathname = decodeURIComponent(new URL(c.req.url).pathname)
@@ -161,6 +173,14 @@ async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, file
     const secret = await getMediaSigningSecret(c.env)
     const valid = secret ? await verifyMediaSignature(key, Number(exp), sig, secret) : false
     if (valid) return true
+  }
+
+  const clientHeader = c.req.header('X-R59-Client')
+  const isApiMedia = pathname.startsWith('/api/media/') || Boolean(fileKey)
+
+  // Fast-path non-API media assets (e.g. /assets/*) for media-viewer before D1 session/portfolio queries
+  if (!isApiMedia && clientHeader === 'media-viewer') {
+    return true
   }
 
   const { token } = extractSessionToken(c)
@@ -181,9 +201,6 @@ async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, file
     }
   }
 
-  const clientHeader = c.req.header('X-R59-Client')
-  const isApiMedia = pathname.startsWith('/api/media/') || Boolean(fileKey)
-
   if (isApiMedia) {
     const effectiveKey = (fileKey || pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
     if (!effectiveKey || !c.env.DB) return false
@@ -191,7 +208,6 @@ async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, file
   }
 
   if (pathname.startsWith('/assets/')) {
-    if (clientHeader === 'media-viewer') return true
     const assetKey = pathname.replace(/^\/+/, '')
     if (assetKey && c.env.DB) {
       return await isActivePortfolioMediaKey(c.env.DB, assetKey)
@@ -199,7 +215,7 @@ async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, file
     return false
   }
 
-  return clientHeader === 'media-viewer'
+  return false
 }
 
 // Block sourcemap files everywhere & protect media/model assets from standalone scraping & hotlinking
@@ -615,7 +631,56 @@ app.put('/api/media/*', adminAuth, async (c) => {
   }
 })
 
-// D1 Media Storage Retrieval handler supporting HTTP Range 512KB chunk streaming and HMAC signed URLs
+function toUint8Array(data: unknown): Uint8Array {
+  if (data instanceof Uint8Array) return data
+  if (data instanceof ArrayBuffer) return new Uint8Array(data)
+  if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+  if (Array.isArray(data)) return new Uint8Array(data)
+  if (data && typeof data === 'object') return new Uint8Array(Object.values(data as Record<string, number>))
+  return new Uint8Array(0)
+}
+
+function assembleChunks(rows: { data: unknown }[], expectedLength?: number): Uint8Array {
+  const byteChunks: Uint8Array[] = []
+  let totalLength = 0
+  for (const row of rows) {
+    const chunkArr = toUint8Array(row.data)
+    byteChunks.push(chunkArr)
+    totalLength += chunkArr.byteLength
+  }
+  const combined = new Uint8Array(expectedLength ?? totalLength)
+  let offset = 0
+  for (const chunk of byteChunks) {
+    combined.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return combined
+}
+
+function matchesIfNoneMatch(headerValue: string | undefined, etag: string): boolean {
+  if (!headerValue) return false
+  const trimmed = headerValue.trim()
+  if (trimmed === '*') return true
+  return trimmed.split(',').some((part) => {
+    const candidate = part.trim()
+    return candidate === etag || candidate === `W/${etag}`
+  })
+}
+
+function buildMediaSecurityHeaders(
+  c: Context<{ Bindings: Bindings }>,
+  extra: Record<string, string> = {}
+): Record<string, string> {
+  return {
+    'Cache-Control': 'public, max-age=31536000, immutable',
+    'Cross-Origin-Resource-Policy': getCorpPolicy(c),
+    'Content-Disposition': 'inline',
+    'X-Content-Type-Options': 'nosniff',
+    ...extra
+  }
+}
+
+// D1 Media Storage Retrieval handler supporting HTTP Range 512KB chunk streaming, ETag/304, Edge Cache, and HMAC signed URLs
 const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
   const fileKeyParam = c.req.param('file_key')
   const url = new URL(c.req.url)
@@ -652,49 +717,107 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
     }
   }
 
+  const rangeHeader = c.req.header('Range')
+  const ifNoneMatch = c.req.header('If-None-Match')
+  const cacheReq = new Request(new URL(`/api/media/${encodeURIComponent(fileKey)}`, url.origin).toString())
+
+  // Check Cloudflare Worker Edge Cache only after authorization succeeds
+  let edgeCache: Cache | undefined
   try {
-    const rows = await c.env.DB.prepare(
-      'SELECT chunk_index, content_type, data FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
-    ).bind(fileKey).all<{ chunk_index: number; content_type: string; data: any }>()
-
-    if (rows?.results && rows.results.length > 0) {
-      const results = rows.results
-      let totalLength = 0
-      const byteChunks: Uint8Array[] = []
-
-      for (const row of results) {
-        let chunkArr: Uint8Array
-        if (row.data instanceof Uint8Array) {
-          chunkArr = row.data
-        } else if (row.data instanceof ArrayBuffer) {
-          chunkArr = new Uint8Array(row.data)
-        } else if (ArrayBuffer.isView(row.data)) {
-          chunkArr = new Uint8Array(row.data.buffer, row.data.byteOffset, row.data.byteLength)
-        } else if (Array.isArray(row.data)) {
-          chunkArr = new Uint8Array(row.data)
-        } else if (row.data && typeof row.data === 'object') {
-          chunkArr = new Uint8Array(Object.values(row.data as Record<string, number>))
-        } else {
-          chunkArr = new Uint8Array(0)
+    edgeCache = (caches as unknown as { default?: Cache })?.default
+    if (edgeCache) {
+      const cachedRes = await edgeCache.match(cacheReq)
+      if (cachedRes) {
+        const cachedEtag = cachedRes.headers.get('ETag') || ''
+        if (cachedEtag && matchesIfNoneMatch(ifNoneMatch, cachedEtag)) {
+          return new Response(null, {
+            status: 304,
+            headers: buildMediaSecurityHeaders(c, { ETag: cachedEtag })
+          })
         }
-        byteChunks.push(chunkArr)
-        totalLength += chunkArr.byteLength
+
+        if (rangeHeader) {
+          const cachedBuf = new Uint8Array(await cachedRes.arrayBuffer())
+          const parsedRange = parseRangeHeader(rangeHeader, cachedBuf.byteLength)
+          if (parsedRange === 'unsatisfiable') {
+            return new Response(null, {
+              status: 416,
+              headers: {
+                'Content-Range': `bytes */${cachedBuf.byteLength}`,
+                'Accept-Ranges': 'bytes'
+              }
+            })
+          }
+          if (parsedRange) {
+            const { start, end } = parsedRange
+            const slice = cachedBuf.subarray(start, end + 1)
+            return new Response(slice, {
+              status: 206,
+              headers: buildMediaSecurityHeaders(c, {
+                'Content-Type': cachedRes.headers.get('Content-Type') || 'image/webp',
+                'Content-Range': `bytes ${start}-${end}/${cachedBuf.byteLength}`,
+                'Content-Length': String(slice.byteLength),
+                'Accept-Ranges': 'bytes',
+                ...(cachedEtag ? { ETag: cachedEtag } : {})
+              })
+            })
+          }
+        }
+
+        return new Response(cachedRes.body, {
+          status: 200,
+          headers: buildMediaSecurityHeaders(c, {
+            'Content-Type': cachedRes.headers.get('Content-Type') || 'image/webp',
+            ...(cachedRes.headers.get('Content-Length')
+              ? { 'Content-Length': cachedRes.headers.get('Content-Length')! }
+              : {}),
+            'Accept-Ranges': 'bytes',
+            ...(cachedEtag ? { ETag: cachedEtag } : {})
+          })
+        })
       }
+    }
+  } catch {
+    // caches may be undefined in Node/Vitest environments
+  }
+
+  try {
+    // Query chunk metadata first without transferring BLOB data
+    const metaRows = await c.env.DB.prepare(
+      'SELECT chunk_index, length(data) AS chunk_size, content_type, created_at FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
+    ).bind(fileKey).all<{ chunk_index: number; chunk_size: number; content_type: string; created_at: string | null }>()
+
+    if (metaRows?.results && metaRows.results.length > 0) {
+      let runningOffset = 0
+      const chunkMeta = metaRows.results.map((r) => {
+        const size = Number(r.chunk_size || 0)
+        const entry = {
+          chunkIndex: Number(r.chunk_index),
+          start: runningOffset,
+          end: runningOffset + size - 1,
+          size
+        }
+        runningOffset += size
+        return entry
+      })
+      const totalLength = runningOffset
 
       if (totalLength === 0) {
         return c.notFound()
       }
 
-      const contentType = results[0].content_type || 'image/webp'
-      const combined = new Uint8Array(totalLength)
-      let currentOffset = 0
-      for (const chunk of byteChunks) {
-        combined.set(chunk, currentOffset)
-        currentOffset += chunk.byteLength
+      const contentType = metaRows.results[0].content_type || 'image/webp'
+      const createdAt = metaRows.results[0].created_at ?? ''
+      const etag = `"media-${encodeURIComponent(fileKey)}-${totalLength}-${createdAt}"`
+
+      if (matchesIfNoneMatch(ifNoneMatch, etag)) {
+        return new Response(null, {
+          status: 304,
+          headers: buildMediaSecurityHeaders(c, { ETag: etag })
+        })
       }
 
-      // HTTP Range handling
-      const rangeHeader = c.req.header('Range')
+      // HTTP Range handling: fetch only overlapping chunk_index bounds from D1
       if (rangeHeader) {
         const parsedRange = parseRangeHeader(rangeHeader, totalLength)
         if (parsedRange === 'unsatisfiable') {
@@ -708,35 +831,70 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
         }
         if (parsedRange) {
           const { start, end } = parsedRange
-          const slice = combined.subarray(start, end + 1)
+          const needed = chunkMeta.filter((m) => m.size > 0 && m.end >= start && m.start <= end)
+          if (needed.length === 0) {
+            return c.notFound()
+          }
+          const minChunkIndex = needed[0].chunkIndex
+          const maxChunkIndex = needed[needed.length - 1].chunkIndex
+          const firstChunkStart = needed[0].start
+
+          const rangeRows = await c.env.DB.prepare(
+            'SELECT chunk_index, data FROM Media_Storage WHERE file_key = ? AND chunk_index BETWEEN ? AND ? ORDER BY chunk_index ASC'
+          ).bind(fileKey, minChunkIndex, maxChunkIndex).all<{ chunk_index: number; data: unknown }>()
+
+          if (!rangeRows?.results || rangeRows.results.length === 0) {
+            return c.notFound()
+          }
+
+          const neededCombined = assembleChunks(rangeRows.results)
+          const slice = neededCombined.subarray(start - firstChunkStart, end - firstChunkStart + 1)
           return new Response(slice, {
             status: 206,
-            headers: {
+            headers: buildMediaSecurityHeaders(c, {
               'Content-Type': contentType,
               'Content-Range': `bytes ${start}-${end}/${totalLength}`,
               'Content-Length': String(slice.byteLength),
               'Accept-Ranges': 'bytes',
-              'Cache-Control': 'public, max-age=31536000, immutable',
-              'Cross-Origin-Resource-Policy': getCorpPolicy(c),
-              'Content-Disposition': 'inline',
-              'X-Content-Type-Options': 'nosniff'
-            }
+              ETag: etag
+            })
           })
         }
       }
 
-      return new Response(combined, {
+      const dataRows = await c.env.DB.prepare(
+        'SELECT chunk_index, data FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
+      ).bind(fileKey).all<{ chunk_index: number; data: unknown }>()
+
+      if (!dataRows?.results || dataRows.results.length === 0) {
+        return c.notFound()
+      }
+
+      const combined = assembleChunks(dataRows.results, totalLength)
+      const res200 = new Response(combined, {
         status: 200,
-        headers: {
+        headers: buildMediaSecurityHeaders(c, {
           'Content-Type': contentType,
           'Content-Length': String(totalLength),
           'Accept-Ranges': 'bytes',
-          'Cache-Control': 'public, max-age=31536000, immutable',
-          'Cross-Origin-Resource-Policy': getCorpPolicy(c),
-          'Content-Disposition': 'inline',
-          'X-Content-Type-Options': 'nosniff'
-        }
+          ETag: etag
+        })
       })
+
+      if (edgeCache) {
+        try {
+          const putPromise = edgeCache.put(cacheReq, res200.clone())
+          try {
+            c.executionCtx.waitUntil(putPromise)
+          } catch {
+            // No ExecutionContext in Node/test environments
+          }
+        } catch {
+          // Ignore Edge Cache write errors
+        }
+      }
+
+      return res200
     }
   } catch (dbErr) {
     // Media_Storage table may not exist yet or query error

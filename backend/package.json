@@ -18,6 +18,7 @@
     "db:init": "wrangler d1 create r59_db",
     "db:reset": "wrangler d1 execute r59_db --local --file=./schema.sql",
     "typecheck": "tsc --noEmit",
+    "pretest": "pnpm run sync-frontend && pnpm run sync-admin",
     "test": "node --test test/*.test.ts"
   },
   "dependencies": {

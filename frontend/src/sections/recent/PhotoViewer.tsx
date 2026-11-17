@@ -3,18 +3,35 @@ import { createPortal } from 'react-dom'
 import type { PhotoshootPhoto } from '../../types/recentPhotoshoot'
 import arrowLeft from '../../assets/mrphshImages/photo-arrow-left.svg'
 import arrowRight from '../../assets/mrphshImages/photo-arrow-right.svg'
-import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
+import { ProtectedCanvasImage, preloadProtectedImage } from '../../components/ProtectedCanvasImage'
 
 interface PhotoViewerProps {
   photo: PhotoshootPhoto
+  photos?: readonly PhotoshootPhoto[]
   position: number
   total: number
   onStep: (direction: -1 | 1) => void
   onClose: () => void
 }
 
-export function PhotoViewer({ photo, position, total, onStep, onClose }: PhotoViewerProps) {
+export function PhotoViewer({ photo, photos, position, total, onStep, onClose }: PhotoViewerProps) {
   const dialogRef = useRef<HTMLDialogElement>(null)
+
+  useEffect(() => {
+    if (photo.imageUrl) {
+      void preloadProtectedImage(photo.imageUrl)
+    }
+    if (!photos?.length) return
+    const indices = new Set([
+      position,
+      (position + 1) % photos.length,
+      (position - 1 + photos.length) % photos.length,
+    ])
+    for (const idx of indices) {
+      const url = photos[idx]?.imageUrl
+      if (url) void preloadProtectedImage(url)
+    }
+  }, [photo.imageUrl, photos, position])
 
   useEffect(() => {
     const dialog = dialogRef.current

@@ -15,7 +15,10 @@ export interface ProtectedCanvasImageProps {
 }
 
 const MAX_BLOB_CACHE_ENTRIES = 100
+const MAX_BITMAP_CACHE_ENTRIES = 24
 const blobCache = new Map<string, Blob>()
+const bitmapCache = new Map<string, ImageBitmap>()
+const inFlightFetches = new Map<string, Promise<Blob>>()
 
 function cacheBlob(src: string, blob: Blob) {
   if (blobCache.has(src)) {
@@ -27,6 +30,108 @@ function cacheBlob(src: string, blob: Blob) {
     }
   }
   blobCache.set(src, blob)
+}
+
+function cacheBitmap(src: string, bitmap: ImageBitmap) {
+  const existing = bitmapCache.get(src)
+  if (existing) {
+    bitmapCache.delete(src)
+    if (existing !== bitmap) {
+      existing.close?.()
+    }
+  } else if (bitmapCache.size >= MAX_BITMAP_CACHE_ENTRIES) {
+    const oldestKey = bitmapCache.keys().next().value
+    if (oldestKey !== undefined) {
+      const oldestBitmap = bitmapCache.get(oldestKey)
+      bitmapCache.delete(oldestKey)
+      oldestBitmap?.close?.()
+    }
+  }
+  bitmapCache.set(src, bitmap)
+}
+
+function getCachedBitmap(src: string): ImageBitmap | undefined {
+  const cached = bitmapCache.get(src)
+  if (!cached) return undefined
+  // Refresh LRU order on read
+  bitmapCache.delete(src)
+  bitmapCache.set(src, cached)
+  return cached
+}
+
+function fetchProtectedBlob(src: string): Promise<Blob> {
+  const cached = blobCache.get(src)
+  if (cached) {
+    cacheBlob(src, cached)
+    return Promise.resolve(cached)
+  }
+
+  const inFlight = inFlightFetches.get(src)
+  if (inFlight) {
+    return inFlight
+  }
+
+  const request = fetch(src, {
+    credentials: 'omit',
+    headers: {
+      'X-R59-Client': 'media-viewer',
+    },
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`Failed to load protected media: ${response.status}`)
+      }
+      const blob = await response.blob()
+      cacheBlob(src, blob)
+      return blob
+    })
+    .finally(() => {
+      inFlightFetches.delete(src)
+    })
+
+  inFlightFetches.set(src, request)
+  return request
+}
+
+async function decodeBlobToBitmap(blob: Blob): Promise<ImageBitmap> {
+  if (typeof createImageBitmap === 'function') {
+    return createImageBitmap(blob)
+  }
+  const img = new Image()
+  const blobUrl = URL.createObjectURL(blob)
+  try {
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('Failed to load image'))
+      img.src = blobUrl
+    })
+    return await createImageBitmap(img)
+  } finally {
+    URL.revokeObjectURL(blobUrl)
+  }
+}
+
+async function getOrDecodeBitmap(src: string): Promise<ImageBitmap> {
+  const cached = getCachedBitmap(src)
+  if (cached) return cached
+
+  const blob = await fetchProtectedBlob(src)
+  const rechecked = getCachedBitmap(src)
+  if (rechecked) return rechecked
+
+  const bitmap = await decodeBlobToBitmap(blob)
+  cacheBitmap(src, bitmap)
+  return bitmap
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export async function preloadProtectedImage(src: string): Promise<void> {
+  if (!src) return
+  try {
+    await getOrDecodeBitmap(src)
+  } catch {
+    // Ignore preload failures; component mount will handle/report errors if needed
+  }
 }
 
 function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): boolean {
@@ -78,69 +183,48 @@ export function ProtectedCanvasImage({
     const { signal } = abortController
     let observer: IntersectionObserver | null = null
     let rafId: number | null = null
-    let pendingBitmap: ImageBitmap | null = null
     let started = false
+
+    const renderBitmap = (bitmap: ImageBitmap) => {
+      if (signal.aborted) return
+      const canvas = canvasRef.current
+      if (!canvas) return
+      try {
+        if (drawBitmapToCanvas(canvas, bitmap)) {
+          onLoadRef.current?.()
+        }
+      } catch (err) {
+        if (bitmapCache.get(src) === bitmap) {
+          bitmapCache.delete(src)
+          bitmap.close?.()
+        }
+        throw err
+      }
+    }
 
     async function loadImage() {
       if (started || signal.aborted) return
       started = true
 
       try {
-        let blob = blobCache.get(src)
-        if (!blob) {
-          const response = await fetch(src, {
-            credentials: 'omit',
-            signal,
-            headers: {
-              'X-R59-Client': 'media-viewer',
-            },
-          })
-
-          if (!response.ok) {
-            throw new Error(`Failed to load protected media: ${response.status}`)
-          }
-
-          blob = await response.blob()
-          if (signal.aborted) return
-          cacheBlob(src, blob)
-        }
-
-        let bitmap: ImageBitmap
-        if (typeof createImageBitmap === 'function') {
-          bitmap = await createImageBitmap(blob)
-        } else {
-          const img = new Image()
-          const blobUrl = URL.createObjectURL(blob)
-          try {
-            await new Promise<void>((resolve, reject) => {
-              img.onload = () => resolve()
-              img.onerror = () => reject(new Error('Failed to load image'))
-              img.src = blobUrl
-            })
-            bitmap = await createImageBitmap(img)
-          } finally {
-            URL.revokeObjectURL(blobUrl)
-          }
-        }
-
-        if (signal.aborted) {
-          bitmap.close?.()
+        const cachedBitmap = getCachedBitmap(src)
+        if (cachedBitmap) {
+          renderBitmap(cachedBitmap)
           return
         }
 
-        pendingBitmap = bitmap
+        const bitmap = await getOrDecodeBitmap(src)
+        if (signal.aborted) return
+
         rafId = requestAnimationFrame(() => {
           rafId = null
-          const bmp = pendingBitmap
-          pendingBitmap = null
           try {
-            if (signal.aborted || !bmp) return
-            const canvas = canvasRef.current
-            if (canvas && drawBitmapToCanvas(canvas, bmp)) {
-              onLoadRef.current?.()
-            }
-          } finally {
-            bmp?.close?.()
+            renderBitmap(bitmap)
+          } catch (err: unknown) {
+            if (signal.aborted) return
+            console.error('ProtectedCanvasImage load error:', err)
+            setErrorSrc(src)
+            onErrorRef.current?.()
           }
         })
       } catch (err: unknown) {
@@ -154,7 +238,7 @@ export function ProtectedCanvasImage({
     }
 
     const canvas = canvasRef.current
-    if (eager || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
+    if (eager || bitmapCache.has(src) || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
       void loadImage()
     } else {
       observer = new IntersectionObserver(
@@ -175,10 +259,6 @@ export function ProtectedCanvasImage({
       observer?.disconnect()
       if (rafId !== null) {
         cancelAnimationFrame(rafId)
-      }
-      if (pendingBitmap) {
-        pendingBitmap.close?.()
-        pendingBitmap = null
       }
     }
   }, [src, eager])

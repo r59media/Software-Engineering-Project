@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { HeroDestinations, HeroSlide } from '../../types/hero'
 import { ActionLink } from '../../components/ActionLink'
-import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
+import { ProtectedCanvasImage, preloadProtectedImage } from '../../components/ProtectedCanvasImage'
 import { usePublicProfile } from '../about/useAboutData'
 import './Hero.css'
 
@@ -73,6 +73,19 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
   const controlled = activeSlideId !== undefined
   const activeIndex = Math.max(0, availableSlides.findIndex(slide => slide.id === (controlled ? activeSlideId : currentId)))
   const activeSlide = availableSlides[activeIndex]
+
+  useEffect(() => {
+    if (availableSlides.length === 0) return
+    const indices = new Set([
+      activeIndex,
+      (activeIndex + 1) % availableSlides.length,
+      (activeIndex - 1 + availableSlides.length) % availableSlides.length,
+    ])
+    for (const idx of indices) {
+      const url = availableSlides[idx]?.imageUrl
+      if (url) void preloadProtectedImage(url)
+    }
+  }, [availableSlides, activeIndex])
 
   useEffect(() => {
     const onVisibility = () => setHidden(document.hidden)

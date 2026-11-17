@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, type TargetAndTransition } from 'motion/react'
 import type { PhotoshootPhoto } from '../../types/recentPhotoshoot'
 import { recentInitialPhotoId, recentPhotos } from '../../config/recentPhotoshoot'
+import { preloadProtectedImage } from '../../components/ProtectedCanvasImage'
 import { PhotoImage } from './PhotoImage'
 import { PhotoViewer } from './PhotoViewer'
 import { useRecentPhotos } from './useRecentPhotos'
@@ -97,6 +98,19 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
   const [hidden, setHidden] = useState(() => document.hidden)
   const activeIndex = Math.max(0, items.findIndex(photo => photo.id === activePhotoId))
   const activePhoto = items[activeIndex]
+
+  useEffect(() => {
+    if (items.length === 0) return
+    const indices = new Set([
+      activeIndex,
+      (activeIndex + 1) % items.length,
+      (activeIndex - 1 + items.length) % items.length,
+    ])
+    for (const idx of indices) {
+      const url = items[idx]?.imageUrl
+      if (url) void preloadProtectedImage(url)
+    }
+  }, [items, activeIndex])
 
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.matchMedia('(max-width: 1000px)').matches : false)
 
@@ -332,6 +346,6 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
       )}
       <h2 id="recent-heading" className="recent__heading" data-recent-part="heading"><span>MOST RECENT</span><strong>PHOTOSHOOT</strong></h2>
     </div>
-    {viewerOpen && activePhoto && <PhotoViewer photo={activePhoto} position={activeIndex} total={items.length} onStep={step} onClose={() => setViewerOpen(false)} />}
+    {viewerOpen && activePhoto && <PhotoViewer photo={activePhoto} photos={items} position={activeIndex} total={items.length} onStep={step} onClose={() => setViewerOpen(false)} />}
   </section>
 }

@@ -562,3 +562,100 @@ test('Cross-Protocol Key Confusion: getMediaSigningSecret rejects signatures for
     true
   )
 })
+
+test('Media Fast-Path, ETag/304, and Chunk-Bounded Range Requests preserve security headers', async () => {
+  const { sqlite, env } = setupTestEnv()
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS Services (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      image_url TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
+  `)
+
+  // Multi-chunk variable-size media
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    'chunked.webp', 0, 'image/webp', Buffer.from('0123456789'), '2026-01-01T00:00:00Z'
+  )
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    'chunked.webp', 1, 'image/webp', Buffer.from('abcdefghij'), '2026-01-01T00:00:00Z'
+  )
+  sqlite.prepare('INSERT INTO Portfolio_Images (media_key, is_active) VALUES (?, ?)').run('chunked.webp', 1)
+
+  const realApp = loadRealBackendApp()
+
+  // 1. 200 OK returns ETag and security headers
+  const res200 = await realApp.fetch(
+    new Request('http://localhost/api/media/chunked.webp', {
+      headers: { 'X-R59-Client': 'media-viewer' }
+    }),
+    env
+  )
+  assert.equal(res200.status, 200)
+  const etag = res200.headers.get('ETag')
+  assert.equal(etag, '"media-chunked.webp-20-2026-01-01T00:00:00Z"')
+  assert.equal(res200.headers.get('X-Content-Type-Options'), 'nosniff')
+  assert.equal(res200.headers.get('Cross-Origin-Resource-Policy'), 'cross-origin')
+  assert.equal(await res200.text(), '0123456789abcdefghij')
+
+  // 2. If-None-Match returns 304 Not Modified with security headers
+  const res304 = await realApp.fetch(
+    new Request('http://localhost/api/media/chunked.webp', {
+      headers: {
+        'X-R59-Client': 'media-viewer',
+        'If-None-Match': etag!
+      }
+    }),
+    env
+  )
+  assert.equal(res304.status, 304)
+  assert.equal(res304.headers.get('ETag'), etag)
+  assert.equal(res304.headers.get('X-Content-Type-Options'), 'nosniff')
+  assert.equal(res304.headers.get('Cross-Origin-Resource-Policy'), 'cross-origin')
+  assert.ok(res304.headers.get('Cache-Control')?.includes('max-age=31536000'))
+
+  // 3. Cross-chunk Range request returns exact 206 slice
+  const res206 = await realApp.fetch(
+    new Request('http://localhost/api/media/chunked.webp', {
+      headers: {
+        'X-R59-Client': 'media-viewer',
+        Range: 'bytes=5-14'
+      }
+    }),
+    env
+  )
+  assert.equal(res206.status, 206)
+  assert.equal(res206.headers.get('Content-Range'), 'bytes 5-14/20')
+  assert.equal(res206.headers.get('Content-Length'), '10')
+  assert.equal(await res206.text(), '56789abcde')
+
+  // 4. Unsatisfiable Range returns 416
+  const res416 = await realApp.fetch(
+    new Request('http://localhost/api/media/chunked.webp', {
+      headers: {
+        'X-R59-Client': 'media-viewer',
+        Range: 'bytes=100-200'
+      }
+    }),
+    env
+  )
+  assert.equal(res416.status, 416)
+  assert.equal(res416.headers.get('Content-Range'), 'bytes */20')
+
+  // 5. Sec-Fetch-Dest: document & Sec-Fetch-Site: cross-site remain blocked
+  const resDoc = await realApp.fetch(
+    new Request('http://localhost/api/media/chunked.webp', {
+      headers: { 'Sec-Fetch-Dest': 'document', 'X-R59-Client': 'media-viewer' }
+    }),
+    env
+  )
+  assert.equal(resDoc.status, 302)
+
+  const resCross = await realApp.fetch(
+    new Request('http://localhost/api/media/chunked.webp', {
+      headers: { 'Sec-Fetch-Site': 'cross-site', 'X-R59-Client': 'media-viewer' }
+    }),
+    env
+  )
+  assert.equal(resCross.status, 403)
+})

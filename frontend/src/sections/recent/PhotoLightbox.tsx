@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import arrowLeft from '../../assets/mrphshImages/photo-arrow-left.svg'
 import arrowRight from '../../assets/mrphshImages/photo-arrow-right.svg'
-import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
+import { ProtectedCanvasImage, preloadProtectedImage } from '../../components/ProtectedCanvasImage'
 
 export interface LightboxPhoto {
   id: string
@@ -27,6 +27,20 @@ export function PhotoLightbox({ photos, selectedIndex, onClose, onSelect }: Phot
 
   const isOpen = selectedIndex !== null && selectedIndex >= 0 && selectedIndex < photos.length
   const photo = isOpen ? photos[selectedIndex] : null
+
+  useEffect(() => {
+    if (!isOpen || photos.length === 0 || selectedIndex === null) return
+    const indices = new Set([
+      selectedIndex,
+      (selectedIndex + 1) % photos.length,
+      (selectedIndex - 1 + photos.length) % photos.length,
+    ])
+    for (const idx of indices) {
+      const item = photos[idx]
+      const url = item?.src || item?.imageUrl
+      if (url) void preloadProtectedImage(url)
+    }
+  }, [isOpen, photos, selectedIndex])
 
   useEffect(() => {
     if (!isOpen) return

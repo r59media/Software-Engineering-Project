@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "pnpm typecheck && vite build",
     "typecheck": "tsc -b",
-    "lint": "eslint .",
+    "lint": "NODE_OPTIONS='--experimental-strip-types' eslint --flag unstable_native_nodejs_ts_config .",
     "check": "pnpm lint && pnpm build",
     "preview": "vite preview",
     "convert-webp": "node --experimental-strip-types scripts/convert-to-webp.ts"

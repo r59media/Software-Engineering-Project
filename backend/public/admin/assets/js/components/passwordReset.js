@@ -1,1 +1,0 @@
-export const passwordReset={init:()=>{},showSignIn:()=>{},startFromLink:()=>!1,checkAvailability:()=>Promise.resolve({available:!1})};typeof window<"u"&&(window.R59=window.R59||{},window.R59.passwordReset=passwordReset);export default passwordReset;

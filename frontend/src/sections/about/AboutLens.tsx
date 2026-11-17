@@ -37,7 +37,10 @@ export function AboutLens() {
 
   useEffect(() => {
     let cancelled = false
-    fetch(url, { credentials: 'omit' }).catch(() => {})
+    fetch(url, {
+      headers: { 'X-R59-Client': 'media-viewer' },
+      credentials: 'omit',
+    }).catch(() => {})
     const warm = () => {
       if (cancelled) return
       void loadLensScene()
