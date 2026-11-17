@@ -58,12 +58,40 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 export const adminRouter = new Hono<{ Bindings: Bindings }>()
 export { DEFAULT_PROFILE, ensurePhotoPermissionsColumns, replaceMediaStorageChunks }
 
-// ── Live D1 Schema Auto-Migration (OPT-02: once per isolate) ─────
-let schemaInitialized = false
+// ── Live D1 Schema Auto-Migration (OPT-02: once per db/isolate) ─────
+const schemaReadyByDb = new WeakMap<object, Promise<void>>()
 
 export async function ensureSchemaReady(db?: D1Database): Promise<void> {
-  if (schemaInitialized) return
-  schemaInitialized = true
+  if (!db) return
+  const existing = schemaReadyByDb.get(db)
+  if (existing) return existing
+
+  const promise = (async () => {
+    try {
+      await db.prepare(BOOKING_PAYMENTS_TABLE_SQL).run()
+      await db.prepare(BOOKING_PAYMENTS_INDEX_SQL).run()
+      for (const step of BILLING_SCHEMA_STEPS) {
+        try {
+          await db.prepare(step.sql).run()
+        } catch (err) {
+          if (!step.ignoreError) {
+            console.warn('Schema step failed (non-fatal):', err)
+          }
+        }
+      }
+      await ensurePhotoPermissionsColumns(db)
+    } catch (err) {
+      schemaReadyByDb.delete(db)
+      console.warn('ensureSchemaReady failed:', err)
+    }
+  })()
+
+  schemaReadyByDb.set(db, promise)
+  return promise
+}
+
+function toConsentFlag(val: unknown): number {
+  return val === true || val === 1 || val === '1' || val === 'true' ? 1 : 0
 }
 
 const BOOKINGS_ACTIVE_SLOT_INDEX_SQL =
@@ -536,7 +564,7 @@ adminRouter.post('/schedule', async (c) => {
 adminRouter.delete('/schedule/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const result = await c.env.DB.prepare(
@@ -668,7 +696,7 @@ adminRouter.post('/blocked-dates', async (c) => {
 adminRouter.delete('/blocked-dates/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const result = await c.env.DB.prepare('DELETE FROM Blocked_Dates WHERE id = ?').bind(id).run()
@@ -888,6 +916,15 @@ adminRouter.post('/bookings', async (c) => {
 
     const packageInput = normalizePackageInput(body.service_id ?? body.packageId)
     const slot_id = body.slot_id ?? body.slotId
+    const photo_permission_portfolio = toConsentFlag(
+      body.photo_permission_portfolio ?? body.photoPermissions?.websitePortfolio ?? body.photoPermissions?.website_portfolio
+    )
+    const photo_permission_social = toConsentFlag(
+      body.photo_permission_social ?? body.photoPermissions?.socialMedia ?? body.photoPermissions?.social_media
+    )
+    const photo_permission_accepted_at =
+      photo_permission_portfolio || photo_permission_social ? new Date().toISOString() : null
+    const photo_permission_version = 'v1'
     const status = body.status === undefined || body.status === null || body.status === ''
       ? 'confirmed'
       : parseBookingStatus(body.status)
@@ -995,8 +1032,9 @@ adminRouter.post('/bookings', async (c) => {
       bookingResult = await c.env.DB.prepare(
         `INSERT INTO Bookings (
           service_id, slot_id, client_name, client_email, price_at_booking, status,
-          customer_phone, location, notes, attendees, deposit_paid, coupon_code, custom_price
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          customer_phone, location, notes, attendees, deposit_paid, coupon_code, custom_price,
+          photo_permission_portfolio, photo_permission_social, photo_permission_accepted_at, photo_permission_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         targetServiceId,
         targetSlotId,
@@ -1010,7 +1048,11 @@ adminRouter.post('/bookings', async (c) => {
         attendees,
         deposit_paid,
         coupon_code,
-        custom_price
+        custom_price,
+        photo_permission_portfolio,
+        photo_permission_social,
+        photo_permission_accepted_at,
+        photo_permission_version
       ).run()
     } catch (insertErr) {
       // Undo the slot work so the time doesn't stay blocked by a booking that was never saved
@@ -1033,11 +1075,11 @@ adminRouter.post('/bookings', async (c) => {
   }
 })
 
-// PUT: Update an existing booking
-adminRouter.put('/bookings/:id', async (c) => {
+// PUT & PATCH: Update an existing booking
+async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const body = await c.req.json()
@@ -1164,6 +1206,24 @@ adminRouter.put('/bookings/:id', async (c) => {
     }
     const statusLower = String(status || '').toLowerCase()
 
+    const rawPortfolioConsent =
+      body.photo_permission_portfolio !== undefined
+        ? body.photo_permission_portfolio
+        : body.photoPermissions?.websitePortfolio ?? body.photoPermissions?.website_portfolio
+    const rawSocialConsent =
+      body.photo_permission_social !== undefined
+        ? body.photo_permission_social
+        : body.photoPermissions?.socialMedia ?? body.photoPermissions?.social_media
+    const photo_permission_portfolio =
+      rawPortfolioConsent !== undefined ? toConsentFlag(rawPortfolioConsent) : (existing.photo_permission_portfolio ? 1 : 0)
+    const photo_permission_social =
+      rawSocialConsent !== undefined ? toConsentFlag(rawSocialConsent) : (existing.photo_permission_social ? 1 : 0)
+    const photo_permission_accepted_at =
+      photo_permission_portfolio || photo_permission_social
+        ? (existing.photo_permission_accepted_at || new Date().toISOString())
+        : null
+    const photo_permission_version = existing.photo_permission_version || 'v1'
+
     // Cancelling withdraws the open invoice first; if Square refuses, nothing is changed
     if (statusLower === 'cancelled' && existingStatus !== 'cancelled') {
       await cancelOpenInvoice(c.env.DB, c.env, id)
@@ -1197,7 +1257,11 @@ adminRouter.put('/bookings/:id', async (c) => {
            custom_price = ?,
            price_at_booking = ?,
            service_id = ?,
-           status = ?
+           status = ?,
+           photo_permission_portfolio = ?,
+           photo_permission_social = ?,
+           photo_permission_accepted_at = ?,
+           photo_permission_version = ?
        WHERE id = ?${lockSql}`
     ).bind(
       client_name,
@@ -1212,6 +1276,10 @@ adminRouter.put('/bookings/:id', async (c) => {
       price_at_booking,
       service_id,
       status,
+      photo_permission_portfolio,
+      photo_permission_social,
+      photo_permission_accepted_at,
+      photo_permission_version,
       id,
       ...lockBinds
     ).run()
@@ -1245,13 +1313,16 @@ adminRouter.put('/bookings/:id', async (c) => {
   } catch (e: any) {
     return billingErrorResponse(c, e, 'Could not update booking.')
   }
-})
+}
+
+adminRouter.put('/bookings/:id', updateBookingHandler)
+adminRouter.patch('/bookings/:id', updateBookingHandler)
 
 // PATCH: Cancel a booking and release slot
 adminRouter.patch('/bookings/:id/cancel', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
 
@@ -1285,7 +1356,7 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
 adminRouter.delete('/bookings/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
 
@@ -1342,7 +1413,7 @@ adminRouter.get('/bookings/:id/payments', async (c) => {
   c.header('Cache-Control', 'no-store')
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
 
@@ -1365,7 +1436,7 @@ adminRouter.post('/bookings/:id/payments', async (c) => {
   c.header('Cache-Control', 'no-store')
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const body = await c.req.json().catch(() => ({}))
@@ -1848,7 +1919,7 @@ adminRouter.post('/coupons', async (c) => {
 adminRouter.put('/coupons/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const body = await c.req.json()
@@ -1935,7 +2006,7 @@ adminRouter.put('/coupons/:id', async (c) => {
 adminRouter.delete('/coupons/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const result = await c.env.DB.prepare('DELETE FROM Coupons WHERE id = ?').bind(id).run()
@@ -1954,7 +2025,7 @@ adminRouter.delete('/coupons/:id', async (c) => {
 adminRouter.put('/packages/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const body = await c.req.json().catch(() => ({}))
@@ -2106,7 +2177,7 @@ adminRouter.put('/packages/:id', async (c) => {
 adminRouter.delete('/packages/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
 
@@ -2161,7 +2232,7 @@ adminRouter.get('/portfolio', async (c) => {
 adminRouter.put('/portfolio/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const body = await c.req.json().catch(() => ({}))
@@ -2279,7 +2350,7 @@ adminRouter.put('/media/*', async (c) => {
 adminRouter.delete('/portfolio/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
 
@@ -2447,7 +2518,7 @@ adminRouter.get('/leads', async (c) => {
 adminRouter.delete('/leads/:id', async (c) => {
   try {
     const id = c.req.param('id')
-    if (!isValidId(id)) {
+    if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
     const result = await c.env.DB.prepare('DELETE FROM Leads WHERE id = ?').bind(id).run()

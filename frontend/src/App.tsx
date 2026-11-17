@@ -229,6 +229,7 @@ function App() {
         <BookingSection
           services={bookingServices}
           pricing={pricing}
+          squareConfig={pricing?.squareConfig ?? null}
           status={bookingStatus}
           onRetry={loadBookingServices}
           inquiryHref="#contact"

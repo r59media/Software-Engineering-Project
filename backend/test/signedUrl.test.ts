@@ -659,3 +659,84 @@ test('Media Fast-Path, ETag/304, and Chunk-Bounded Range Requests preserve secur
   )
   assert.equal(resCross.status, 403)
 })
+
+test('Static /assets/* and /models/* allow same-origin subresource requests and block document/cross-site requests', async () => {
+  const { env } = setupTestEnv()
+  const assetEnv: Bindings = {
+    ...env,
+    ASSETS: {
+      fetch: async (req: Request) =>
+        new Response(`ASSET:${new URL(req.url).pathname}`, {
+          status: 200,
+          headers: { 'Content-Type': 'image/webp' }
+        })
+    } as any
+  }
+
+  const realApp = loadRealBackendApp()
+  const paths = ['/assets/session-paper.webp', '/models/r59-memory-card-preview.webp']
+
+  for (const path of paths) {
+    // 1. Same-origin image subresource with Sec-Fetch-Site: same-origin -> 200
+    const resSameOrigin = await realApp.fetch(
+      new Request(`http://localhost${path}`, {
+        headers: {
+          'Sec-Fetch-Site': 'same-origin',
+          'Sec-Fetch-Dest': 'image'
+        }
+      }),
+      assetEnv
+    )
+    assert.equal(resSameOrigin.status, 200, `${path} must allow Sec-Fetch-Site: same-origin + Sec-Fetch-Dest: image`)
+    assert.equal(await resSameOrigin.text(), `ASSET:${path}`)
+
+    // 2. Same-origin Referer when Sec-Fetch-Site is absent -> 200
+    const resSameReferer = await realApp.fetch(
+      new Request(`http://localhost${path}`, {
+        headers: {
+          Referer: 'http://localhost/book',
+          'Sec-Fetch-Dest': 'image'
+        }
+      }),
+      assetEnv
+    )
+    assert.equal(resSameReferer.status, 200, `${path} must allow same-origin Referer when Sec-Fetch-Site is absent`)
+    assert.equal(await resSameReferer.text(), `ASSET:${path}`)
+
+    // 3. Sec-Fetch-Dest: document -> 302 redirect
+    const resDoc = await realApp.fetch(
+      new Request(`http://localhost${path}`, {
+        headers: {
+          'Sec-Fetch-Site': 'same-origin',
+          'Sec-Fetch-Dest': 'document'
+        }
+      }),
+      assetEnv
+    )
+    assert.equal(resDoc.status, 302, `${path} must block Sec-Fetch-Dest: document with 302`)
+
+    // 4. Sec-Fetch-Site: cross-site -> 403 Forbidden
+    const resCrossSite = await realApp.fetch(
+      new Request(`http://localhost${path}`, {
+        headers: {
+          'Sec-Fetch-Site': 'cross-site',
+          'Sec-Fetch-Dest': 'image'
+        }
+      }),
+      assetEnv
+    )
+    assert.equal(resCrossSite.status, 403, `${path} must block Sec-Fetch-Site: cross-site with 403`)
+
+    // 5. Cross-origin Referer when Sec-Fetch-Site is absent -> 302 redirect
+    const resCrossReferer = await realApp.fetch(
+      new Request(`http://localhost${path}`, {
+        headers: {
+          Referer: 'https://evil.example/page',
+          'Sec-Fetch-Dest': 'image'
+        }
+      }),
+      assetEnv
+    )
+    assert.equal(resCrossReferer.status, 302, `${path} must block cross-origin Referer when Sec-Fetch-Site is absent`)
+  }
+})

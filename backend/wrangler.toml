@@ -14,6 +14,7 @@ GOOGLE_CLIENT_ID = "903574031170-h5dehd9irqrpd5ujki24dp1q91k23f9o.apps.googleuse
 # Square webhook: set to https://<deployed-domain>/api/square/webhook (the exact URL registered in Square).
 # Empty means the webhook returns 503. The signature key is set with `wrangler secret put SQUARE_WEBHOOK_SIGNATURE_KEY`.
 SQUARE_WEBHOOK_URL = ""
+SQUARE_ENVIRONMENT = "sandbox"
 
 [previews]
 

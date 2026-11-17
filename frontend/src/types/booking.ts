@@ -99,10 +99,17 @@ export interface BookingServicesProps {
   initialSelection?: ServiceSelection | null
 }
 
+export interface SquareConfig {
+  applicationId: string
+  locationId: string
+  environment: 'sandbox' | 'production'
+}
+
 export interface BookingSectionProps {
   onProceedToDeposit?: (draft: BookingReviewDraft) => void | Promise<void>
   services?: readonly BookingService[]
   pricing?: PricingData | null
+  squareConfig?: SquareConfig | null
   status?: 'ready' | 'loading' | 'error'
   onRetry?: () => void
   inquiryHref?: string

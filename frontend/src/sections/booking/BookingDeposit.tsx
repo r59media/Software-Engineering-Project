@@ -40,11 +40,13 @@ interface SquarePayments {
   card: (options?: Record<string, unknown>) => Promise<SquareCard>
 }
 
-function loadSquareSdk(): Promise<void> {
+function loadSquareSdk(isProductionEnvironment?: boolean): Promise<void> {
   if (typeof window === 'undefined') return Promise.resolve()
   if (window.Square) return Promise.resolve()
 
-  const isProduction = import.meta.env.VITE_SQUARE_ENVIRONMENT === 'production'
+  const isProduction = typeof isProductionEnvironment === 'boolean'
+    ? isProductionEnvironment
+    : import.meta.env.VITE_SQUARE_ENVIRONMENT === 'production'
   const scriptUrl = isProduction
     ? 'https://web.squarecdn.com/v1/square.js'
     : 'https://sandbox.web.squarecdn.com/v1/square.js'
@@ -116,14 +118,16 @@ export function BookingDeposit({
 
   const cardRef = useRef<SquareCard | null>(null)
 
-  const rawAppId = import.meta.env.VITE_SQUARE_APPLICATION_ID || import.meta.env.VITE_SQUARE_APP_ID || ''
-  const rawLocationId = import.meta.env.VITE_SQUARE_LOCATION_ID || ''
+  const squareConfig = pricing?.squareConfig
+  const rawAppId = squareConfig?.applicationId || import.meta.env.VITE_SQUARE_APPLICATION_ID || import.meta.env.VITE_SQUARE_APP_ID || ''
+  const rawLocationId = squareConfig?.locationId || import.meta.env.VITE_SQUARE_LOCATION_ID || ''
   const isSquareConfigured = Boolean(
     rawAppId &&
     rawLocationId &&
     !rawAppId.includes('placeholder') &&
     !rawLocationId.includes('placeholder')
   )
+  const isProductionSquare = squareConfig?.environment === 'production' || import.meta.env.VITE_SQUARE_ENVIRONMENT === 'production'
 
   const currency = pricing?.currency || service?.currency || 'USD'
   const formatCurrency = (val: number) =>
@@ -174,7 +178,7 @@ export function BookingDeposit({
       setCardError(null)
 
       try {
-        await loadSquareSdk()
+        await loadSquareSdk(isProductionSquare)
         if (!isMounted) return
 
         if (!window.Square) {

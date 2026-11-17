@@ -22,6 +22,7 @@ export type Bindings = {
   ASSETS?: Fetcher
   ENVIRONMENT?: string
   SQUARE_ACCESS_TOKEN?: string
+  SQUARE_APPLICATION_ID?: string
   SQUARE_ENVIRONMENT?: string
   SQUARE_LOCATION_ID?: string
   CLOUDFLARE_ACCOUNT_ID?: string
@@ -46,7 +47,7 @@ app.use('*', async (c, next) => {
   await next()
   c.header(
     'Content-Security-Policy',
-    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client https://cdn.jsdelivr.net https://web.squarecdn.com https://sandbox.web.squarecdn.com; connect-src 'self' https://accounts.google.com/gsi/ https://connect.squareup.com https://pci-connect.squareup.com https://pci-connect.squareupsandbox.com; frame-src https://accounts.google.com/gsi/ https://web.squarecdn.com https://sandbox.web.squarecdn.com; frame-ancestors 'self'; img-src 'self' data: blob:; font-src 'self' https://fonts.gstatic.com data:; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; worker-src 'self'; object-src 'none'; base-uri 'self'"
+    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client https://cdn.jsdelivr.net https://web.squarecdn.com https://sandbox.web.squarecdn.com; connect-src 'self' https://accounts.google.com/gsi/ https://connect.squareup.com https://pci-connect.squareup.com https://pci-connect.squareupsandbox.com; frame-src https://accounts.google.com/gsi/ https://web.squarecdn.com https://sandbox.web.squarecdn.com; frame-ancestors 'self'; img-src 'self' data: blob: https://web.squarecdn.com https://sandbox.web.squarecdn.com; font-src 'self' https://fonts.gstatic.com data: https://web.squarecdn.com https://sandbox.web.squarecdn.com; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style https://web.squarecdn.com https://sandbox.web.squarecdn.com; worker-src 'self'; object-src 'none'; base-uri 'self'"
   )
   c.header('X-Frame-Options', 'SAMEORIGIN')
   c.header('X-Content-Type-Options', 'nosniff')
@@ -181,6 +182,29 @@ async function evaluateMediaAuthorization(c: Context<{ Bindings: Bindings }>, fi
   // Fast-path non-API media assets (e.g. /assets/*) for media-viewer before D1 session/portfolio queries
   if (!isApiMedia && clientHeader === 'media-viewer') {
     return true
+  }
+
+  // Allow same-origin non-document subresource requests for static build/model assets
+  if (!isApiMedia && (pathname.startsWith('/assets/') || pathname.startsWith('/models/'))) {
+    const fetchDest = c.req.header('Sec-Fetch-Dest')
+    const fetchSite = c.req.header('Sec-Fetch-Site')
+    if (fetchDest !== 'document') {
+      if (fetchSite === 'same-origin') {
+        return true
+      }
+      if (!fetchSite) {
+        const referer = c.req.header('Referer')
+        if (referer) {
+          try {
+            if (new URL(referer).origin === new URL(c.req.url).origin) {
+              return true
+            }
+          } catch {
+            // Ignore malformed Referer header
+          }
+        }
+      }
+    }
   }
 
   const { token } = extractSessionToken(c)

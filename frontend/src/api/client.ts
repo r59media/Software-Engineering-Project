@@ -1,6 +1,6 @@
 import type { HeroSlide } from '../types/hero'
 import type { PhotoshootPhoto } from '../types/recentPhotoshoot'
-import type { BookingService } from '../types/booking'
+import type { BookingService, SquareConfig } from '../types/booking'
 
 /** Which part of the site a portfolio photo is shown in (matches the admin "Photos" tabs). */
 export type PortfolioSection = 'recent' | 'gallery' | 'about' | 'hero'
@@ -377,6 +377,7 @@ export interface PricingData {
   baseFee: number
   perPerson: number
   currency: string
+  squareConfig?: SquareConfig | null
 }
 
 export interface SessionPricingBreakdown {
@@ -429,20 +430,40 @@ export function computeSessionPricing(
   }
 }
 
+function parseSquareConfig(raw: unknown): SquareConfig | null {
+  if (!raw || typeof raw !== 'object') return null
+  const candidate = raw as Record<string, unknown>
+  const applicationId = typeof candidate.applicationId === 'string' ? candidate.applicationId.trim() : ''
+  const locationId = typeof candidate.locationId === 'string' ? candidate.locationId.trim() : ''
+  const environment =
+    candidate.environment === 'production'
+      ? 'production'
+      : candidate.environment === 'sandbox'
+        ? 'sandbox'
+        : null
+  if (!applicationId || !locationId || !environment) return null
+  return { applicationId, locationId, environment }
+}
+
 export async function fetchPricing(signal?: AbortSignal): Promise<PricingData | null> {
   try {
-    const data = await apiGet<PricingData | { pricing?: PricingData; data?: PricingData }>('/pricing', signal)
+    const data = await apiGet<PricingData | { pricing?: PricingData; data?: PricingData; squareConfig?: unknown }>('/pricing', signal)
     if (!data) return null
+    const root = data as Record<string, unknown>
+    let pricingObj: PricingData | null = null
     if ('depositPercent' in data && typeof data.depositPercent === 'number') {
-      return data as PricingData
+      pricingObj = data as PricingData
+    } else if ('pricing' in data && data.pricing && typeof data.pricing.depositPercent === 'number') {
+      pricingObj = data.pricing
+    } else if ('data' in data && data.data && typeof data.data.depositPercent === 'number') {
+      pricingObj = data.data
     }
-    if ('pricing' in data && data.pricing && typeof data.pricing.depositPercent === 'number') {
-      return data.pricing
+    if (!pricingObj) return null
+    const squareConfig = parseSquareConfig(pricingObj.squareConfig ?? root.squareConfig)
+    return {
+      ...pricingObj,
+      squareConfig,
     }
-    if ('data' in data && data.data && typeof data.data.depositPercent === 'number') {
-      return data.data
-    }
-    return null
   } catch {
     return null
   }

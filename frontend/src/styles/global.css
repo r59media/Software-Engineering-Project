@@ -31,8 +31,10 @@ button:disabled { cursor: not-allowed; }
   width: 100%;
   height: 100%;
   overflow: hidden;
+  -webkit-user-select: none;
   user-select: none;
   -webkit-user-drag: none;
+  -webkit-touch-callout: none;
 }
 
 .protected-canvas {
@@ -41,8 +43,10 @@ button:disabled { cursor: not-allowed; }
   height: 100%;
   object-fit: cover;
   pointer-events: none;
+  -webkit-user-select: none;
   user-select: none;
   -webkit-user-drag: none;
+  -webkit-touch-callout: none;
   opacity: 0;
   transition: opacity 0.24s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -60,8 +64,10 @@ button:disabled { cursor: not-allowed; }
   z-index: 5;
   pointer-events: auto;
   background: transparent;
+  -webkit-user-select: none;
   user-select: none;
   -webkit-user-drag: none;
+  -webkit-touch-callout: none;
   cursor: default;
 }
 
