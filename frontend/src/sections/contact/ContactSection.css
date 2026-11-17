@@ -517,10 +517,9 @@
 }
 
 .contact-section__send:disabled {
-  background: var(--color-cta-disabled-background);
-  color: var(--color-white);
+  background: var(--color-black-10);
+  color: var(--color-gray);
   cursor: not-allowed;
-  opacity: 0.75;
 }
 
 .contact-section__availability {

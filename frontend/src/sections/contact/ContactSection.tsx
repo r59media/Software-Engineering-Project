@@ -58,6 +58,12 @@ export function ContactSection({ photos = contactPhotos, onSendInquiry }: Contac
   const choices = useRef<HTMLDivElement>(null)
   const form = useRef<HTMLFormElement>(null)
   const errors = validate(draft)
+  const isFormComplete = Boolean(
+    draft.name.trim() &&
+      draft.email.trim() &&
+      draft.message.trim() &&
+      Object.keys(errors).length === 0
+  )
   const change = <K extends keyof ContactInquiry>(key: K, value: ContactInquiry[K]) => setDraft(previous => ({ ...previous, [key]: value }))
   const select = (type: InquiryType) => { change('inquiryType', type); setStep('details'); setSendError('') }
   const fieldProps = (field: Field) => ({ id: `contact-${field}`, name: field, onBlur: () => setTouched(previous => ({ ...previous, [field]: true })), 'aria-invalid': Boolean(touched[field] && errors[field]), 'aria-describedby': touched[field] && errors[field] ? `contact-${field}-error` : undefined })
@@ -193,7 +199,7 @@ export function ContactSection({ photos = contactPhotos, onSendInquiry }: Contac
                 </fieldset>
                 {sendError && <p className="contact-section__send-error" role="alert">{sendError}</p>}
                 {!onSendInquiry && <p className="contact-section__availability">Online inquiries are not available yet.</p>}
-                <button className="contact-section__send" type="submit" disabled={busy || !onSendInquiry}>{busy ? 'Sending…' : 'Send inquiry →'}</button>
+                <button className="contact-section__send" type="submit" disabled={!isFormComplete || busy || !onSendInquiry}>{busy ? 'Sending…' : 'Send inquiry →'}</button>
                 <p className="contact-section__privacy">Your details will be used to respond to your inquiry. <a href={`${import.meta.env.BASE_URL}privacy-policy`}>Privacy Policy</a></p>
               </form>
             </motion.div> : <motion.div key="success" {...formPanelMotion} onAnimationComplete={() => formHeading.current?.focus({ preventScroll: true })} className="contact-section__form-panel contact-section__success"><p className="contact-section__step">Message sent</p><h3 ref={formHeading} tabIndex={-1}>Thanks! Your inquiry has been sent.</h3><p>I’ll reply to the email address you provided.</p><a href="#portfolio">Explore the portfolio →</a></motion.div>}
