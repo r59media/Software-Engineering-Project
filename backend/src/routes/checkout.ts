@@ -2,8 +2,8 @@ import { Hono } from 'hono'
 import type { Bindings } from '../index'
 import { ensureSchemaReady } from './admin'
 import { getTrustedClientIp, hasForbiddenPaymentFields } from '../middleware/auth'
-import { buildHybridSquareNote, getSquare } from '../lib/squareBilling'
-import { depositFor, normalizeDepositPercent } from '../lib/billingMath'
+import { buildHybridSquareNote, ensureCustomer, getSquare, getStudioTimeZone, sendBalanceInvoice } from '../lib/squareBilling'
+import { depositFor, localDateTimeToRFC3339, normalizeDepositPercent } from '../lib/billingMath'
 import { isSlotInWeeklyAvailability } from './schedule'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -418,10 +418,23 @@ checkoutRouter.post('/', async (c) => {
     // answers 500 PAYMENT_FAILED and releases the slot.
     const { client, locationId: squareLocationId } = await getSquare(c.env)
 
+    // 1b. Attach or create Square Customer so client name/email/phone appear on Transactions & Customers
+    let squareCustomerId: string | undefined
+    try {
+      squareCustomerId = await ensureCustomer(
+        client,
+        { client_email: clientEmail, client_name: clientName, customer_phone: customerPhone },
+        idempotencyKey
+      )
+    } catch (custErr) {
+      console.warn('Square customer lookup/create failed during checkout:', custErr)
+    }
+
     // 2. Create Ad-Hoc Order
     const orderResponse = await client.orders.create({
       order: {
         locationId: squareLocationId,
+        customerId: squareCustomerId,
         lineItems: [
           {
             name: lineItemName,
@@ -456,6 +469,7 @@ checkoutRouter.post('/', async (c) => {
       idempotencyKey: idempotencyKey,
       orderId: orderId,
       locationId: squareLocationId,
+      customerId: squareCustomerId,
       autocomplete: true,
       acceptPartialAuthorization: false,
       note: hybridNote,
@@ -554,6 +568,25 @@ checkoutRouter.post('/', async (c) => {
     }
 
     const balanceCents = Math.max(0, finalPriceCents - depositCents)
+    if (bookingId && balanceCents > 0) {
+      try {
+        const timeZone = await getStudioTimeZone(c.env.DB)
+        const scheduledAt = localDateTimeToRFC3339(slot.date, slot.start_time, timeZone)
+        await sendBalanceInvoice(
+          c.env.DB,
+          c.env,
+          bookingId,
+          balanceCents,
+          scheduledAt ? { scheduledAt } : undefined
+        )
+      } catch (invoiceErr) {
+        console.error('Checkout succeeded, but failed to schedule balance invoice:', {
+          bookingId,
+          error: invoiceErr
+        })
+      }
+    }
+
     return c.json({
       success: true,
       status: 'success',

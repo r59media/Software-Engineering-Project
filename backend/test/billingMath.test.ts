@@ -9,6 +9,7 @@ import {
   invoiceStatusLabel,
   addDaysISO,
   dateInTimeZone,
+  localDateTimeToRFC3339,
   parseMoneyToCents
 } from '../src/lib/billingMath.ts'
 import { verifySquareSignature } from '../src/lib/squareWebhookAuth.ts'
@@ -228,4 +229,19 @@ test('buildHybridSquareNote: formats all hybrid fields and enforces 500-char lim
   })
   assert.equal(oversized.length, 500)
   assert.ok(oversized.endsWith('...'))
+})
+
+test('localDateTimeToRFC3339: converts EST/EDT studio-local times to UTC RFC 3339', () => {
+  // Winter EST (UTC-5)
+  assert.equal(localDateTimeToRFC3339('2026-01-15', '14:30', 'America/New_York'), '2026-01-15T19:30:00Z')
+  assert.equal(localDateTimeToRFC3339('2026-11-20', '20:00:00', 'America/New_York'), '2026-11-21T01:00:00Z')
+
+  // Summer EDT (UTC-4)
+  assert.equal(localDateTimeToRFC3339('2026-07-15', '14:30', 'America/New_York'), '2026-07-15T18:30:00Z')
+  assert.equal(localDateTimeToRFC3339('2026-06-01', '09:15:30', 'America/New_York'), '2026-06-01T13:15:30Z')
+
+  // Invalid inputs return null
+  assert.equal(localDateTimeToRFC3339('2026-02-30', '10:00', 'America/New_York'), null)
+  assert.equal(localDateTimeToRFC3339('2026-07-15', '25:00', 'America/New_York'), null)
+  assert.equal(localDateTimeToRFC3339('2026-07-15', '10:00', 'Invalid/Zone'), null)
 })

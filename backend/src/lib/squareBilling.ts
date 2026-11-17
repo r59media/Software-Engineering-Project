@@ -330,7 +330,7 @@ function invoiceTitle(booking: any): string {
 }
 
 /** Flow 2 step 4: find the Square customer by the booking's normalized email, or create one. Nothing is stored. */
-async function ensureCustomer(client: SquareClient, booking: any, attemptKey: string): Promise<string> {
+export async function ensureCustomer(client: SquareClient, booking: any, attemptKey: string): Promise<string> {
   const email = String(booking.client_email ?? '').trim().toLowerCase()
   const found = await client.customers.search({
     query: { filter: { emailAddress: { exact: email } } },
@@ -340,11 +340,17 @@ async function ensureCustomer(client: SquareClient, booking: any, attemptKey: st
     (customer) => customer.id && String(customer.emailAddress ?? '').trim().toLowerCase() === email
   )
   if (match?.id) return match.id
-  const name = String(booking.client_name ?? '').trim()
+  const fullName = String(booking.client_name ?? '').trim()
+  const nameParts = fullName ? fullName.split(/\s+/) : []
+  const givenName = nameParts[0] || undefined
+  const familyName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined
+  const phone = String(booking.customer_phone ?? '').trim() || undefined
   const created = await client.customers.create({
     idempotencyKey: `${attemptKey}-customer`,
-    givenName: name || undefined,
-    emailAddress: email
+    givenName,
+    familyName,
+    emailAddress: email,
+    phoneNumber: phone
   })
   const id = created.customer?.id
   if (!id) throw new Error('Square returned no customer id')
@@ -514,7 +520,8 @@ export async function sendBalanceInvoice(
   db: D1Database,
   env: BillingEnv,
   bookingId: string | number,
-  expectedCents: unknown
+  expectedCents: unknown,
+  options?: { scheduledAt?: string }
 ): Promise<{ invoice: any; totals: BookingTotals }> {
   // Pre-checks, in the doc's order.
   const initial = await loadBookingTotals(db, bookingId)
@@ -645,16 +652,26 @@ export async function sendBalanceInvoice(
 
     // 6. Create the draft invoice.
     const today = dateInTimeZone(timeZone)
+    const defaultDueDate = addDaysISO(today, INVOICE_DUE_DAYS)
+    const scheduledAtMs = typeof options?.scheduledAt === 'string' ? Date.parse(options.scheduledAt) : NaN
+    const scheduledAt = Number.isFinite(scheduledAtMs) && scheduledAtMs > Date.now() + 60_000
+      ? options!.scheduledAt
+      : undefined
+    const bookingDate = typeof booking.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(booking.date)
+      ? booking.date
+      : ''
+    const dueDate = scheduledAt && bookingDate > defaultDueDate ? bookingDate : defaultDueDate
     const createRes = await client.invoices.create({
       idempotencyKey: `${attemptKey}-invoice`,
       invoice: {
         locationId: square.locationId,
         orderId,
         primaryRecipient: { customerId },
+        ...(scheduledAt ? { scheduledAt } : {}),
         paymentRequests: [
           {
             requestType: 'BALANCE',
-            dueDate: addDaysISO(today, INVOICE_DUE_DAYS),
+            dueDate,
             automaticPaymentSource: 'NONE',
             tippingEnabled: false
           }

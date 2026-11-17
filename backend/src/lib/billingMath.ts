@@ -172,6 +172,72 @@ export function dateInTimeZone(tz: string, at: Date = new Date()): string {
   }
 }
 
+/**
+ * Converts a studio-local date (YYYY-MM-DD) and time (HH:MM or HH:MM:SS) in `timeZone`
+ * into an RFC 3339 UTC timestamp string (YYYY-MM-DDTHH:MM:SSZ), or null if invalid.
+ */
+export function localDateTimeToRFC3339(dateISO: string, timeStr: string, timeZone: string): string | null {
+  if (typeof dateISO !== 'string' || typeof timeStr !== 'string' || typeof timeZone !== 'string') return null
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateISO.trim())
+  const timeMatch = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(timeStr.trim())
+  if (!dateMatch || !timeMatch) return null
+
+  const year = Number(dateMatch[1])
+  const month = Number(dateMatch[2])
+  const day = Number(dateMatch[3])
+  const hour = Number(timeMatch[1])
+  const minute = Number(timeMatch[2])
+  const second = timeMatch[3] !== undefined ? Number(timeMatch[3]) : 0
+
+  const checkDate = new Date(Date.UTC(year, month - 1, day))
+  if (
+    checkDate.getUTCFullYear() !== year ||
+    checkDate.getUTCMonth() + 1 !== month ||
+    checkDate.getUTCDate() !== day
+  ) {
+    return null
+  }
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+    return null
+  }
+
+  let dtf: Intl.DateTimeFormat
+  try {
+    dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: timeZone.trim() || DEFAULT_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    })
+  } catch {
+    return null
+  }
+
+  const getOffsetMs = (utcMs: number): number => {
+    const parts = dtf.formatToParts(new Date(utcMs))
+    const vals: Record<string, number> = {}
+    for (const p of parts) {
+      if (p.type !== 'literal') vals[p.type] = Number(p.value)
+    }
+    const asUtc = Date.UTC(vals.year, vals.month - 1, vals.day, vals.hour, vals.minute, vals.second)
+    return asUtc - utcMs
+  }
+
+  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second)
+  const offset1 = getOffsetMs(utcGuess)
+  let candidate = utcGuess - offset1
+  const offset2 = getOffsetMs(candidate)
+  if (offset2 !== offset1) {
+    candidate = utcGuess - offset2
+  }
+
+  return new Date(candidate).toISOString().replace(/\.\d{3}Z$/, 'Z')
+}
+
 /** The only status-to-label mapping (see the status table in the design doc). */
 export function invoiceStatusLabel(status: string | null | undefined, dueDate: string | null | undefined, today: string): string {
   switch (status) {
