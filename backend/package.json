@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "hono": "4.13.13",
-    "square": "45.1.0"
+    "square": "46.0.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "4.20260702.1",
