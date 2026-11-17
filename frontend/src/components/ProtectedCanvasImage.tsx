@@ -15,10 +15,11 @@ export interface ProtectedCanvasImageProps {
 }
 
 const MAX_BLOB_CACHE_ENTRIES = 100
-const MAX_BITMAP_CACHE_ENTRIES = 24
+const MAX_BITMAP_CACHE_ENTRIES = 48
 const blobCache = new Map<string, Blob>()
 const bitmapCache = new Map<string, ImageBitmap>()
 const inFlightFetches = new Map<string, Promise<Blob>>()
+const inFlightDecodes = new Map<string, Promise<ImageBitmap>>()
 
 function cacheBlob(src: string, blob: Blob) {
   if (blobCache.has(src)) {
@@ -33,18 +34,13 @@ function cacheBlob(src: string, blob: Blob) {
 }
 
 function cacheBitmap(src: string, bitmap: ImageBitmap) {
-  const existing = bitmapCache.get(src)
-  if (existing) {
+  if (bitmapCache.has(src)) {
     bitmapCache.delete(src)
-    if (existing !== bitmap) {
-      existing.close?.()
-    }
   } else if (bitmapCache.size >= MAX_BITMAP_CACHE_ENTRIES) {
     const oldestKey = bitmapCache.keys().next().value
     if (oldestKey !== undefined) {
-      const oldestBitmap = bitmapCache.get(oldestKey)
+      // Evict without calling .close() so any in-flight/queued drawImage doesn't hit InvalidStateError
       bitmapCache.delete(oldestKey)
-      oldestBitmap?.close?.()
     }
   }
   bitmapCache.set(src, bitmap)
@@ -53,6 +49,10 @@ function cacheBitmap(src: string, bitmap: ImageBitmap) {
 function getCachedBitmap(src: string): ImageBitmap | undefined {
   const cached = bitmapCache.get(src)
   if (!cached) return undefined
+  if (cached.width === 0 || cached.height === 0) {
+    bitmapCache.delete(src)
+    return undefined
+  }
   // Refresh LRU order on read
   bitmapCache.delete(src)
   bitmapCache.set(src, cached)
@@ -115,13 +115,23 @@ async function getOrDecodeBitmap(src: string): Promise<ImageBitmap> {
   const cached = getCachedBitmap(src)
   if (cached) return cached
 
-  const blob = await fetchProtectedBlob(src)
-  const rechecked = getCachedBitmap(src)
-  if (rechecked) return rechecked
+  const inFlight = inFlightDecodes.get(src)
+  if (inFlight) return inFlight
 
-  const bitmap = await decodeBlobToBitmap(blob)
-  cacheBitmap(src, bitmap)
-  return bitmap
+  const decodePromise = (async () => {
+    const blob = await fetchProtectedBlob(src)
+    const rechecked = getCachedBitmap(src)
+    if (rechecked) return rechecked
+
+    const bitmap = await decodeBlobToBitmap(blob)
+    cacheBitmap(src, bitmap)
+    return bitmap
+  })().finally(() => {
+    inFlightDecodes.delete(src)
+  })
+
+  inFlightDecodes.set(src, decodePromise)
+  return decodePromise
 }
 
 // eslint-disable-next-line react-refresh/only-export-components
@@ -135,6 +145,9 @@ export async function preloadProtectedImage(src: string): Promise<void> {
 }
 
 function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): boolean {
+  if (bitmap.width === 0 || bitmap.height === 0) {
+    return false
+  }
   if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
     canvas.width = bitmap.width
     canvas.height = bitmap.height

@@ -3,7 +3,8 @@ import type { PhotoshootPhoto } from '../../types/recentPhotoshoot'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 
 export function PhotoImage({ photo, eager = false }: { photo: PhotoshootPhoto; eager?: boolean }) {
-  const [failed, setFailed] = useState(false)
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
+  const failed = failedUrl === photo.imageUrl
 
   if (failed) return <span className="photo-unavailable" role="img" aria-label={photo.alt}>Photo unavailable</span>
 
@@ -16,7 +17,7 @@ export function PhotoImage({ photo, eager = false }: { photo: PhotoshootPhoto; e
       width={photo.width}
       height={photo.height}
       eager={eager}
-      onError={() => setFailed(true)}
+      onError={() => setFailedUrl(photo.imageUrl)}
     />
   )
 }
