@@ -173,7 +173,9 @@ export function ProtectedCanvasImage({
     onLoadRef.current = onLoad
   }, [onLoad])
 
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(() => (src && (bitmapCache.has(src) || blobCache.has(src)) ? src : null))
   const [errorSrc, setErrorSrc] = useState<string | null>(null)
+  const isLoaded = Boolean(src) && (loadedSrc === src || bitmapCache.has(src) || blobCache.has(src))
   const hasError = Boolean(src && errorSrc === src)
 
   useEffect(() => {
@@ -191,6 +193,7 @@ export function ProtectedCanvasImage({
       if (!canvas) return
       try {
         if (drawBitmapToCanvas(canvas, bitmap)) {
+          setLoadedSrc(src)
           onLoadRef.current?.()
         }
       } catch (err) {
@@ -275,7 +278,7 @@ export function ProtectedCanvasImage({
       {!hasError && (
         <canvas
           ref={canvasRef}
-          className={`protected-canvas ${className}`.trim()}
+          className={`protected-canvas ${isLoaded ? 'is-loaded' : ''} ${className}`.trim()}
           aria-label={alt}
           role="img"
           draggable={false}
