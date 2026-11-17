@@ -41,11 +41,11 @@ export function AboutToRecent() {
   const enabled = canAnimate && readyUrl === url
 
   useEffect(() => {
-    // Never leave #recent-photoshoot hidden if WebGL or model loading stalls.
-    if (!canReserve || enabled) return
+    // Only start the stall fallback once the lens transition has actually started loading.
+    if (!canAnimate || enabled) return
     const timer = window.setTimeout(() => setFailed(true), 6000)
     return () => window.clearTimeout(timer)
-  }, [canReserve, enabled])
+  }, [canAnimate, enabled])
 
   useEffect(() => {
     const media = matchMedia(aboutLens.mobileQuery)
