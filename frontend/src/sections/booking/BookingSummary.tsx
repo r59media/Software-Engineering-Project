@@ -24,6 +24,12 @@ export function BookingSummary({ service, people, pricing = null, dateTime, cust
   const date = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${dateTime.date}T12:00:00Z`))
   const breakdown = computeSessionPricing(service, people, pricing, previewBookingDepositPercent)
   const price = breakdown.subtotalMinor === null ? 'Custom pricing' : new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(breakdown.subtotalMinor / 100)
+  const depositPrice = breakdown.depositMinor !== null
+    ? new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(breakdown.depositMinor / 100)
+    : null
+  const balancePrice = breakdown.subtotalMinor !== null && breakdown.depositMinor !== null
+    ? new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format((breakdown.subtotalMinor - breakdown.depositMinor) / 100)
+    : null
   const proceed = async () => {
     if (lock.current || !onProceedToDeposit) return
     lock.current = true
@@ -79,7 +85,21 @@ export function BookingSummary({ service, people, pricing = null, dateTime, cust
         <p>These permissions do not include paid advertising, sale, or licensing to third parties.</p>
       </fieldset>
       <footer className="booking-review__footer">
-        <div className="booking-review__price"><span>SESSION TOTAL</span><strong>{price}</strong><div><b>{breakdown.depositPercent}% deposit to reserve</b><p>Review your final total and payment details at the deposit step.</p></div></div>
+        <div className="booking-review__price">
+          <span>SESSION TOTAL</span>
+          <strong>{price}</strong>
+          <div className="booking-review__deposit-block">
+            <div className="booking-review__deposit-badge-row">
+              <span className="booking-review__deposit-badge">{breakdown.depositPercent}% DEPOSIT</span>
+              {depositPrice && <span className="booking-review__deposit-due">Due today: <b>{depositPrice}</b></span>}
+            </div>
+            <p className="booking-review__deposit-note">
+              {balancePrice
+                ? `Remaining balance (${balancePrice}) paid on session date.`
+                : 'Review your final total and payment details at the deposit step.'}
+            </p>
+          </div>
+        </div>
       </footer>
     </article>
     <button className="booking-review__button" disabled={busy || !onProceedToDeposit} onClick={() => void proceed()}>{busy ? 'Continuing…' : 'Continue to deposit →'}</button>
