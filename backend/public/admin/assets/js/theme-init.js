@@ -1,1 +1,1 @@
-(function(){"use strict";var t=document.documentElement,a="system";t.removeAttribute("data-theme");var e=!1;try{e=window.matchMedia("(prefers-color-scheme: dark)").matches}catch{e=!1}t.setAttribute("data-theme-effective",e?"dark":"light")})();
+"use strict";(function(){"use strict";var t=document.documentElement,a="system";t.removeAttribute("data-theme");var e=!1;try{e=window.matchMedia("(prefers-color-scheme: dark)").matches}catch{e=!1}t.setAttribute("data-theme-effective",e?"dark":"light")})();

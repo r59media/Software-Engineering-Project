@@ -1,12 +1,36 @@
-const fs = require('fs');
-const path = require('path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+
+interface EsbuildBuildOptions {
+  entryPoints: string[];
+  outfile: string;
+  bundle: boolean;
+  format: 'esm' | 'cjs' | 'iife';
+  target: string;
+  minify?: boolean;
+}
+
+interface EsbuildModule {
+  buildSync(options: EsbuildBuildOptions): unknown;
+}
+
+interface WasmSource {
+  src: string;
+  dest: string;
+}
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
 
 // Locate esbuild from wrangler, local node_modules, or frontend
-const esbuild = (() => {
-  try { return require('esbuild'); } catch (e) {}
-  try { return require('module').createRequire(require.resolve('wrangler'))('esbuild'); } catch (e) {}
-  try { return require('../../frontend/node_modules/esbuild'); } catch (e) {}
-  try { return require('../frontend/node_modules/esbuild'); } catch (e) {}
+const esbuild: EsbuildModule | null = (() => {
+  try { return require('esbuild') as EsbuildModule; } catch { /* ignore */ }
+  try { return createRequire(require.resolve('wrangler'))('esbuild') as EsbuildModule; } catch { /* ignore */ }
+  try { return require('../../frontend/node_modules/esbuild') as EsbuildModule; } catch { /* ignore */ }
+  try { return require('../frontend/node_modules/esbuild') as EsbuildModule; } catch { /* ignore */ }
   return null;
 })();
 
@@ -71,7 +95,7 @@ for (const out of [
 
 // 3. Copy wasm binaries from @jsquash packages to wasm assets
 const adminNodeModules = path.resolve(__dirname, '../../admin/node_modules');
-const wasmSources = [
+const wasmSources: WasmSource[] = [
   {
     src: path.join(adminNodeModules, '@jsquash/webp/codec/enc/webp_enc.wasm'),
     dest: 'webp_enc.wasm'

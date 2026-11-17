@@ -1,8 +1,8 @@
-#!/usr/bin/env node
+#!/usr/bin/env node --experimental-strip-types
 
 /**
  * Phase 4: Static Photographic Asset Re-Optimization
- * 
+ *
  * Re-encodes photographic assets across frontend/src/assets/ using
  * @jsquash/webp and @jsquash/resize with the Pristine Studio Preset:
  * - quality: 92
@@ -23,23 +23,60 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+interface WebpEncodeOptions {
+  quality: number;
+  method: number;
+  pass: number;
+  use_sharp_yuv: number;
+  sns_strength: number;
+  filter_sharpness: number;
+  filter_strength: number;
+  autofilter: number;
+  preprocessing: number;
+  alpha_compression: number;
+}
+
+interface ResizeOptions {
+  width: number;
+  height: number;
+  method: string;
+  premultiply: boolean;
+  linearRGB: boolean;
+}
+
+interface ProcessResult {
+  filePath: string;
+  destPath: string;
+  origW: number;
+  origH: number;
+  newW: number;
+  newH: number;
+  origSize: number;
+  newSize: number;
+}
+
+type DecodeWebpFn = (buffer: ArrayBuffer | Uint8Array) => Promise<ImageData>;
+type EncodeWebpFn = (data: ImageData, options: WebpEncodeOptions) => Promise<ArrayBuffer>;
+type ResizeFn = (data: ImageData, options: ResizeOptions) => Promise<ImageData>;
+type InitWasmFn = (module: WebAssembly.Module) => Promise<unknown>;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
 // Import jsquash modules from admin/node_modules
-const { init: initDecode, default: decodeWebp } = await import(
+const { init: initDecode, default: decodeWebp } = (await import(
   path.join(rootDir, 'admin/node_modules/@jsquash/webp/decode.js')
-);
-const { init: initEncode, default: encodeWebp } = await import(
+)) as { init: InitWasmFn; default: DecodeWebpFn };
+const { init: initEncode, default: encodeWebp } = (await import(
   path.join(rootDir, 'admin/node_modules/@jsquash/webp/encode.js')
-);
-const { initResize, default: resize } = await import(
+)) as { init: InitWasmFn; default: EncodeWebpFn };
+const { initResize, default: resize } = (await import(
   path.join(rootDir, 'admin/node_modules/@jsquash/resize/index.js')
-);
+)) as { initResize: InitWasmFn; default: ResizeFn };
 
 // Pristine Studio Preset WebP configuration
-const PRISTINE_STUDIO_PRESET = {
+const PRISTINE_STUDIO_PRESET: WebpEncodeOptions = {
   quality: 92,
   method: 6,
   pass: 10,
@@ -55,7 +92,7 @@ const PRISTINE_STUDIO_PRESET = {
 const MAX_DIMENSION = 2560;
 
 // Initialize wasm modules using compiled WebAssembly modules from disk
-async function initModules() {
+async function initModules(): Promise<void> {
   const decWasmBytes = fs.readFileSync(
     path.join(rootDir, 'admin/node_modules/@jsquash/webp/codec/dec/webp_dec.wasm')
   );
@@ -82,7 +119,7 @@ async function initModules() {
 /**
  * Load an image file into ImageData { data, width, height }
  */
-async function loadImageData(filePath) {
+async function loadImageData(filePath: string): Promise<ImageData> {
   const ext = path.extname(filePath).toLowerCase();
   if (ext === '.webp') {
     const buf = fs.readFileSync(filePath);
@@ -107,7 +144,7 @@ async function loadImageData(filePath) {
 /**
  * Process a single image file
  */
-async function processImage(filePath, destPath = filePath) {
+async function processImage(filePath: string, destPath: string = filePath): Promise<ProcessResult> {
   const relPath = path.relative(rootDir, filePath);
   const initialStat = fs.existsSync(destPath) ? fs.statSync(destPath).size : fs.statSync(filePath).size;
 
@@ -157,13 +194,13 @@ async function processImage(filePath, destPath = filePath) {
   };
 }
 
-async function main() {
+async function main(): Promise<void> {
   console.log('Initializing Pristine Studio Re-Encoder via @jsquash/webp and @jsquash/resize...');
   await initModules();
   console.log('Modules initialized successfully.\n');
 
   // Photographic asset targets
-  const targets = [
+  const targets: string[] = [
     // Hero images
     'frontend/src/assets/heroImages/heroImg1.webp',
     'frontend/src/assets/heroImages/heroImg2.webp',
@@ -242,7 +279,7 @@ async function main() {
   console.log('=========================================================\n');
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   console.error('Fatal error during asset re-optimization:', err);
   process.exit(1);
 });
