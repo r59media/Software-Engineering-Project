@@ -160,6 +160,139 @@
       }
     });
     updateDepositExample();
+    renderFeeRules();
+    renderPolicy();
+  }
+
+  /* ---------- Dynamic Fee Rules & Policy (settings) ---------- */
+
+  const FEE_RULE_TRIGGERS = [
+    { value: 'days_before_max', label: 'Days Before Session ≤ N' },
+    { value: 'privacy_declined', label: 'Privacy Declined (No Photo Consent)' },
+    { value: 'weekend', label: 'Weekend (Sat/Sun)' },
+    { value: 'always', label: 'Every Booking' },
+    { value: 'client_selectable', label: 'Optional Client Add-On' }
+  ];
+
+  const FEE_RULE_AMOUNT_TYPES = [
+    { value: 'fixed_cents', label: '$ Fixed' },
+    { value: 'percent_of_subtotal', label: '% of Subtotal' },
+    { value: 'per_person_cents', label: '$ Per Person' }
+  ];
+
+  function ensurePricingCollections() {
+    const p = cur().pricing || (cur().pricing = { baseFee: 0, perPerson: 0, depositPercent: 60 });
+    if (!Array.isArray(p.feeRules)) p.feeRules = [];
+    if (!p.policy || typeof p.policy !== 'object') {
+      p.policy = { balanceDueDaysAfterEvent: 4, rescheduleCutoffDays: 3, requireSignature: true };
+    }
+    return p;
+  }
+
+  function feeRuleAmountDisplay(rule) {
+    if (rule.amount === '' || rule.amount === null || rule.amount === undefined) return '';
+    const n = Number(rule.amount);
+    if (!Number.isFinite(n)) return '';
+    return rule.amountType === 'percent_of_subtotal' ? String(n) : String(n / 100);
+  }
+
+  function feeRuleRowHtml(rule) {
+    const id = esc(rule.id);
+    const isDays = rule.trigger === 'days_before_max';
+    const isPct = rule.amountType === 'percent_of_subtotal';
+    const active = rule.active !== false;
+    const triggerOpts = FEE_RULE_TRIGGERS.map(t =>
+      `<option value="${esc(t.value)}"${rule.trigger === t.value ? ' selected' : ''}>${esc(t.label)}</option>`
+    ).join('');
+    const amountTypeOpts = FEE_RULE_AMOUNT_TYPES.map(t =>
+      `<option value="${esc(t.value)}"${rule.amountType === t.value ? ' selected' : ''}>${esc(t.label)}</option>`
+    ).join('');
+
+    return `
+      <div class="pay-fee-rule${active ? '' : ' is-inactive'}" data-fee-rule-id="${id}" style="border: 1px solid var(--line, rgba(255,255,255,0.12)); border-radius: var(--r2, 8px); padding: var(--s3, 0.75rem); margin-bottom: var(--s3, 0.75rem);">
+        <div class="field-row" style="align-items: end; gap: var(--s3, 0.75rem); flex-wrap: wrap;">
+          <div class="field" style="flex: 2 1 180px;">
+            <label class="field__label" for="fee-rule-${id}-name">Rule name</label>
+            <div class="field__control">
+              <input class="field__input" id="fee-rule-${id}-name" type="text" maxlength="100" value="${esc(rule.name ?? '')}" placeholder="e.g. Rush Booking Fee" data-fee-rule-field="name">
+            </div>
+          </div>
+          <div class="field" style="flex: 2 1 200px;">
+            <label class="field__label" for="fee-rule-${id}-trigger">Trigger</label>
+            <div class="field__control">
+              <select class="field__input" id="fee-rule-${id}-trigger" data-fee-rule-field="trigger">${triggerOpts}</select>
+            </div>
+          </div>
+          <div class="field" style="flex: 1 1 110px;" data-fee-rule-days-wrap${isDays ? '' : ' hidden'}>
+            <label class="field__label" for="fee-rule-${id}-daysBefore">Threshold days (≤ N)</label>
+            <div class="field__control">
+              <input class="field__input num" id="fee-rule-${id}-daysBefore" type="number" inputmode="numeric" min="0" max="365" step="1" value="${esc(rule.daysBefore ?? '')}" data-fee-rule-field="daysBefore">
+            </div>
+          </div>
+          <div class="field" style="flex: 1.5 1 150px;">
+            <label class="field__label" for="fee-rule-${id}-amountType">Amount type</label>
+            <div class="field__control">
+              <select class="field__input" id="fee-rule-${id}-amountType" data-fee-rule-field="amountType">${amountTypeOpts}</select>
+            </div>
+          </div>
+          <div class="field" style="flex: 1 1 110px;">
+            <label class="field__label" for="fee-rule-${id}-amount" data-fee-rule-amount-label>${isPct ? 'Amount (%)' : 'Amount ($)'}</label>
+            <div class="field__control">
+              <input class="field__input num" id="fee-rule-${id}-amount" type="number" inputmode="decimal" min="0"${isPct ? ' max="100" step="0.1"' : ' step="0.01"'} value="${esc(feeRuleAmountDisplay(rule))}" data-fee-rule-field="amount">
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: var(--s3, 0.75rem); margin-top: var(--s2, 0.5rem);">
+          <label class="switch">
+            <input type="checkbox" role="switch" id="fee-rule-${id}-active" data-fee-rule-field="active"${active ? ' checked' : ''}>
+            <span class="switch__track" aria-hidden="true"></span>
+            <span class="switch__label">Active</span>
+          </label>
+          <button type="button" class="btn btn--danger btn--sm" data-fee-rule-remove="${id}">Remove</button>
+        </div>
+      </div>`;
+  }
+
+  function renderFeeRules() {
+    const list = $('#feeRulesList');
+    const addBtn = $('#addFeeRuleBtn');
+    const status = loadStatus('pricing');
+    const usable = status === 'loaded';
+    if (addBtn) addBtn.disabled = !usable;
+    if (!list) return;
+    if (status === 'loading') {
+      list.innerHTML = skelHtml('Loading fee rules');
+      return;
+    }
+    if (status === 'failed') {
+      list.innerHTML = '';
+      return;
+    }
+    const rules = ensurePricingCollections().feeRules;
+    list.innerHTML = rules.length
+      ? rules.map(feeRuleRowHtml).join('')
+      : '<p class="hint">No dynamic fee rules configured. Click "+ Add Fee Rule" to create one.</p>';
+  }
+
+  function renderPolicy() {
+    const status = loadStatus('pricing');
+    const usable = status === 'loaded';
+    const policy = ensurePricingCollections().policy;
+    const dueEl = $('#balanceDueDaysAfterEvent');
+    const cutoffEl = $('#rescheduleCutoffDays');
+    const sigEl = $('#requireAgreementSignature');
+    if (dueEl) {
+      dueEl.disabled = !usable;
+      dueEl.value = usable ? (policy.balanceDueDaysAfterEvent ?? 4) : '';
+    }
+    if (cutoffEl) {
+      cutoffEl.disabled = !usable;
+      cutoffEl.value = usable ? (policy.rescheduleCutoffDays ?? 3) : '';
+    }
+    if (sigEl) {
+      sigEl.disabled = !usable;
+      sigEl.checked = usable ? policy.requireSignature !== false : true;
+    }
   }
 
   function updateDepositExample() {
@@ -181,10 +314,33 @@
 
   function pricingIsInvalid() {
     const pricing = cur().pricing || {};
-    return Object.keys(PRICE_FIELDS).some(k => {
+    const baseInvalid = Object.keys(PRICE_FIELDS).some(k => {
       const v = pricing[k];
       return v === '' || isNaN(parseFloat(v)) || parseFloat(v) < 0 || (k === 'depositPercent' && (parseFloat(v) < 1 || parseFloat(v) > 100));
     });
+    if (baseInvalid) return true;
+
+    const feeRules = Array.isArray(pricing.feeRules) ? pricing.feeRules : [];
+    const ruleInvalid = feeRules.some(r => {
+      if (!r || String(r.name || '').trim() === '') return true;
+      const amt = Number(r.amount);
+      if (r.amount === '' || !Number.isFinite(amt) || amt < 0) return true;
+      if (r.amountType === 'percent_of_subtotal' && amt > 100) return true;
+      if (r.trigger === 'days_before_max') {
+        const d = Number(r.daysBefore);
+        if (r.daysBefore === '' || !Number.isInteger(d) || d < 0) return true;
+      }
+      return false;
+    });
+    if (ruleInvalid) return true;
+
+    const pol = pricing.policy || {};
+    const due = Number(pol.balanceDueDaysAfterEvent);
+    const cutoff = Number(pol.rescheduleCutoffDays);
+    if (pol.balanceDueDaysAfterEvent === '' || !Number.isInteger(due) || due < 0) return true;
+    if (pol.rescheduleCutoffDays === '' || !Number.isInteger(cutoff) || cutoff < 0) return true;
+
+    return false;
   }
 
   function initPricingListeners() {
@@ -221,6 +377,122 @@
         updateDepositExample();
         st().markDirty();
       });
+    });
+
+    initFeeRulesListeners();
+    initPolicyListeners();
+  }
+
+  function initFeeRulesListeners() {
+    $('#addFeeRuleBtn')?.addEventListener('click', () => {
+      if (!isLoaded('pricing')) return;
+      const p = ensurePricingCollections();
+      const id = st().newFeeRuleId ? st().newFeeRuleId() : `fr_${Date.now().toString(36)}`;
+      p.feeRules.push({
+        id,
+        name: '',
+        trigger: 'days_before_max',
+        daysBefore: 7,
+        amountType: 'fixed_cents',
+        amount: 0,
+        active: true
+      });
+      renderFeeRules();
+      st().markDirty();
+      document.getElementById(`fee-rule-${id}-name`)?.focus();
+    });
+
+    const list = $('#feeRulesList');
+    if (!list) return;
+
+    list.addEventListener('click', e => {
+      if (!isLoaded('pricing')) return;
+      const t = e.target instanceof Element ? e.target : e.target?.parentElement;
+      const rmBtn = t?.closest('[data-fee-rule-remove]');
+      if (!rmBtn) return;
+      const id = rmBtn.dataset.feeRuleRemove;
+      const p = ensurePricingCollections();
+      p.feeRules = p.feeRules.filter(r => !sameId(r.id, id));
+      renderFeeRules();
+      st().markDirty();
+    });
+
+    const handleField = (target, eventType) => {
+      if (!isLoaded('pricing')) return;
+      const row = target.closest?.('[data-fee-rule-id]');
+      if (!row) return;
+      const id = row.dataset.feeRuleId;
+      const field = target.dataset?.feeRuleField;
+      if (!field) return;
+      const rule = ensurePricingCollections().feeRules.find(r => sameId(r.id, id));
+      if (!rule) return;
+
+      if (field === 'name') {
+        rule.name = target.value;
+      } else if (field === 'trigger' && eventType === 'change') {
+        rule.trigger = target.value;
+        const daysWrap = row.querySelector('[data-fee-rule-days-wrap]');
+        if (daysWrap) daysWrap.hidden = rule.trigger !== 'days_before_max';
+        if (rule.trigger === 'days_before_max' && (rule.daysBefore === '' || rule.daysBefore === undefined)) {
+          rule.daysBefore = 7;
+          const daysInput = row.querySelector('[data-fee-rule-field="daysBefore"]');
+          if (daysInput) daysInput.value = '7';
+        }
+      } else if (field === 'daysBefore') {
+        rule.daysBefore = target.value === '' ? '' : parseInt(target.value, 10);
+      } else if (field === 'amountType' && eventType === 'change') {
+        rule.amountType = target.value;
+        const isPct = rule.amountType === 'percent_of_subtotal';
+        const amtLabel = row.querySelector('[data-fee-rule-amount-label]');
+        const amtInput = row.querySelector('[data-fee-rule-field="amount"]');
+        if (amtLabel) amtLabel.textContent = isPct ? 'Amount (%)' : 'Amount ($)';
+        if (amtInput) {
+          amtInput.step = isPct ? '0.1' : '0.01';
+          if (isPct) amtInput.setAttribute('max', '100');
+          else amtInput.removeAttribute('max');
+          const raw = amtInput.value === '' ? '' : parseFloat(amtInput.value);
+          rule.amount = raw === '' || Number.isNaN(raw) ? '' : (isPct ? raw : Math.round(raw * 100));
+        }
+      } else if (field === 'amount') {
+        if (target.value === '') {
+          rule.amount = '';
+        } else {
+          const val = parseFloat(target.value);
+          rule.amount = Number.isNaN(val) ? '' : (rule.amountType === 'percent_of_subtotal' ? val : Math.round(val * 100));
+        }
+      } else if (field === 'active' && eventType === 'change') {
+        rule.active = Boolean(target.checked);
+        row.classList.toggle('is-inactive', !rule.active);
+      }
+      st().markDirty();
+    };
+
+    list.addEventListener('input', e => handleField(e.target, 'input'));
+    list.addEventListener('change', e => handleField(e.target, 'change'));
+  }
+
+  function initPolicyListeners() {
+    $('#balanceDueDaysAfterEvent')?.addEventListener('input', e => {
+      if (!isLoaded('pricing')) return;
+      const p = ensurePricingCollections();
+      const v = e.target.value;
+      p.policy.balanceDueDaysAfterEvent = v === '' ? '' : parseInt(v, 10);
+      st().markDirty();
+    });
+
+    $('#rescheduleCutoffDays')?.addEventListener('input', e => {
+      if (!isLoaded('pricing')) return;
+      const p = ensurePricingCollections();
+      const v = e.target.value;
+      p.policy.rescheduleCutoffDays = v === '' ? '' : parseInt(v, 10);
+      st().markDirty();
+    });
+
+    $('#requireAgreementSignature')?.addEventListener('change', e => {
+      if (!isLoaded('pricing')) return;
+      const p = ensurePricingCollections();
+      p.policy.requireSignature = Boolean(e.target.checked);
+      st().markDirty();
     });
   }
 

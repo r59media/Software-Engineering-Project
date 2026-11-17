@@ -264,3 +264,267 @@ export function parseMoneyToCents(text: unknown): number | null {
   if (!Number.isSafeInteger(cents) || cents < 1 || cents > MAX_CHARGE_CENTS) return null
   return cents
 }
+
+// ── Dynamic Fee Rules & Booking Policy ────────────────────────────
+
+export type DynamicFeeTriggerType =
+  | 'days_before_max'
+  | 'privacy_declined'
+  | 'weekend'
+  | 'always'
+  | 'client_selectable'
+
+export type DynamicFeeAmountType =
+  | 'fixed_cents'
+  | 'percent_of_subtotal'
+  | 'per_person_cents'
+
+export interface DynamicFeeRule {
+  id: string
+  name: string
+  triggerType: DynamicFeeTriggerType
+  daysBefore?: number
+  amountType: DynamicFeeAmountType
+  amountValue: number
+  active: boolean
+}
+
+export interface BookingPolicySettings {
+  balanceDueDaysAfterEvent: number
+  rescheduleCutoffDays: number
+  requireSignature: boolean
+  agreementTitle: string
+}
+
+export const DEFAULT_BOOKING_POLICY: BookingPolicySettings = {
+  balanceDueDaysAfterEvent: 4,
+  rescheduleCutoffDays: 3,
+  requireSignature: true,
+  agreementTitle: 'Photography Services Agreement'
+}
+
+export interface DynamicFeeContext {
+  subtotalCents: number
+  sessionDate: string
+  todayDate?: string
+  timeZone?: string
+  now?: Date
+  attendees?: number
+  photoPermissionPortfolio?: boolean
+  photoPermissionSocial?: boolean
+  selectedFeeIds?: string[]
+}
+
+export interface AppliedDynamicFee {
+  id: string
+  name: string
+  triggerType: DynamicFeeTriggerType
+  amountType: DynamicFeeAmountType
+  amountValue: number
+  amountCents: number
+}
+
+export interface DynamicFeeEvaluation {
+  appliedFees: AppliedDynamicFee[]
+  totalFeeCents: number
+  daysUntilSession: number | null
+}
+
+const VALID_TRIGGER_TYPES: readonly DynamicFeeTriggerType[] = [
+  'days_before_max',
+  'privacy_declined',
+  'weekend',
+  'always',
+  'client_selectable'
+]
+
+const VALID_AMOUNT_TYPES: readonly DynamicFeeAmountType[] = [
+  'fixed_cents',
+  'percent_of_subtotal',
+  'per_person_cents'
+]
+
+/** Whole calendar days from `fromISO` to `toISO` (YYYY-MM-DD), or null if either is invalid. */
+export function daysBetweenISO(fromISO: string, toISO: string): number | null {
+  const fromMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(fromISO || '').trim())
+  const toMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(toISO || '').trim())
+  if (!fromMatch || !toMatch) return null
+  const fromMs = Date.UTC(Number(fromMatch[1]), Number(fromMatch[2]) - 1, Number(fromMatch[3]))
+  const toMs = Date.UTC(Number(toMatch[1]), Number(toMatch[2]) - 1, Number(toMatch[3]))
+  return Math.round((toMs - fromMs) / 86_400_000)
+}
+
+/** Validates and normalizes BookingPolicySettings with safe defaults. */
+export function normalizeBookingPolicy(raw: unknown): BookingPolicySettings {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  const dueDaysRaw = Number(obj.balanceDueDaysAfterEvent)
+  const balanceDueDaysAfterEvent =
+    Number.isFinite(dueDaysRaw) && dueDaysRaw >= 0 && dueDaysRaw <= 365
+      ? Math.round(dueDaysRaw)
+      : DEFAULT_BOOKING_POLICY.balanceDueDaysAfterEvent
+
+  const cutoffRaw = Number(obj.rescheduleCutoffDays)
+  const rescheduleCutoffDays =
+    Number.isFinite(cutoffRaw) && cutoffRaw >= 0 && cutoffRaw <= 365
+      ? Math.round(cutoffRaw)
+      : DEFAULT_BOOKING_POLICY.rescheduleCutoffDays
+
+  const requireSignature =
+    typeof obj.requireSignature === 'boolean'
+      ? obj.requireSignature
+      : DEFAULT_BOOKING_POLICY.requireSignature
+
+  const rawTitle = typeof obj.agreementTitle === 'string' ? obj.agreementTitle.trim().slice(0, 200) : ''
+  const agreementTitle = rawTitle || DEFAULT_BOOKING_POLICY.agreementTitle
+
+  return {
+    balanceDueDaysAfterEvent,
+    rescheduleCutoffDays,
+    requireSignature,
+    agreementTitle
+  }
+}
+
+/** Validates and normalizes an array of DynamicFeeRule entries. */
+export function normalizeFeeRules(raw: unknown): DynamicFeeRule[] {
+  if (!Array.isArray(raw)) return []
+  const out: DynamicFeeRule[] = []
+  const seenIds = new Set<string>()
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i]
+    if (!item || typeof item !== 'object') continue
+    const r = item as Record<string, unknown>
+    const id = typeof r.id === 'string' && r.id.trim() ? r.id.trim().slice(0, 64) : `fee_${i + 1}`
+    if (seenIds.has(id)) continue
+    seenIds.add(id)
+
+    const name = typeof r.name === 'string' ? r.name.trim().slice(0, 120) : ''
+    if (!name) continue
+
+    const triggerType = r.triggerType as DynamicFeeTriggerType
+    if (!VALID_TRIGGER_TYPES.includes(triggerType)) continue
+
+    const amountType = r.amountType as DynamicFeeAmountType
+    if (!VALID_AMOUNT_TYPES.includes(amountType)) continue
+
+    const rawVal = Number(r.amountValue)
+    if (!Number.isFinite(rawVal) || rawVal < 0) continue
+    const amountValue =
+      amountType === 'percent_of_subtotal'
+        ? Math.min(1000, Math.round(rawVal * 100) / 100)
+        : Math.min(MAX_CHARGE_CENTS, Math.round(rawVal))
+
+    let daysBefore: number | undefined
+    if (triggerType === 'days_before_max') {
+      const db = Number(r.daysBefore)
+      if (!Number.isFinite(db) || db < 0) continue
+      daysBefore = Math.min(365, Math.round(db))
+    }
+
+    const active = r.active === undefined ? true : Boolean(r.active)
+
+    out.push({
+      id,
+      name,
+      triggerType,
+      ...(daysBefore !== undefined ? { daysBefore } : {}),
+      amountType,
+      amountValue,
+      active
+    })
+  }
+  return out
+}
+
+/** Evaluates active dynamic fee rules against the booking context. */
+export function evaluateDynamicFees(
+  rules: readonly DynamicFeeRule[],
+  context: DynamicFeeContext
+): DynamicFeeEvaluation {
+  const tz = (context.timeZone || DEFAULT_TIMEZONE).trim() || DEFAULT_TIMEZONE
+  const todayDate =
+    context.todayDate && /^\d{4}-\d{2}-\d{2}$/.test(context.todayDate.trim())
+      ? context.todayDate.trim()
+      : dateInTimeZone(tz, context.now ?? new Date())
+
+  const daysUntilSession = daysBetweenISO(todayDate, context.sessionDate)
+  const sessionMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(context.sessionDate || '').trim())
+  const isWeekend = sessionMatch
+    ? (() => {
+        const day = new Date(
+          Date.UTC(Number(sessionMatch[1]), Number(sessionMatch[2]) - 1, Number(sessionMatch[3]))
+        ).getUTCDay()
+        return day === 0 || day === 6
+      })()
+    : false
+
+  const privacyDeclined = !context.photoPermissionPortfolio && !context.photoPermissionSocial
+  const selectedSet = new Set(
+    Array.isArray(context.selectedFeeIds) ? context.selectedFeeIds.map((id) => String(id).trim()) : []
+  )
+  const subtotalCents = Math.max(0, Math.round(Number(context.subtotalCents) || 0))
+  const attendees = Math.max(1, Math.round(Number(context.attendees) || 1))
+
+  const appliedFees: AppliedDynamicFee[] = []
+  let totalFeeCents = 0
+
+  for (const rule of rules || []) {
+    if (!rule || !rule.active) continue
+
+    let matches = false
+    switch (rule.triggerType) {
+      case 'always':
+        matches = true
+        break
+      case 'weekend':
+        matches = isWeekend
+        break
+      case 'privacy_declined':
+        matches = privacyDeclined
+        break
+      case 'client_selectable':
+        matches = selectedSet.has(rule.id)
+        break
+      case 'days_before_max':
+        matches =
+          daysUntilSession !== null &&
+          typeof rule.daysBefore === 'number' &&
+          Number.isFinite(rule.daysBefore) &&
+          daysUntilSession >= 0 &&
+          daysUntilSession <= rule.daysBefore
+        break
+    }
+    if (!matches) continue
+
+    let amountCents = 0
+    switch (rule.amountType) {
+      case 'fixed_cents':
+        amountCents = Math.max(0, Math.round(rule.amountValue))
+        break
+      case 'percent_of_subtotal':
+        amountCents = Math.max(0, Math.round((subtotalCents * rule.amountValue) / 100))
+        break
+      case 'per_person_cents':
+        amountCents = Math.max(0, Math.round(rule.amountValue * attendees))
+        break
+    }
+
+    if (amountCents > 0) {
+      appliedFees.push({
+        id: rule.id,
+        name: rule.name,
+        triggerType: rule.triggerType,
+        amountType: rule.amountType,
+        amountValue: rule.amountValue,
+        amountCents
+      })
+      totalFeeCents += amountCents
+    }
+  }
+
+  return {
+    appliedFees,
+    totalFeeCents,
+    daysUntilSession
+  }
+}

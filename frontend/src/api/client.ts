@@ -1,6 +1,18 @@
 import type { HeroSlide } from '../types/hero'
 import type { PhotoshootPhoto } from '../types/recentPhotoshoot'
-import type { BookingService, SquareConfig } from '../types/booking'
+import type {
+  AppliedFeeItem,
+  BookingPhotoPermissions,
+  BookingPolicySettings,
+  BookingService,
+  CheckoutResponseData,
+  DynamicFeeRule,
+  RescheduleBookingData,
+  RescheduleResultData,
+  SquareConfig,
+} from '../types/booking'
+
+export type { RescheduleBookingData, RescheduleResultData }
 
 /** Which part of the site a portfolio photo is shown in (matches the admin "Photos" tabs). */
 export type PortfolioSection = 'recent' | 'gallery' | 'about' | 'hero'
@@ -60,6 +72,9 @@ export interface CheckoutPayload {
   notes?: string
   attendees?: number
   coupon_code?: string
+  selectedFeeIds?: string[]
+  eventLocation?: string
+  agreementSignatureName?: string
   photoPermissions?: {
     websitePortfolio?: boolean
     socialMedia?: boolean
@@ -76,6 +91,10 @@ export interface ApiResponse<T = unknown> {
   booking_id?: number
   payment_id?: string
   order_id?: string
+  reschedule_token?: string
+  reschedule_url?: string
+  ics_url?: string
+  google_calendar_url?: string
 }
 
 const API_BASE = '/api'
@@ -353,7 +372,7 @@ export async function submitContactLead(payload: ContactLeadPayload): Promise<Ap
 export async function submitCheckout(
   payload: CheckoutPayload,
   options?: { credentials?: RequestCredentials; signal?: AbortSignal }
-): Promise<ApiResponse<{ booking_id?: number; payment_id?: string; order_id?: string }>> {
+): Promise<ApiResponse<CheckoutResponseData>> {
   try {
     const res = await fetch(`${API_BASE}/checkout`, {
       method: 'POST',
@@ -362,12 +381,86 @@ export async function submitCheckout(
       credentials: options?.credentials ?? 'omit',
       signal: options?.signal,
     })
-    return (await res.json()) as ApiResponse<{ booking_id?: number; payment_id?: string; order_id?: string }>
+    return (await res.json()) as ApiResponse<CheckoutResponseData>
   } catch {
     return {
       status: 'error',
       code: 'NETWORK_ERROR',
       message: 'Unable to complete request. Please try again.',
+    }
+  }
+}
+
+export async function fetchRescheduleBooking(
+  bookingId: number | string,
+  token: string,
+  signal?: AbortSignal
+): Promise<ApiResponse<RescheduleBookingData>> {
+  try {
+    const res = await fetch(
+      `${API_BASE}/bookings/${encodeURIComponent(String(bookingId))}/reschedule?token=${encodeURIComponent(token)}`,
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        credentials: 'omit',
+        signal,
+      }
+    )
+    const json = (await res.json()) as Record<string, unknown>
+    if (!res.ok || json.status === 'error') {
+      return {
+        status: 'error',
+        code: typeof json.code === 'string' ? json.code : 'REQUEST_FAILED',
+        message: typeof json.message === 'string' ? json.message : 'Unable to load booking details.',
+      }
+    }
+    const payload = (json.data !== undefined && typeof json.data === 'object' ? json.data : json) as RescheduleBookingData
+    return {
+      status: 'success',
+      data: payload,
+    }
+  } catch {
+    return {
+      status: 'error',
+      code: 'NETWORK_ERROR',
+      message: 'Unable to load booking details. Please check your connection and try again.',
+    }
+  }
+}
+
+export async function submitRescheduleBooking(
+  bookingId: number | string,
+  token: string,
+  slotId: number,
+  signal?: AbortSignal
+): Promise<ApiResponse<RescheduleResultData>> {
+  try {
+    const res = await fetch(`${API_BASE}/bookings/${encodeURIComponent(String(bookingId))}/reschedule`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ token, slot_id: slotId }),
+      credentials: 'omit',
+      signal,
+    })
+    const json = (await res.json()) as Record<string, unknown>
+    if (!res.ok || json.status === 'error') {
+      return {
+        status: 'error',
+        code: typeof json.code === 'string' ? json.code : 'REQUEST_FAILED',
+        message: typeof json.message === 'string' ? json.message : 'Unable to reschedule booking.',
+      }
+    }
+    const payload = (json.data !== undefined && typeof json.data === 'object' ? json.data : json) as RescheduleResultData
+    return {
+      status: 'success',
+      data: payload,
+      message: typeof json.message === 'string' ? json.message : undefined,
+    }
+  } catch {
+    return {
+      status: 'error',
+      code: 'NETWORK_ERROR',
+      message: 'Unable to reschedule booking. Please check your connection and try again.',
     }
   }
 }
@@ -378,14 +471,136 @@ export interface PricingData {
   perPerson: number
   currency: string
   squareConfig?: SquareConfig | null
+  feeRules?: DynamicFeeRule[]
+  policy?: BookingPolicySettings
+}
+
+export interface SessionPricingOptions {
+  sessionDate?: string | null
+  photoPermissions?: BookingPhotoPermissions | null
+  selectedFeeIds?: readonly string[] | null
+  referenceDate?: Date
 }
 
 export interface SessionPricingBreakdown {
   subtotalMinor: number | null
   baseFeeMinor: number
   extraPeopleFeeMinor: number
+  appliedFees: AppliedFeeItem[]
+  feeTotalMinor: number
+  feeTotal: number
   depositPercent: number
   depositMinor: number | null
+}
+
+const DEFAULT_BOOKING_POLICY: BookingPolicySettings = {
+  balanceDueDaysAfterEvent: 7,
+  lateCancellationDays: 7,
+  requireSignature: true,
+}
+
+function parseIsoUtcDay(isoDate: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate.trim())
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  const day = Number(m[3])
+  const utc = Date.UTC(year, month - 1, day)
+  const check = new Date(utc)
+  if (
+    check.getUTCFullYear() !== year ||
+    check.getUTCMonth() + 1 !== month ||
+    check.getUTCDate() !== day
+  ) {
+    return null
+  }
+  return utc
+}
+
+export function evaluateDynamicFees(
+  feeRules: readonly DynamicFeeRule[] | null | undefined,
+  baseSubtotalMinor: number,
+  options?: SessionPricingOptions
+): { appliedFees: AppliedFeeItem[]; feeTotalMinor: number; feeTotal: number } {
+  if (!Array.isArray(feeRules) || feeRules.length === 0) {
+    return { appliedFees: [], feeTotalMinor: 0, feeTotal: 0 }
+  }
+
+  let daysUntilSession: number | null = null
+  let isWeekend = false
+
+  if (options?.sessionDate) {
+    const sessionUtc = parseIsoUtcDay(options.sessionDate)
+    if (sessionUtc !== null) {
+      const ref = options.referenceDate ?? new Date()
+      const todayStr = ref.toLocaleDateString('en-CA')
+      const todayUtc = parseIsoUtcDay(todayStr)
+      if (todayUtc !== null) {
+        daysUntilSession = Math.round((sessionUtc - todayUtc) / 86400000)
+      }
+      const dow = new Date(sessionUtc).getUTCDay()
+      isWeekend = dow === 0 || dow === 6
+    }
+  }
+
+  const privacyDeclined = options?.photoPermissions
+    ? !options.photoPermissions.websitePortfolio && !options.photoPermissions.socialMedia
+    : false
+
+  const selectedIds = options?.selectedFeeIds ?? []
+  const appliedFees: AppliedFeeItem[] = []
+
+  for (const rule of feeRules) {
+    if (!rule || rule.active === false) continue
+    const trigger = String(rule.trigger || '').toLowerCase()
+    let triggered = false
+
+    if (
+      trigger === 'rush_days' ||
+      trigger === 'days_before_max' ||
+      trigger === 'days_until_max' ||
+      trigger === 'rush' ||
+      trigger === 'day_before'
+    ) {
+      const threshold = typeof rule.thresholdDays === 'number' && Number.isFinite(rule.thresholdDays)
+        ? rule.thresholdDays
+        : 1
+      triggered = daysUntilSession !== null && daysUntilSession >= 0 && daysUntilSession <= threshold
+    } else if (trigger === 'privacy_declined') {
+      triggered = privacyDeclined
+    } else if (trigger === 'weekend') {
+      triggered = isWeekend
+    } else if (trigger === 'client_selectable') {
+      triggered = selectedIds.includes(rule.id)
+    }
+
+    if (!triggered) continue
+
+    let amountMinor: number
+    if (rule.amountType === 'percent') {
+      const pct = Math.max(0, Number(rule.amount) || 0)
+      amountMinor = Math.round(baseSubtotalMinor * (pct / 100))
+    } else if (typeof rule.amountMinor === 'number' && Number.isFinite(rule.amountMinor)) {
+      amountMinor = Math.max(0, Math.round(rule.amountMinor))
+    } else {
+      amountMinor = Math.max(0, Math.round((Number(rule.amount) || 0) * 100))
+    }
+
+    appliedFees.push({
+      id: rule.id,
+      name: rule.name,
+      trigger: rule.trigger,
+      amountMinor,
+      amountDollars: amountMinor / 100,
+    })
+  }
+
+  const feeTotalMinor = appliedFees.reduce((sum, item) => sum + item.amountMinor, 0)
+  return {
+    appliedFees,
+    feeTotalMinor,
+    feeTotal: feeTotalMinor / 100,
+  }
 }
 
 /**
@@ -394,8 +609,9 @@ export interface SessionPricingBreakdown {
 export function computeSessionPricing(
   service: Pick<BookingService, 'priceMinor' | 'additionalPeople'> | null | undefined,
   attendees: number,
-  pricing?: Pick<PricingData, 'depositPercent' | 'baseFee' | 'perPerson'> | null,
-  fallbackDepositPercent = 60
+  pricing?: Pick<PricingData, 'depositPercent' | 'baseFee' | 'perPerson' | 'feeRules'> | null,
+  fallbackDepositPercent = 60,
+  options?: SessionPricingOptions
 ): SessionPricingBreakdown {
   const depositPercent = typeof pricing?.depositPercent === 'number' && Number.isFinite(pricing.depositPercent)
     ? pricing.depositPercent
@@ -406,6 +622,9 @@ export function computeSessionPricing(
       subtotalMinor: null,
       baseFeeMinor: 0,
       extraPeopleFeeMinor: 0,
+      appliedFees: [],
+      feeTotalMinor: 0,
+      feeTotal: 0,
       depositPercent,
       depositMinor: null,
     }
@@ -418,15 +637,80 @@ export function computeSessionPricing(
   const adminPerPersonMinor = Math.round((Number(pricing?.perPerson) || 0) * 100)
   const ratePerPersonMinor = adminPerPersonMinor > 0 ? adminPerPersonMinor : (extra?.extraPersonPriceMinor ?? 0)
   const extraPeopleFeeMinor = ratePerPersonMinor * additionalPeople
-  const subtotalMinor = service.priceMinor + baseFeeMinor + extraPeopleFeeMinor
+  const baseSubtotalMinor = service.priceMinor + baseFeeMinor + extraPeopleFeeMinor
+  const { appliedFees, feeTotalMinor, feeTotal } = evaluateDynamicFees(pricing?.feeRules, baseSubtotalMinor, options)
+  const subtotalMinor = baseSubtotalMinor + feeTotalMinor
   const depositMinor = Math.round(subtotalMinor * (depositPercent / 100))
 
   return {
     subtotalMinor,
     baseFeeMinor,
     extraPeopleFeeMinor,
+    appliedFees,
+    feeTotalMinor,
+    feeTotal,
     depositPercent,
     depositMinor,
+  }
+}
+
+function parseFeeRules(raw: unknown): DynamicFeeRule[] {
+  if (!Array.isArray(raw)) return []
+  const rules: DynamicFeeRule[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const r = item as Record<string, unknown>
+    const id = typeof r.id === 'string' || typeof r.id === 'number' ? String(r.id).trim() : ''
+    const name = typeof r.name === 'string' ? r.name.trim() : ''
+    if (!id || !name) continue
+    const trigger = String(r.trigger ?? r.triggerType ?? r.trigger_type ?? '').trim()
+    if (!trigger) continue
+    const rawAmountType = String(r.amountType ?? r.amount_type ?? r.type ?? 'fixed').toLowerCase()
+    const amountType: 'fixed' | 'percent' = rawAmountType === 'percent' ? 'percent' : 'fixed'
+    const rawAmountMinor = r.amountMinor ?? r.amount_minor ?? r.amountCents ?? r.amount_cents
+    const hasExplicitMinor = typeof rawAmountMinor === 'number' && Number.isFinite(rawAmountMinor)
+    const rawAmount = typeof r.amount === 'number' && Number.isFinite(r.amount)
+      ? r.amount
+      : hasExplicitMinor
+        ? Number(rawAmountMinor) / 100
+        : 0
+    const rawThreshold = r.thresholdDays ?? r.threshold_days ?? r.daysThreshold ?? r.days_threshold ?? r.maxDays
+    const thresholdDays = typeof rawThreshold === 'number' && Number.isFinite(rawThreshold) ? rawThreshold : undefined
+    const activeRaw = r.active ?? r.isActive ?? r.is_active
+    const active = activeRaw === undefined ? true : Boolean(activeRaw)
+    rules.push({
+      id,
+      name,
+      description: typeof r.description === 'string' ? r.description.trim() : undefined,
+      trigger,
+      amountType,
+      amount: rawAmount,
+      amountMinor: amountType === 'fixed' && hasExplicitMinor ? Math.round(Number(rawAmountMinor)) : undefined,
+      thresholdDays,
+      active,
+    })
+  }
+  return rules
+}
+
+function parseBookingPolicy(raw: unknown): BookingPolicySettings {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_BOOKING_POLICY }
+  const p = raw as Record<string, unknown>
+  const balanceRaw = p.balanceDueDaysAfterEvent ?? p.balance_due_days_after_event ?? p.balanceDueDays
+  const cancelRaw = p.lateCancellationDays ?? p.late_cancellation_days ?? p.cancellationCutoffDays
+  const sigRaw = p.requireSignature ?? p.require_signature
+  return {
+    balanceDueDaysAfterEvent:
+      typeof balanceRaw === 'number' && Number.isFinite(balanceRaw) && balanceRaw >= 0
+        ? Math.round(balanceRaw)
+        : DEFAULT_BOOKING_POLICY.balanceDueDaysAfterEvent,
+    lateCancellationDays:
+      typeof cancelRaw === 'number' && Number.isFinite(cancelRaw) && cancelRaw >= 0
+        ? Math.round(cancelRaw)
+        : DEFAULT_BOOKING_POLICY.lateCancellationDays,
+    requireSignature: sigRaw === undefined ? DEFAULT_BOOKING_POLICY.requireSignature : Boolean(sigRaw),
+    photographerName: typeof p.photographerName === 'string' ? p.photographerName.trim() : undefined,
+    studioName: typeof p.studioName === 'string' ? p.studioName.trim() : undefined,
   }
 }
 
@@ -447,7 +731,7 @@ function parseSquareConfig(raw: unknown): SquareConfig | null {
 
 export async function fetchPricing(signal?: AbortSignal): Promise<PricingData | null> {
   try {
-    const data = await apiGet<PricingData | { pricing?: PricingData; data?: PricingData; squareConfig?: unknown }>('/pricing', signal)
+    const data = await apiGet<PricingData | { pricing?: PricingData; data?: PricingData; squareConfig?: unknown; feeRules?: unknown; policy?: unknown }>('/pricing', signal)
     if (!data) return null
     const root = data as Record<string, unknown>
     let pricingObj: PricingData | null = null
@@ -460,9 +744,13 @@ export async function fetchPricing(signal?: AbortSignal): Promise<PricingData | 
     }
     if (!pricingObj) return null
     const squareConfig = parseSquareConfig(pricingObj.squareConfig ?? root.squareConfig)
+    const feeRules = parseFeeRules(pricingObj.feeRules ?? root.feeRules)
+    const policy = parseBookingPolicy(pricingObj.policy ?? root.policy)
     return {
       ...pricingObj,
       squareConfig,
+      feeRules,
+      policy,
     }
   } catch {
     return null

@@ -272,6 +272,126 @@
           fieldId: key, view: 'payment'
         }, rule, c.pricing[key]));
       });
+
+      // Dynamic Fee Rules
+      const TRIGGER_LABELS = {
+        days_before_max: r => `Days ≤ ${norm(r.daysBefore) || '?'}`,
+        privacy_declined: () => 'Privacy declined',
+        weekend: () => 'Weekend',
+        always: () => 'Every booking',
+        client_selectable: () => 'Optional add-on'
+      };
+      const fmtFeeAmount = r => {
+        const amt = Number(r.amount);
+        if (norm(r.amount) === '' || !Number.isFinite(amt)) return EMPTY;
+        if (r.amountType === 'percent_of_subtotal') return `${amt}%`;
+        if (r.amountType === 'per_person_cents') return `${fmtMoney(amt / 100)}/person`;
+        return fmtMoney(amt / 100);
+      };
+      const feeRuleSummary = r => {
+        if (!r) return EMPTY;
+        const trig = (TRIGGER_LABELS[r.trigger] || (() => norm(r.trigger) || 'Rule'))(r);
+        const status = r.active !== false ? 'Active' : 'Inactive';
+        return `${norm(r.name) || 'Unnamed'} · ${trig} · ${fmtFeeAmount(r)} · ${status}`;
+      };
+      const sameFeeRule = (o, n) => (
+        sameText(o.name, n.name) &&
+        norm(o.trigger) === norm(n.trigger) &&
+        (norm(o.trigger) !== 'days_before_max' || sameNumber(o.daysBefore, n.daysBefore)) &&
+        norm(o.amountType) === norm(n.amountType) &&
+        sameNumber(o.amount, n.amount) &&
+        Boolean(o.active !== false) === Boolean(n.active !== false)
+      );
+      const feeRuleValidity = (id, r) => {
+        if (!norm(r.name)) return { invalid: true, message: 'Enter a fee rule name.', fieldId: `fee-rule-${id}-name` };
+        if (r.trigger === 'days_before_max') {
+          const d = Number(r.daysBefore);
+          if (norm(r.daysBefore) === '' || !Number.isInteger(d) || d < 0) {
+            return { invalid: true, message: 'Enter a whole number of days (0 or more).', fieldId: `fee-rule-${id}-daysBefore` };
+          }
+        }
+        const amt = Number(r.amount);
+        if (norm(r.amount) === '' || !Number.isFinite(amt) || amt < 0 || (r.amountType === 'percent_of_subtotal' && amt > 100)) {
+          return {
+            invalid: true,
+            message: r.amountType === 'percent_of_subtotal' ? 'Enter a percentage from 0 to 100.' : 'Enter an amount of 0 or more.',
+            fieldId: `fee-rule-${id}-amount`
+          };
+        }
+        return { invalid: false, message: '', fieldId: `fee-rule-${id}-name` };
+      };
+      const toRuleMap = list => {
+        const m = new Map();
+        (Array.isArray(list) ? list : []).forEach((r, i) => {
+          const id = norm(r && r.id) || `row-${i}`;
+          if (!m.has(id)) m.set(id, r);
+        });
+        return m;
+      };
+      const sRules = toRuleMap(s.pricing.feeRules);
+      const cRules = toRuleMap(c.pricing.feeRules);
+      [...new Set([...sRules.keys(), ...cRules.keys()])].forEach(id => {
+        const o = sRules.get(id);
+        const n = cRules.get(id);
+        if (o && n && sameFeeRule(o, n)) return;
+        const kind = !o ? 'added' : (!n ? 'removed' : 'change');
+        const label = `Fee rule · ${norm(n?.name) || norm(o?.name) || 'New rule'}`;
+        if (!n) {
+          rows.push({
+            area: 'pricing', key: `feeRules.${id}`, kind, label,
+            oldText: feeRuleSummary(o), newText: '(removed)',
+            invalid: false, message: '', fieldId: 'card-fee-rules', view: 'payment'
+          });
+          return;
+        }
+        const v = feeRuleValidity(id, n);
+        rows.push({
+          area: 'pricing', key: `feeRules.${id}`, kind, label,
+          oldText: feeRuleSummary(o), newText: feeRuleSummary(n),
+          invalid: v.invalid, message: v.message, fieldId: v.fieldId, view: 'payment'
+        });
+      });
+
+      // Contract & Policy Deadlines
+      const sp = s.pricing.policy || {};
+      const cp = c.pricing.policy || {};
+      const fmtDays = v => {
+        const t = norm(v);
+        if (t === '') return EMPTY;
+        const n = Number(t);
+        return Number.isNaN(n) ? t : `${n} day${n === 1 ? '' : 's'}`;
+      };
+      const wholeDaysCheck = v => {
+        const t = norm(v);
+        const n = Number(t);
+        return t !== '' && Number.isInteger(n) && n >= 0;
+      };
+      [
+        ['balanceDueDaysAfterEvent', 'Policy · Balance due after event', 'balanceDueDaysAfterEvent'],
+        ['rescheduleCutoffDays', 'Policy · Reschedule cutoff', 'rescheduleCutoffDays']
+      ].forEach(([key, label, fieldId]) => {
+        if (sameNumber(sp[key], cp[key])) return;
+        const valid = wholeDaysCheck(cp[key]);
+        rows.push({
+          area: 'pricing', key: `policy.${key}`, kind: 'change', label,
+          oldText: fmtDays(sp[key]), newText: fmtDays(cp[key]),
+          invalid: !valid,
+          message: valid ? '' : 'Enter a whole number of days (0 or more).',
+          fieldId, view: 'payment'
+        });
+      });
+      const oldSig = sp.requireSignature !== false;
+      const newSig = cp.requireSignature !== false;
+      if (oldSig !== newSig) {
+        rows.push({
+          area: 'pricing', key: 'policy.requireSignature', kind: 'change',
+          label: 'Policy · Require agreement signature',
+          oldText: oldSig ? 'Required' : 'Not required',
+          newText: newSig ? 'Required' : 'Not required',
+          invalid: false, message: '',
+          fieldId: 'requireAgreementSignature', view: 'payment'
+        });
+      }
     }
 
     // Availability, one row per day

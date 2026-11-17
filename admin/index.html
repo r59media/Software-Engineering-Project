@@ -589,6 +589,78 @@
             </div>
           </section>
 
+          <!-- ROLL: dynamic fee rules (settings; saved through the save bar) -->
+          <section class="roll" aria-labelledby="pay-roll-fee-rules" id="card-fee-rules">
+            <div class="roll-cap"><h2 id="pay-roll-fee-rules">Dynamic Fee Rules</h2><span class="caps" data-frames-label>Frame 04</span></div>
+            <p class="hint pay-roll-hint">Configure automatic rush fees, privacy fees, weekend surcharges, or optional client add-ons.</p>
+            <div class="strip">
+              <div class="sprockets" aria-hidden="true"></div>
+              <div class="frames">
+                <div class="slot">
+                  <div class="edge caps" aria-hidden="true"><span><svg class="tri"><use href="#i-tri"/></svg><span data-frame-no>Frame 04</span></span><span data-frame-code>04A</span></div>
+                  <article class="frame" aria-labelledby="h-fee-rules">
+                    <div class="frame-head">
+                      <div>
+                        <h3 id="h-fee-rules">Fee Rules</h3>
+                        <p class="hint">Rules are evaluated in order during booking checkout.</p>
+                      </div>
+                      <button type="button" class="btn btn--sm" id="addFeeRuleBtn">+ Add Fee Rule</button>
+                    </div>
+                    <div id="feeRulesList" class="pay-fee-rules"></div>
+                  </article>
+                </div>
+              </div>
+              <div class="sprockets bottom" aria-hidden="true"></div>
+            </div>
+          </section>
+
+          <!-- ROLL: contract & policy deadlines (settings; saved through the save bar) -->
+          <section class="roll" aria-labelledby="pay-roll-policy" id="card-policy">
+            <div class="roll-cap"><h2 id="pay-roll-policy">Contract &amp; Policy Deadlines</h2><span class="caps" data-frames-label>Frame 05</span></div>
+            <p class="hint pay-roll-hint">Set default balance due dates, reschedule cutoffs, and signature requirements.</p>
+            <div class="strip">
+              <div class="sprockets" aria-hidden="true"></div>
+              <div class="frames">
+                <div class="slot">
+                  <div class="edge caps" aria-hidden="true"><span><svg class="tri"><use href="#i-tri"/></svg><span data-frame-no>Frame 05</span></span><span data-frame-code>05A</span></div>
+                  <article class="frame" aria-labelledby="h-policy">
+                    <div class="frame-head">
+                      <div>
+                        <h3 id="h-policy">Contract &amp; Policy Deadlines</h3>
+                        <p class="hint">Applied to new bookings and client booking agreements.</p>
+                      </div>
+                    </div>
+                    <div class="fields">
+                      <div class="field-row">
+                        <div class="field">
+                          <label class="field__label" for="balanceDueDaysAfterEvent">Balance due (days after event)</label>
+                          <div class="field__control">
+                            <input class="field__input num" id="balanceDueDaysAfterEvent" type="number" inputmode="numeric" min="0" max="365" step="1" value="4">
+                          </div>
+                          <p class="field__hint">Number of days after the session date when the remaining balance is due.</p>
+                        </div>
+                        <div class="field">
+                          <label class="field__label" for="rescheduleCutoffDays">Reschedule cutoff (days before event)</label>
+                          <div class="field__control">
+                            <input class="field__input num" id="rescheduleCutoffDays" type="number" inputmode="numeric" min="0" max="365" step="1" value="3">
+                          </div>
+                          <p class="field__hint">Minimum days before the session that clients may request a reschedule.</p>
+                        </div>
+                      </div>
+                      <div class="field">
+                        <label class="pay-check" for="requireAgreementSignature">
+                          <input type="checkbox" id="requireAgreementSignature" checked>
+                          <span>Require client agreement signature before booking confirmation</span>
+                        </label>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              </div>
+              <div class="sprockets bottom" aria-hidden="true"></div>
+            </div>
+          </section>
+
           <!-- ROLL: photography packages (name/price/description via the save bar; add, remove and availability are sent on confirm) -->
           <section class="roll" aria-labelledby="pay-roll-packages" id="card-packages">
             <div class="roll-cap"><h2 id="pay-roll-packages">Photography Packages</h2><span class="caps" data-frames-label>Frame 04</span></div>
@@ -807,6 +879,7 @@
                           <button type="button" class="seg__btn" id="calBtnWeek" aria-pressed="false">Week</button>
                           <button type="button" class="seg__btn" id="calBtnMonth" aria-pressed="true">Month</button>
                         </div>
+                        <button type="button" class="btn btn--sm btn--ghost" id="syncGcalBtn">Sync Google Calendar</button>
                       </div>
                     </div>
                     <div id="calendarDisplay"></div>
@@ -1222,6 +1295,8 @@
             <p class="hint inv__hint" id="invoiceHint" hidden></p>
             <div class="tf-form__acts inv__acts">
               <button type="button" class="btn btn--primary btn--sm" id="invoiceSend" disabled>Send invoice</button>
+              <button type="button" class="btn btn--sm" id="bkTerminalBtn" disabled>Push to Terminal</button>
+              <button type="button" class="btn btn--sm" id="bkGoogleCalBtn">Google Calendar</button>
               <button type="button" class="btn btn--sm" id="invoiceCheck" hidden>Check status</button>
               <button type="button" class="btn btn--sm btn--danger" id="invoiceCancel" hidden>Cancel invoice</button>
             </div>

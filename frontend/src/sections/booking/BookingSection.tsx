@@ -83,6 +83,7 @@ function BookingFlow({
   const [dateTime, setDateTime] = useState<BookingDateTimeSelection | null>(null)
   const [customerInfo, setCustomerInfo] = useState<BookingCustomerInfo | null>(null)
   const [photoPermissions, setPhotoPermissions] = useState<BookingPhotoPermissions>({ websitePortfolio: false, socialMedia: false })
+  const [selectedFeeIds, setSelectedFeeIds] = useState<string[]>([])
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   // Find the selected service
@@ -199,6 +200,8 @@ function BookingFlow({
           customerInfo={customerInfo}
           photoPermissions={photoPermissions}
           onPhotoPermissionsChange={setPhotoPermissions}
+          selectedFeeIds={selectedFeeIds}
+          onSelectedFeeIdsChange={setSelectedFeeIds}
           onEdit={nextStep => {
             setStep(nextStep)
             document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })

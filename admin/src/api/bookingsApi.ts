@@ -111,6 +111,22 @@
     /** Cancel the open invoice: POST /admin/bookings/:id/invoice/cancel */
     async cancelInvoice(bookingId) {
       return client().post(`/admin/bookings/${encodeURIComponent(bookingId)}/invoice/cancel`, {});
+    },
+
+    /**
+     * Push the balance checkout to a Square Terminal device: POST /admin/bookings/:id/terminal-checkout
+     */
+    async sendTerminalCheckout(bookingId, expectedAmountCents, deviceId) {
+      const payload = { expected_amount_cents: expectedAmountCents };
+      if (deviceId) payload.device_id = deviceId;
+      return client().post(`/admin/bookings/${encodeURIComponent(bookingId)}/terminal-checkout`, payload);
+    },
+
+    /**
+     * Fetch Google Calendar / ICS live feed configuration: GET /admin/calendar-feed
+     */
+    async fetchCalendarFeedConfig() {
+      return client().get('/admin/calendar-feed');
     }
   };
 

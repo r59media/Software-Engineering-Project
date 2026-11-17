@@ -11,6 +11,7 @@ import type { HeroSlide } from './types/hero'
 import type { BookingReviewDraft, BookingService } from './types/booking'
 import type { ContactInquiry } from './types/contact'
 import { DepositCheckoutModal } from './sections/booking/DepositCheckoutModal'
+import { RescheduleModal } from './sections/booking/RescheduleModal'
 
 const AboutToRecent = lazy(() => import('./sections/transition/AboutToRecent').then(m => ({ default: m.AboutToRecent })))
 const ContactSection = lazy(() => import('./sections/contact/ContactSection').then(m => ({ default: m.ContactSection })))
@@ -25,6 +26,20 @@ function App() {
   const [pricing, setPricing] = useState<PricingData | null>(null)
   const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
   const [depositDraft, setDepositDraft] = useState<BookingReviewDraft | null>(null)
+  const [rescheduleParams, setRescheduleParams] = useState<{ bookingId: string; token: string } | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+    const bookingId = params.get('reschedule')?.trim()
+    const token = params.get('token')?.trim()
+    return bookingId && token ? { bookingId, token } : null
+  })
+  const handleCloseReschedule = useCallback(() => {
+    setRescheduleParams(null)
+    const url = new URL(window.location.href)
+    url.searchParams.delete('reschedule')
+    url.searchParams.delete('token')
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`
+    window.history.replaceState(window.history.state, '', nextUrl)
+  }, [])
   const baseUrl = import.meta.env.BASE_URL
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
   const cleanBase = baseUrl.replace(/\/$/, '')
@@ -250,8 +265,16 @@ function App() {
       <DepositCheckoutModal
         draft={depositDraft}
         service={bookingServices.find(s => s.id === depositDraft.serviceId) || null}
+        pricing={pricing}
         squareConfig={pricing?.squareConfig ?? null}
         onClose={() => setDepositDraft(null)}
+      />
+    )}
+    {rescheduleParams && (
+      <RescheduleModal
+        bookingId={rescheduleParams.bookingId}
+        token={rescheduleParams.token}
+        onClose={handleCloseReschedule}
       />
     )}
   </div>

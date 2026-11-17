@@ -1,6 +1,13 @@
 import { Hono } from 'hono'
 import type { Bindings } from '../index'
-import { DEFAULT_DEPOSIT_PERCENT, normalizeDepositPercent } from '../lib/billingMath'
+import {
+  DEFAULT_BOOKING_POLICY,
+  DEFAULT_DEPOSIT_PERCENT,
+  DynamicFeeRule,
+  normalizeBookingPolicy,
+  normalizeDepositPercent,
+  normalizeFeeRules
+} from '../lib/billingMath'
 import { getTrustedClientIp } from '../middleware/auth'
 
 export const pricingRouter = new Hono<{ Bindings: Bindings }>()
@@ -51,6 +58,8 @@ pricingRouter.get('/', async (c) => {
     let depositPercent = DEFAULT_DEPOSIT_PERCENT
     let baseFee = 0
     let perPerson = 0
+    let feeRules: DynamicFeeRule[] = []
+    let policy = DEFAULT_BOOKING_POLICY
 
     if (row?.setting_value) {
       try {
@@ -64,6 +73,8 @@ pricingRouter.get('/', async (c) => {
         if (parsed.perPerson !== undefined && Number.isFinite(Number(parsed.perPerson))) {
           perPerson = Number(parsed.perPerson)
         }
+        feeRules = normalizeFeeRules(parsed.feeRules)
+        policy = normalizeBookingPolicy(parsed.policy)
       } catch {}
     }
 
@@ -72,6 +83,8 @@ pricingRouter.get('/', async (c) => {
       depositPercent,
       baseFee,
       perPerson,
+      feeRules,
+      policy,
       currency: 'USD',
       squareConfig: getSquareConfig(c.env)
     })
@@ -81,6 +94,8 @@ pricingRouter.get('/', async (c) => {
       depositPercent: DEFAULT_DEPOSIT_PERCENT,
       baseFee: 0,
       perPerson: 0,
+      feeRules: [],
+      policy: DEFAULT_BOOKING_POLICY,
       currency: 'USD',
       squareConfig: getSquareConfig(c.env)
     })

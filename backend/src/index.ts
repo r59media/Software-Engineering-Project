@@ -12,6 +12,7 @@ import { servicesRouter } from './routes/services'
 import { adminRouter, DEFAULT_PROFILE, replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady } from './routes/admin'
 import { squareWebhookRouter } from './routes/squareWebhook'
 import { pricingRouter, couponsRouter } from './routes/pricing'
+import { rescheduleRoutes } from './routes/reschedule'
 import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret, getMediaSigningSecret, getSessionsValidAfter, timingSafeEqual } from './middleware/auth'
 import { verifyMediaSignature, parseRangeHeader } from './utils/signedUrl'
 
@@ -33,6 +34,12 @@ export type Bindings = {
   SQUARE_WEBHOOK_SIGNATURE_KEY?: string
   SQUARE_WEBHOOK_URL?: string
   GOOGLE_CLIENT_ID?: string
+  GOOGLE_CLIENT_SECRET?: string
+  GOOGLE_CALENDAR_ID?: string
+  GOOGLE_CALENDAR_REFRESH_TOKEN?: string
+  RESEND_API_KEY?: string
+  EMAIL_FROM?: string
+  SQUARE_TERMINAL_DEVICE_ID?: string
   MEDIA_SIGNING_SECRET?: string
 }
 
@@ -611,6 +618,7 @@ app.route('/api/leads', contactRouter)
 app.route('/api/schedule', scheduleRouter)
 app.route('/api/upload-url', uploadRouter)
 app.route('/api/checkout', checkoutRouter)
+app.route('/api/bookings', rescheduleRoutes)
 app.route('/api/portfolio', portfolioRouter)
 app.route('/api/services', servicesRouter)
 app.route('/api/admin', adminRouter)

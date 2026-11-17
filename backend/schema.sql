@@ -82,6 +82,10 @@ CREATE TABLE Bookings (
     photo_permission_social BOOLEAN DEFAULT 0,
     photo_permission_accepted_at TEXT,
     photo_permission_version TEXT DEFAULT 'v1',
+    event_location TEXT,
+    agreement_signed_name TEXT,
+    agreement_signed_at TEXT,
+    applied_fees_json TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (service_id) REFERENCES Services(id),
     FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)

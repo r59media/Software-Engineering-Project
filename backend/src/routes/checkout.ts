@@ -1,10 +1,13 @@
 import { Hono } from 'hono'
 import type { Bindings } from '../index'
 import { ensureSchemaReady } from './admin'
-import { getTrustedClientIp, hasForbiddenPaymentFields } from '../middleware/auth'
+import { getTrustedClientIp, hasForbiddenPaymentFields, getSigningSecret, getMediaSigningSecret } from '../middleware/auth'
 import { buildHybridSquareNote, ensureCustomer, getSquare, getStudioTimeZone, sendBalanceInvoice } from '../lib/squareBilling'
-import { depositFor, localDateTimeToRFC3339, normalizeDepositPercent } from '../lib/billingMath'
+import { addDaysISO, depositFor, evaluateDynamicFees, localDateTimeToRFC3339, normalizeBookingPolicy, normalizeDepositPercent, normalizeFeeRules } from '../lib/billingMath'
 import { isSlotInWeeklyAvailability } from './schedule'
+import { signRescheduleToken } from './reschedule'
+import { buildGoogleCalendarTemplateUrl, syncBookingToGoogleCalendarApi } from '../lib/googleCalendar'
+import { sendBookingConfirmationEmail } from '../email'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const IDEMPOTENCY_KEY_REGEX = /^[a-zA-Z0-9_-]{8,36}$/
@@ -104,6 +107,13 @@ checkoutRouter.post('/', async (c) => {
     }
 
     const couponCode = typeof (body.coupon_code ?? body.couponCode) === 'string' ? (body.coupon_code ?? body.couponCode).trim().toUpperCase() : ''
+
+    const rawSelectedFeeIds = body.selectedFeeIds ?? body.selected_fee_ids
+    const selectedFeeIds = Array.isArray(rawSelectedFeeIds) ? rawSelectedFeeIds.map((id: unknown) => String(id).trim()).filter(Boolean) : []
+    const rawEventLocation = body.eventLocation ?? body.event_location ?? body.location
+    const eventLocation = typeof rawEventLocation === 'string' ? rawEventLocation.trim().slice(0, 500) : ''
+    const rawAgreementSig = body.agreementSignatureName ?? body.agreement_signature_name
+    const agreementSignatureName = typeof rawAgreementSig === 'string' ? rawAgreementSig.trim().slice(0, 200) : ''
 
     const photoPermissions = body.photoPermissions ?? body.photo_permissions
     let photoPermissionPortfolio = 0
@@ -326,6 +336,25 @@ checkoutRouter.post('/', async (c) => {
       console.warn('Could not read pricing settings; using the default pricing settings.')
     }
 
+    const feeRules = normalizeFeeRules(pricingSettings?.feeRules)
+    const policy = normalizeBookingPolicy(pricingSettings?.policy)
+
+    if (policy.requireSignature && !agreementSignatureName) {
+      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
+      slotLocked = false
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Agreement signature is required.',
+          target: 'checkout_form',
+          details: [{ field: 'agreementSignatureName', message: 'Agreement signature is required.', code: 'REQUIRED_FIELD' }]
+        }
+      }, 400)
+    }
+
+    const agreementSignedAt = agreementSignatureName ? new Date().toISOString() : null
+    const timeZone = await getStudioTimeZone(c.env.DB)
+
     const baseFeeDollars = Number(pricingSettings?.baseFee) || 0
     const baseFeeCents = Math.round(baseFeeDollars * 100)
 
@@ -395,7 +424,19 @@ checkoutRouter.post('/', async (c) => {
       }
     }
 
-    const finalPriceCents = Math.max(0, subtotalCents - couponDiscountCents)
+    const feeEval = evaluateDynamicFees(feeRules, {
+      subtotalCents,
+      sessionDate: slot.date,
+      timeZone,
+      attendees,
+      photoPermissionPortfolio: Boolean(photoPermissionPortfolio),
+      photoPermissionSocial: Boolean(photoPermissionSocial),
+      selectedFeeIds
+    })
+    const appliedFees = feeEval.appliedFees
+    const totalFeeCents = feeEval.totalFeeCents
+
+    const finalPriceCents = Math.max(0, subtotalCents + totalFeeCents - couponDiscountCents)
     const depositPercent = normalizeDepositPercent(pricingSettings?.depositPercent)
     const depositCents = Math.round((finalPriceCents * depositPercent) / 100)
     const squareChargeCents = finalPriceCents > 0 ? Math.min(finalPriceCents, Math.max(100, depositCents)) : 0
@@ -411,6 +452,8 @@ checkoutRouter.post('/', async (c) => {
       couponCode: validCouponCode || couponCode,
       photoPermissionPortfolio,
       photoPermissionSocial,
+      agreementSignedName: agreementSignatureName,
+      eventLocation,
       bookingId: null
     })
 
@@ -431,27 +474,69 @@ checkoutRouter.post('/', async (c) => {
     }
 
     // 2. Create Ad-Hoc Order
+    const feeLineItems: Array<{ name: string; quantity: string; basePriceMoney: { amount: bigint; currency: 'USD' } }> = []
+    let feeLineSum = 0
+    if (appliedFees.length > 0 && finalPriceCents > 0 && squareChargeCents > 0) {
+      for (const fee of appliedFees) {
+        const portion = Math.round((fee.amountCents * squareChargeCents) / finalPriceCents)
+        if (portion > 0) {
+          feeLineItems.push({
+            name: (depositPercent === 100 ? fee.name : `${fee.name} (${depositPercent}% deposit)`).slice(0, 512),
+            quantity: '1',
+            basePriceMoney: {
+              amount: BigInt(portion),
+              currency: 'USD' as const
+            }
+          })
+          feeLineSum += portion
+        }
+      }
+    }
+    const baseLineCents = squareChargeCents - feeLineSum
+    const orderLineItems =
+      feeLineItems.length > 0 && baseLineCents > 0
+        ? [
+            {
+              name: lineItemName,
+              quantity: '1',
+              note: hybridNote,
+              basePriceMoney: {
+                amount: BigInt(baseLineCents),
+                currency: 'USD' as const
+              }
+            },
+            ...feeLineItems
+          ]
+        : [
+            {
+              name: lineItemName,
+              quantity: '1',
+              note: hybridNote,
+              basePriceMoney: {
+                amount: BigInt(squareChargeCents),
+                currency: 'USD' as const
+              }
+            }
+          ]
+
     const orderResponse = await client.orders.create({
       order: {
         locationId: squareLocationId,
         customerId: squareCustomerId,
-        lineItems: [
-          {
-            name: lineItemName,
-            quantity: '1',
-            note: hybridNote,
-            basePriceMoney: {
-              amount: BigInt(squareChargeCents),
-              currency: 'USD'
-            }
-          }
-        ],
+        lineItems: orderLineItems,
         metadata: {
           booking_id: 'pending',
           category: serviceCategory.slice(0, 255),
           session_type: (packageTitle || 'Custom Session').slice(0, 255),
           photo_permission_portfolio: photoPermissionPortfolio ? 'YES' : 'NO',
-          photo_permission_social: photoPermissionSocial ? 'YES' : 'NO'
+          photo_permission_social: photoPermissionSocial ? 'YES' : 'NO',
+          ...(agreementSignatureName && agreementSignedAt
+            ? {
+                agreement_signed_name: agreementSignatureName.slice(0, 255),
+                agreement_signed_at: agreementSignedAt.slice(0, 255)
+              }
+            : {}),
+          ...(eventLocation ? { event_location: eventLocation.slice(0, 255) } : {})
         }
       },
       idempotencyKey: idempotencyKey + '_order'
@@ -504,17 +589,41 @@ checkoutRouter.post('/', async (c) => {
 
     // 4. Record successful booking
     let bookingId: number | undefined
+    let hasBookingChargesTable = false
+    if (appliedFees.length > 0 && finalPriceCents >= totalFeeCents) {
+      try {
+        const tbl = await c.env.DB.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'Booking_Charges'"
+        ).first()
+        hasBookingChargesTable = Boolean(tbl)
+      } catch {}
+    }
+    const priceAtBookingCents = hasBookingChargesTable ? finalPriceCents - totalFeeCents : finalPriceCents
+    const appliedFeesJson = JSON.stringify(appliedFees)
+
     try {
       const bookingInsert = await c.env.DB.prepare(
-        // Online checkout charges only the deposit: price_at_booking is the total after coupon,
+        // Online checkout charges only the deposit: price_at_booking (+ Booking_Charges if present) is the total after coupon,
         // deposit_paid is the amount charged now, and deposit_percent is the percent that produced it
-        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, customer_phone, notes, attendees, price_at_booking, square_payment_id, status, coupon_code, deposit_paid, deposit_percent, photo_permission_portfolio, photo_permission_social, photo_permission_accepted_at, photo_permission_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO Bookings (service_id, slot_id, client_name, client_email, customer_phone, notes, attendees, price_at_booking, square_payment_id, status, coupon_code, deposit_paid, deposit_percent, photo_permission_portfolio, photo_permission_social, photo_permission_accepted_at, photo_permission_version, event_location, agreement_signed_name, agreement_signed_at, applied_fees_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       ).bind(
         service.id, slotId, clientName, clientEmail, customerPhone, notes, attendees,
-        finalPriceCents, paymentId, validCouponCode || couponCode, depositCents, depositPercent,
-        photoPermissionPortfolio, photoPermissionSocial, photoPermissionAcceptedAt, photoPermissionVersion
+        priceAtBookingCents, paymentId, validCouponCode || couponCode, depositCents, depositPercent,
+        photoPermissionPortfolio, photoPermissionSocial, photoPermissionAcceptedAt, photoPermissionVersion,
+        eventLocation, agreementSignatureName || null, agreementSignedAt, appliedFeesJson
       ).run()
       bookingId = bookingInsert.meta?.last_row_id
+
+      if (bookingId && hasBookingChargesTable) {
+        for (const fee of appliedFees) {
+          if (fee.amountCents > 0) {
+            const desc = String(fee.name || 'Dynamic fee').slice(0, 120)
+            await c.env.DB.prepare(
+              'INSERT INTO Booking_Charges (booking_id, description, amount_cents) VALUES (?, ?, ?)'
+            ).bind(bookingId, desc, fee.amountCents).run()
+          }
+        }
+      }
 
       if (validCouponCode) {
         try {
@@ -570,20 +679,81 @@ checkoutRouter.post('/', async (c) => {
     const balanceCents = Math.max(0, finalPriceCents - depositCents)
     if (bookingId && balanceCents > 0) {
       try {
-        const timeZone = await getStudioTimeZone(c.env.DB)
         const scheduledAt = localDateTimeToRFC3339(slot.date, slot.start_time, timeZone)
+        const dueDateOverride = addDaysISO(slot.date, policy.balanceDueDaysAfterEvent)
         await sendBalanceInvoice(
           c.env.DB,
           c.env,
           bookingId,
           balanceCents,
-          scheduledAt ? { scheduledAt } : undefined
+          {
+            ...(scheduledAt ? { scheduledAt } : {}),
+            dueDateOverride
+          }
         )
       } catch (invoiceErr) {
         console.error('Checkout succeeded, but failed to schedule balance invoice:', {
           bookingId,
           error: invoiceErr
         })
+      }
+    }
+
+    let rescheduleToken = ''
+    let rescheduleUrl = ''
+    let icsUrl = ''
+    let googleCalendarUrl = ''
+
+    if (bookingId) {
+      const origin = new URL(c.req.url).origin
+      const signingSecret = getSigningSecret(c.env) || (await getMediaSigningSecret(c.env))
+      if (signingSecret) {
+        rescheduleToken = await signRescheduleToken(bookingId, clientEmail, signingSecret)
+        rescheduleUrl = `${origin}/reschedule?booking=${bookingId}&token=${encodeURIComponent(rescheduleToken)}`
+        icsUrl = `${origin}/api/bookings/${bookingId}/calendar.ics?token=${encodeURIComponent(rescheduleToken)}`
+      }
+
+      const calendarBooking = {
+        id: bookingId,
+        date: slot.date,
+        start_time: slot.start_time,
+        end_time: slot.end_time,
+        client_name: clientName,
+        client_email: clientEmail,
+        customer_phone: customerPhone,
+        package_name: packageTitle || service.name,
+        service_name: service.name,
+        status: 'confirmed',
+        notes,
+        attendees,
+        timeZone
+      }
+
+      googleCalendarUrl = buildGoogleCalendarTemplateUrl(calendarBooking, rescheduleUrl)
+
+      const backgroundTasks = Promise.allSettled([
+        sendBookingConfirmationEmail(c.env, {
+          bookingId,
+          clientName,
+          clientEmail,
+          customerPhone,
+          packageName: packageTitle || service.name || 'Photography Session',
+          date: slot.date,
+          startTime: slot.start_time,
+          endTime: slot.end_time,
+          depositCents,
+          totalCents: finalPriceCents,
+          balanceCents,
+          rescheduleUrl,
+          icsUrl,
+          googleCalendarUrl
+        }),
+        syncBookingToGoogleCalendarApi(c.env, calendarBooking, 'upsert')
+      ])
+      try {
+        c.executionCtx?.waitUntil(backgroundTasks)
+      } catch {
+        // Ignore when executionCtx is unavailable (e.g. unit tests)
       }
     }
 
@@ -597,6 +767,10 @@ checkoutRouter.post('/', async (c) => {
       deposit_percent: depositPercent,
       total_cents: finalPriceCents,
       balance_cents: balanceCents,
+      reschedule_token: rescheduleToken,
+      reschedule_url: rescheduleUrl,
+      ics_url: icsUrl,
+      google_calendar_url: googleCalendarUrl,
       photo_consent: {
         portfolio: photoPermissionPortfolio === 1,
         social: photoPermissionSocial === 1,
@@ -604,6 +778,10 @@ checkoutRouter.post('/', async (c) => {
         version: photoPermissionVersion
       },
       consent_summary: consentSummary,
+      applied_fees: appliedFees,
+      event_location: eventLocation,
+      agreement_signed_name: agreementSignatureName || null,
+      agreement_signed_at: agreementSignedAt,
       data: {
         booking_id: bookingId,
         payment_id: paymentId,
@@ -612,13 +790,21 @@ checkoutRouter.post('/', async (c) => {
         deposit_percent: depositPercent,
         total_cents: finalPriceCents,
         balance_cents: balanceCents,
+        reschedule_token: rescheduleToken,
+        reschedule_url: rescheduleUrl,
+        ics_url: icsUrl,
+        google_calendar_url: googleCalendarUrl,
         photo_permission_portfolio: photoPermissionPortfolio,
         photo_permission_social: photoPermissionSocial,
         photo_permission_accepted_at: photoPermissionAcceptedAt,
         photo_permission_version: photoPermissionVersion,
-        consent_summary: consentSummary
+        consent_summary: consentSummary,
+        applied_fees: appliedFees,
+        event_location: eventLocation,
+        agreement_signed_name: agreementSignatureName || null,
+        agreement_signed_at: agreementSignedAt
       }
-    })
+    }, 201)
   } catch (e: any) {
     console.error('Checkout error:', e)
 

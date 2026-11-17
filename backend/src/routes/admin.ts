@@ -23,9 +23,12 @@ import {
   addDaysISO,
   bookingTotalCents,
   computeTotals,
+  DEFAULT_BOOKING_POLICY,
   DEFAULT_DEPOSIT_PERCENT,
   DESCRIPTION_MAX,
+  normalizeBookingPolicy,
   normalizeDepositPercent,
+  normalizeFeeRules,
   parseMoneyToCents
 } from '../lib/billingMath'
 import {
@@ -36,10 +39,12 @@ import {
   PAYMENTS_SELECT_SQL,
   refreshBilling,
   sendBalanceInvoice,
+  sendTerminalCheckout,
   studioTodayISO,
   toChargeJSON,
   toPayment
 } from '../lib/squareBilling'
+import { signCalendarFeedToken } from './reschedule'
 import {
   BOOKING_PAYMENTS_TABLE_SQL,
   BOOKING_PAYMENTS_INDEX_SQL,
@@ -103,7 +108,8 @@ const BOOKINGS_REBUILD_COLUMNS = [
   'id', 'service_id', 'slot_id', 'client_name', 'client_email', 'price_at_booking',
   'square_payment_id', 'status', 'customer_phone', 'location', 'notes', 'attendees',
   'deposit_paid', 'coupon_code', 'custom_price', 'deposit_percent', 'created_at',
-  'photo_permission_portfolio', 'photo_permission_social', 'photo_permission_accepted_at', 'photo_permission_version'
+  'photo_permission_portfolio', 'photo_permission_social', 'photo_permission_accepted_at', 'photo_permission_version',
+  'event_location', 'agreement_signed_name', 'agreement_signed_at', 'applied_fees_json'
 ]
 
 const BOOKINGS_SLOT_UNIQUE_RE = /slot_id\s+INTEGER\s+NOT\s+NULL\s+UNIQUE/i
@@ -172,6 +178,10 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
       photo_permission_social BOOLEAN DEFAULT 0,
       photo_permission_accepted_at TEXT,
       photo_permission_version TEXT DEFAULT 'v1',
+      event_location TEXT,
+      agreement_signed_name TEXT,
+      agreement_signed_at TEXT,
+      applied_fees_json TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (service_id) REFERENCES Services(id),
       FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)
@@ -181,6 +191,7 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
       square_payment_id, status, customer_phone, location, notes, attendees,
       deposit_paid, coupon_code, custom_price, deposit_percent,
       photo_permission_portfolio, photo_permission_social, photo_permission_accepted_at, photo_permission_version,
+      event_location, agreement_signed_name, agreement_signed_at, applied_fees_json,
       created_at
     ) SELECT
       id,
@@ -191,6 +202,7 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
       COALESCE(coupon_code, ''), custom_price, deposit_percent,
       COALESCE(photo_permission_portfolio, 0), COALESCE(photo_permission_social, 0),
       photo_permission_accepted_at, COALESCE(photo_permission_version, 'v1'),
+      event_location, agreement_signed_name, agreement_signed_at, applied_fees_json,
       created_at
     FROM Bookings`),
     db.prepare('DROP TABLE Bookings'),
@@ -1719,6 +1731,66 @@ adminRouter.post('/bookings/:id/invoice', async (c) => {
   }
 })
 
+// POST: Push the booking's remaining balance to a Square Terminal device
+adminRouter.post('/bookings/:id/terminal-checkout', async (c) => {
+  noStore(c)
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json(INVALID_ID_RESPONSE, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
+    }
+    const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+    const deviceId = typeof input.device_id === 'string' ? input.device_id : undefined
+
+    const { checkout } = await sendTerminalCheckout(c.env.DB, c.env, id, input.expected_amount_cents, deviceId)
+    const billing = await refreshBilling(c.env.DB, c.env, id)
+    return c.json({ status: 'success', checkout, billing, data: { checkout, billing } })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not start terminal checkout.')
+  }
+})
+
+// GET: Admin calendar feed URLs for Google Calendar / Apple Calendar subscription
+adminRouter.get('/calendar-feed', async (c) => {
+  noStore(c)
+  try {
+    const secret = getSigningSecret(c.env) || (await getMediaSigningSecret(c.env))
+    if (!secret) {
+      return c.json(
+        { error: { code: 'SIGNING_NOT_CONFIGURED', message: 'Calendar feed signing is not configured.', details: [] } },
+        503
+      )
+    }
+
+    const token = await signCalendarFeedToken(secret)
+    const origin = new URL(c.req.url).origin
+    const icsFeedUrl = `${origin}/api/bookings/calendar.ics?token=${encodeURIComponent(token)}`
+    const webcalUrl = icsFeedUrl.replace(/^https?:\/\//i, 'webcal://')
+    const googleCalendarSubscribeUrl = `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(webcalUrl)}`
+    const targetCalendarEmail = (c.env.GOOGLE_CALENDAR_ID || 'r59mediatesting@gmail.com').trim() || 'r59mediatesting@gmail.com'
+
+    return c.json({
+      status: 'success',
+      targetCalendarEmail,
+      icsFeedUrl,
+      webcalUrl,
+      googleCalendarSubscribeUrl,
+      data: {
+        targetCalendarEmail,
+        icsFeedUrl,
+        webcalUrl,
+        googleCalendarSubscribeUrl
+      }
+    })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not generate calendar feed URL.')
+  }
+})
+
 // POST: Cancel the booking's open invoice
 adminRouter.post('/bookings/:id/invoice/cancel', async (c) => {
   noStore(c)
@@ -1754,7 +1826,20 @@ async function handleGetPricing(c: Context<{ Bindings: Bindings }>) {
       "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
     ).first<{ setting_value: string }>()
 
-    const pricing = row?.setting_value ? JSON.parse(row.setting_value) : { baseFee: 0, perPerson: 0, depositPercent: DEFAULT_DEPOSIT_PERCENT }
+    let parsed: any = {}
+    if (row?.setting_value) {
+      try {
+        parsed = JSON.parse(row.setting_value) || {}
+      } catch {}
+    }
+
+    const pricing = {
+      baseFee: Number.isFinite(Number(parsed.baseFee)) && Number(parsed.baseFee) >= 0 ? Number(parsed.baseFee) : 0,
+      perPerson: Number.isFinite(Number(parsed.perPerson)) && Number(parsed.perPerson) >= 0 ? Number(parsed.perPerson) : 0,
+      depositPercent: normalizeDepositPercent(parsed.depositPercent),
+      feeRules: normalizeFeeRules(parsed.feeRules),
+      policy: normalizeBookingPolicy(parsed.policy)
+    }
     return c.json({ ...pricing, status: 'success', data: pricing })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch pricing settings.', details: [] } }, 500)
@@ -1773,18 +1858,59 @@ async function handleUpdatePricing(c: Context<{ Bindings: Bindings }>) {
         }
       }, 400)
     }
-    const depositPercent = normalizeDepositPercent(body.depositPercent)
+    if (body.feeRules !== undefined && !Array.isArray(body.feeRules)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'feeRules must be an array.',
+          details: [{ field: 'feeRules', message: 'feeRules must be an array.' }]
+        }
+      }, 400)
+    }
+    if (body.policy !== undefined && (!body.policy || typeof body.policy !== 'object' || Array.isArray(body.policy))) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'policy must be an object.',
+          details: [{ field: 'policy', message: 'policy must be an object.' }]
+        }
+      }, 400)
+    }
 
-    const parsedBaseFee = Number(body.baseFee)
+    const existingRow = await c.env.DB.prepare(
+      "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
+    ).first<{ setting_value: string }>()
+    let existing: any = {}
+    if (existingRow?.setting_value) {
+      try {
+        existing = JSON.parse(existingRow.setting_value) || {}
+      } catch {}
+    }
+
+    const depositPercent =
+      body.depositPercent !== undefined
+        ? normalizeDepositPercent(body.depositPercent)
+        : normalizeDepositPercent(existing.depositPercent)
+
+    const parsedBaseFee = body.baseFee !== undefined ? Number(body.baseFee) : Number(existing.baseFee)
     const baseFee = Number.isFinite(parsedBaseFee) && parsedBaseFee >= 0 ? Math.round(parsedBaseFee * 100) / 100 : 0
 
-    const parsedPerPerson = Number(body.perPerson)
+    const parsedPerPerson = body.perPerson !== undefined ? Number(body.perPerson) : Number(existing.perPerson)
     const perPerson = Number.isFinite(parsedPerPerson) && parsedPerPerson >= 0 ? Math.round(parsedPerPerson * 100) / 100 : 0
+
+    const feeRules =
+      body.feeRules !== undefined ? normalizeFeeRules(body.feeRules) : normalizeFeeRules(existing.feeRules)
+    const policy =
+      body.policy !== undefined
+        ? normalizeBookingPolicy({ ...normalizeBookingPolicy(existing.policy), ...body.policy })
+        : normalizeBookingPolicy(existing.policy ?? DEFAULT_BOOKING_POLICY)
 
     const cleanPricing = {
       baseFee,
       perPerson,
-      depositPercent
+      depositPercent,
+      feeRules,
+      policy
     }
     const val = JSON.stringify(cleanPricing)
 

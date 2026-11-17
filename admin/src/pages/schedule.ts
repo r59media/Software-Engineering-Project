@@ -1089,6 +1089,7 @@
   let billingSeq = 0;        // only the newest billing response is applied
   let chargeBusy = false;    // an add-charge request is running
   let invoiceBusy = null;    // 'send' | 'cancel' | 'check' while an invoice request is running
+  let terminalBusy = false;  // true while a Square Terminal checkout push is running
   const CHARGE_FIELDS = ['#chargeDesc', '#chargeAmount'];
   const LOCK_FIELDS = ['#bkPrice', '#bkDeposit', '#bkPackage'];
   const LOCKED_TEXT = 'An invoice is out for this booking. Cancel it to change amounts.';
@@ -1574,6 +1575,22 @@
     cancel.hidden = !(loaded && now && now.is_open && status !== 'CREATING' && status !== 'PAYMENT_PENDING');
     cancel.textContent = invoiceBusy === 'cancel' ? INVOICE_BUSY_TEXT.cancel : 'Cancel invoice';
     cancel.disabled = Boolean(invoiceBusy);
+
+    syncTerminalButton();
+  }
+
+  function syncTerminalButton() {
+    const btn = $('#bkTerminalBtn');
+    if (!btn) return;
+    const b = payBooking();
+    const loaded = billingStatus === 'loaded';
+    const m = b ? st().balanceOf(b) : null;
+    const cancelled = !b || Boolean(m?.cancelled) || payIsCancelled(b);
+    const balanceCents = m ? m.balanceCents : 0;
+    btn.disabled = !b || !loaded || cancelled || balanceCents <= 0 || terminalBusy || Boolean(invoiceBusy);
+    btn.textContent = terminalBusy
+      ? 'Pushing…'
+      : (balanceCents > 0 ? `Push to Terminal (${fmtCents(balanceCents)})` : 'Push to Terminal');
   }
 
   /** After a request the busy button may be hidden, or was disabled: put focus back on a live control. */
@@ -1700,6 +1717,137 @@
         }
       }
     });
+  }
+
+  async function pushToTerminal() {
+    const b = payBooking();
+    const btn = $('#bkTerminalBtn');
+    if (!b || !btn || btn.disabled || terminalBusy || invoiceBusy) return;
+    const { balanceCents, cancelled } = st().balanceOf(b);
+    if (cancelled || payIsCancelled(b) || balanceCents <= 0) return;
+    const bookingId = b.id;
+    const token = payToken;
+
+    terminalBusy = true;
+    syncBillingControls();
+    try {
+      const res = await window.R59.bookingsApi.sendTerminalCheckout(bookingId, balanceCents);
+      if (totalsOf(res)) applyBillingTotals(findBooking(bookingId), totalsOf(res));
+      if (samePay(token, bookingId)) await refreshBilling({ quiet: true });
+      const checkoutStatus = res?.checkout?.status || res?.status || 'PENDING';
+      toast(`Terminal checkout sent (${fmtCents(balanceCents)}, ${checkoutStatus}).`, { type: 'success' });
+    } catch (err) {
+      const code = errCode(err);
+      if (code === 'BOOKING_CANCELLED') {
+        markPayCancelled(bookingId, token);
+      } else if (code === 'BALANCE_CHANGED') {
+        const cents = Number(errDetails(err)[0]?.balance_cents);
+        if (samePay(token, bookingId)) refreshBilling({ quiet: true });
+        toast(Number.isFinite(cents) ? `The balance changed to ${fmtCents(cents)}. Review and push again.` : err.message, { type: 'error' });
+        return;
+      } else if (samePay(token, bookingId) && err.status !== 401 && code !== 'SQUARE_NOT_CONFIGURED') {
+        refreshBilling({ quiet: true });
+      }
+      if (err.status !== 401) toast(`Couldn't push to terminal. ${err.message}`, { type: 'error' });
+    } finally {
+      terminalBusy = false;
+      if (samePay(token, bookingId)) syncBillingControls();
+    }
+  }
+
+  function openBookingGoogleCalendar() {
+    const b = payBooking() || findBooking(editingBookingId);
+    if (!b || !b.date) {
+      toast('Save a booking date before adding to Google Calendar.', { type: 'error' });
+      return;
+    }
+    const dateCompact = String(b.date).replace(/-/g, '');
+    const start24 = startOf(b) || '09:00';
+    let end24 = to24(b.end_time);
+    if (!end24) {
+      const [h, m] = start24.split(':').map(Number);
+      const totalMin = (Number.isFinite(h) ? h : 9) * 60 + (Number.isFinite(m) ? m : 0) + 60;
+      const eh = String(Math.floor(totalMin / 60) % 24).padStart(2, '0');
+      const em = String(totalMin % 60).padStart(2, '0');
+      end24 = `${eh}:${em}`;
+    }
+    const startCompact = `${dateCompact}T${start24.replace(':', '')}00`;
+    const endCompact = `${dateCompact}T${end24.replace(':', '')}00`;
+
+    const title = `R59 Media — ${b.customer || 'Session'}${b.package ? ` (${b.package})` : ''}`;
+    const details = [
+      b.id ? `Booking #${b.id}` : '',
+      b.customer ? `Client: ${b.customer}` : '',
+      b.email ? `Email: ${b.email}` : '',
+      b.phone ? `Phone: ${b.phone}` : '',
+      b.package ? `Package: ${b.package}` : '',
+      b.notes ? `Notes: ${b.notes}` : ''
+    ].filter(Boolean).join('\n');
+
+    const guests = ['r59mediatesting@gmail.com', String(b.email || '').trim()]
+      .filter(Boolean)
+      .map(encodeURIComponent)
+      .join(',');
+
+    const params = new URLSearchParams({
+      action: 'TEMPLATE',
+      text: title,
+      dates: `${startCompact}/${endCompact}`,
+      details
+    });
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) params.set('ctz', tz);
+
+    const url = `https://calendar.google.com/calendar/render?${params.toString()}&add=${guests}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  async function syncGoogleCalendar() {
+    const btn = $('#syncGcalBtn');
+    if (btn && btn.disabled) return;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Syncing…';
+    }
+    try {
+      const cfg = await window.R59.bookingsApi.fetchCalendarFeedConfig();
+      const feedUrl = String(cfg?.feedUrl || cfg?.icsUrl || cfg?.url || '').trim();
+      const subscribeUrl = String(
+        cfg?.googleCalendarSubscribeUrl ||
+        (feedUrl ? `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(feedUrl.replace(/^https?:\/\//i, 'webcal://'))}` : '')
+      ).trim();
+
+      let copied = false;
+      if (feedUrl && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(feedUrl);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+
+      if (subscribeUrl) {
+        window.open(subscribeUrl, '_blank', 'noopener,noreferrer');
+      }
+
+      if (copied && subscribeUrl) {
+        toast('Live .ics feed URL copied. Subscribe in Google Calendar for r59mediatesting@gmail.com in the opened tab.', { type: 'success' });
+      } else if (copied) {
+        toast('Live .ics feed URL copied. In Google Calendar (r59mediatesting@gmail.com), choose Other calendars -> From URL.', { type: 'success' });
+      } else if (subscribeUrl) {
+        toast('Opened Google Calendar subscription for r59mediatesting@gmail.com.', { type: 'success' });
+      } else {
+        toast('Calendar feed configuration did not return a feed URL.', { type: 'error' });
+      }
+    } catch (err) {
+      if (err.status !== 401) toast(`Couldn't sync Google Calendar. ${err.message}`, { type: 'error' });
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Sync Google Calendar';
+      }
+    }
   }
 
   function cancelInvoice() {
@@ -1925,6 +2073,8 @@
       if ((el = target.closest('#chargeAdd'))) { e.preventDefault(); addCharge(); return; }
       if ((el = target.closest('[data-remove-charge]'))) { e.preventDefault(); if (!el.disabled) promptRemoveCharge(el.dataset.removeCharge); return; }
       if ((el = target.closest('#invoiceSend'))) { e.preventDefault(); sendInvoice(); return; }
+      if ((el = target.closest('#bkTerminalBtn'))) { e.preventDefault(); pushToTerminal(); return; }
+      if ((el = target.closest('#bkGoogleCalBtn'))) { e.preventDefault(); openBookingGoogleCalendar(); return; }
       if ((el = target.closest('#invoiceCheck'))) { e.preventDefault(); checkInvoice(); return; }
       if ((el = target.closest('#invoiceCancel'))) { e.preventDefault(); cancelInvoice(); }
     });
@@ -2372,6 +2522,7 @@
     });
     $('#calPrev')?.addEventListener('click', e => { e.preventDefault(); moveCalendar(-1); });
     $('#calNext')?.addEventListener('click', e => { e.preventDefault(); moveCalendar(1); });
+    $('#syncGcalBtn')?.addEventListener('click', e => { e.preventDefault(); syncGoogleCalendar(); });
 
     $('#btnBlockDate')?.addEventListener('click', addBlockedDate);
     $('#blockDateInput')?.addEventListener('input', e => {

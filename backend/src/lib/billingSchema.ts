@@ -87,6 +87,18 @@ export async function ensurePhotoPermissionsColumns(db: any): Promise<void> {
     if (!existing.has('photo_permission_version')) {
       statements.push("ALTER TABLE Bookings ADD COLUMN photo_permission_version TEXT DEFAULT 'v1'")
     }
+    if (!existing.has('event_location')) {
+      statements.push('ALTER TABLE Bookings ADD COLUMN event_location TEXT')
+    }
+    if (!existing.has('agreement_signed_name')) {
+      statements.push('ALTER TABLE Bookings ADD COLUMN agreement_signed_name TEXT')
+    }
+    if (!existing.has('agreement_signed_at')) {
+      statements.push('ALTER TABLE Bookings ADD COLUMN agreement_signed_at TEXT')
+    }
+    if (!existing.has('applied_fees_json')) {
+      statements.push('ALTER TABLE Bookings ADD COLUMN applied_fees_json TEXT')
+    }
 
     for (const sql of statements) {
       await db.prepare(sql).run()
