@@ -43,6 +43,12 @@ button:disabled { cursor: not-allowed; }
   pointer-events: none;
   user-select: none;
   -webkit-user-drag: none;
+  opacity: 0;
+  transition: opacity 0.24s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.protected-canvas.is-loaded {
+  opacity: 1;
 }
 
 .media-shield,
