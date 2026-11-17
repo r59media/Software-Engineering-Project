@@ -8,9 +8,8 @@ import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
-import type { BookingReviewDraft, BookingService } from './types/booking'
+import type { BookingService } from './types/booking'
 import type { ContactInquiry } from './types/contact'
-import { DepositCheckoutModal } from './sections/booking/DepositCheckoutModal'
 
 const AboutToRecent = lazy(() => import('./sections/transition/AboutToRecent').then(m => ({ default: m.AboutToRecent })))
 const ContactSection = lazy(() => import('./sections/contact/ContactSection').then(m => ({ default: m.ContactSection })))
@@ -24,7 +23,6 @@ function App() {
   const [bookingServices, setBookingServices] = useState<readonly BookingService[]>(previewBookingServices)
   const [pricing, setPricing] = useState<PricingData | null>(null)
   const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
-  const [depositDraft, setDepositDraft] = useState<BookingReviewDraft | null>(null)
   const baseUrl = import.meta.env.BASE_URL
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
   const cleanBase = baseUrl.replace(/\/$/, '')
@@ -234,7 +232,6 @@ function App() {
           status={bookingStatus}
           onRetry={loadBookingServices}
           inquiryHref="#contact"
-          onProceedToDeposit={draft => setDepositDraft(draft)}
         />
       </Suspense>
       <Suspense fallback={null}>
@@ -245,13 +242,6 @@ function App() {
       </Suspense>
     </main>
     <SiteFooter />
-    {depositDraft && (
-      <DepositCheckoutModal
-        draft={depositDraft}
-        service={bookingServices.find(s => s.id === depositDraft.serviceId) || null}
-        onClose={() => setDepositDraft(null)}
-      />
-    )}
   </div>
 }
 

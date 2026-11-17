@@ -1,0 +1,488 @@
+.booking-deposit {
+  position: relative;
+  width: 100%;
+}
+
+.booking-deposit__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.booking-deposit__header h2 {
+  font-family: var(--font-title);
+  font-size: clamp(24px, 3.4vw, 48px);
+  margin: 0;
+  line-height: 1.05;
+}
+
+.booking-deposit__subtitle {
+  margin: 0 0 4px 0;
+  color: var(--color-gray);
+  font-size: 15px;
+}
+
+.booking-deposit .booking-progress {
+  margin-block: 16px 24px;
+}
+
+.booking-deposit__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: clamp(24px, 4vw, 48px);
+  align-items: start;
+}
+
+/* Payment Panel (Left) */
+.booking-deposit__panel {
+  background: var(--color-white);
+  border-radius: 12px;
+  padding: clamp(24px, 3.5vw, 36px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+}
+
+.booking-deposit__panel-title {
+  font-family: var(--font-title);
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 0 6px 0;
+  color: var(--color-brand-black);
+}
+
+.booking-deposit__security-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: #15803d;
+  background: rgba(34, 197, 94, 0.1);
+  padding: 4px 10px;
+  border-radius: 999px;
+  margin-bottom: 20px;
+  font-weight: 600;
+}
+
+.booking-deposit__security-badge svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* Coupon block */
+.booking-deposit__coupon-block {
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--color-black-10);
+}
+
+.booking-deposit__coupon-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-brand-black);
+  margin-bottom: 6px;
+}
+
+.booking-deposit__coupon-row {
+  display: flex;
+  gap: 8px;
+}
+
+.booking-deposit__coupon-input {
+  flex: 1;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-black-30, #ccc);
+  border-radius: var(--radius-control);
+  font-family: var(--font-body);
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.booking-deposit__coupon-input:focus-visible {
+  outline: 2px solid var(--color-brand-red);
+  outline-offset: 2px;
+}
+
+.booking-deposit__coupon-btn {
+  padding: 8px 18px;
+  min-height: 44px;
+  background: var(--color-brand-black);
+  color: var(--color-brand-white);
+  border: none;
+  border-radius: var(--radius-control);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
+.booking-deposit__coupon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.booking-deposit__coupon-success {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: #ecfdf5;
+  color: #065f46;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.booking-deposit__coupon-remove {
+  background: transparent;
+  border: none;
+  color: #065f46;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.booking-deposit__coupon-error {
+  color: var(--color-brand-red);
+  font-size: 13px;
+  margin: 6px 0 0 0;
+}
+
+/* Payment Form Fields */
+.booking-deposit__payment-section {
+  margin-bottom: 24px;
+}
+
+.booking-deposit__payment-label {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--color-brand-black);
+  margin-bottom: 8px;
+}
+
+.booking-deposit__card-container {
+  min-height: 88px;
+  padding: 12px;
+  border: 1px solid var(--color-black-30, #ccc);
+  border-radius: var(--radius-control);
+  background: var(--color-white);
+  transition: border-color 0.2s ease;
+}
+
+.booking-deposit__card-container:focus-within {
+  border-color: var(--color-brand-red);
+}
+
+.booking-deposit__loading-text {
+  font-size: 13px;
+  color: var(--color-gray);
+  margin: 8px 0 0;
+}
+
+/* Simulated test card form (for local dev when Square SDK keys are not set) */
+.booking-deposit__test-card-box {
+  background: #fbfbfb;
+  border: 1px dashed var(--color-black-30, #ccc);
+  border-radius: var(--radius-control);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.booking-deposit__test-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: var(--color-brand-yellow);
+  color: var(--color-brand-black);
+  padding: 2px 8px;
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+.booking-deposit__test-inputs-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 8px;
+}
+
+.booking-deposit__test-input {
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-black-30, #ccc);
+  border-radius: 6px;
+  font-family: var(--font-body);
+  font-size: 13.5px;
+}
+
+.booking-deposit__compliance-note {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-gray);
+  margin: 14px 0 0 0;
+}
+
+.booking-deposit__error {
+  color: var(--color-brand-red);
+  font-size: 14px;
+  margin: 14px 0 0 0;
+  font-weight: 500;
+}
+
+.booking-deposit__actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.booking-deposit__back-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-brand-black);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding: 8px 0;
+  min-height: 44px;
+}
+
+.booking-deposit__submit-btn {
+  flex: 1;
+  min-height: 52px;
+  padding: 12px 24px;
+  background: var(--color-brand-red);
+  color: var(--color-brand-white);
+  border: none;
+  border-radius: var(--radius-control);
+  font-family: var(--font-body);
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.2s ease, opacity 0.2s ease;
+}
+
+.booking-deposit__submit-btn:disabled {
+  background: var(--color-black-10);
+  color: var(--color-gray);
+  cursor: not-allowed;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .booking-deposit__submit-btn:hover:not(:disabled) {
+    background: var(--color-brand-black);
+  }
+}
+
+/* Sidebar Ticket (Right) */
+.booking-deposit__summary-ticket {
+  background: var(--color-white);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+  position: relative;
+}
+
+.booking-deposit__summary-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid var(--color-black-10);
+}
+
+.booking-deposit__summary-heading h3 {
+  font-family: var(--font-title);
+  font-size: 20px;
+  margin: 0;
+}
+
+.booking-deposit__summary-logo {
+  width: 72px;
+  height: auto;
+}
+
+.booking-deposit__summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 14px;
+}
+
+.booking-deposit__summary-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-gray);
+}
+
+.booking-deposit__summary-val {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-brand-black);
+}
+
+.booking-deposit__summary-sub {
+  font-size: 13px;
+  color: var(--color-gray);
+}
+
+.booking-deposit__pricing-card {
+  background: var(--color-brand-black);
+  color: var(--color-brand-white);
+  border-radius: var(--radius-control);
+  padding: 16px 20px;
+  margin-top: 20px;
+}
+
+.booking-deposit__pricing-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13.5px;
+  margin-bottom: 8px;
+}
+
+.booking-deposit__pricing-row--total {
+  font-size: 15px;
+  font-weight: 700;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.booking-deposit__pricing-row--due {
+  margin-top: 10px;
+  margin-bottom: 4px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.booking-deposit__due-badge {
+  background: var(--color-brand-yellow);
+  color: var(--color-brand-black);
+  font-size: 11px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.booking-deposit__pricing-note {
+  font-size: 11.5px;
+  color: var(--color-text-muted, #9ca3af);
+  margin: 6px 0 0 0;
+  line-height: 1.35;
+}
+
+/* Success Confirmation Screen */
+.booking-deposit__success-card {
+  background: var(--color-white);
+  border-radius: 12px;
+  padding: clamp(32px, 5vw, 54px);
+  max-width: 680px;
+  margin: 0 auto;
+  text-align: center;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+.booking-deposit__success-icon {
+  width: 64px;
+  height: 64px;
+  background: var(--color-brand-yellow);
+  color: var(--color-brand-black);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  font-weight: 900;
+  margin: 0 auto 18px;
+}
+
+.booking-deposit__success-title {
+  font-family: var(--font-title);
+  font-size: clamp(28px, 4vw, 36px);
+  margin: 0 0 8px 0;
+  font-weight: 700;
+}
+
+.booking-deposit__success-ref {
+  display: inline-block;
+  background: var(--color-brand-black);
+  color: var(--color-brand-white);
+  font-family: var(--font-title);
+  font-size: 14px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 999px;
+  margin-bottom: 20px;
+  letter-spacing: 0.05em;
+}
+
+.booking-deposit__success-text {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--color-gray);
+  max-width: 480px;
+  margin: 0 auto 24px;
+}
+
+.booking-deposit__success-details {
+  background: #f9f9f9;
+  border-radius: 8px;
+  padding: 18px 24px;
+  text-align: left;
+  margin-bottom: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.booking-deposit__success-btn {
+  min-height: 48px;
+  padding: 12px 28px;
+  background: var(--color-brand-black);
+  color: var(--color-brand-white);
+  border: none;
+  border-radius: var(--radius-control);
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.booking-deposit__success-btn:hover {
+  background: var(--color-brand-red);
+}
+
+/* Responsive adjustments */
+@media (max-width: 900px) {
+  .booking-deposit__layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .booking-deposit__summary-ticket {
+    order: -1;
+  }
+}

@@ -15,6 +15,7 @@ import { BookingDateTime } from './BookingDateTime'
 import { validateBookingInfo } from './bookingValidation'
 import { BookingYourInfo } from './BookingYourInfo'
 import { BookingSummary } from './BookingSummary'
+import { BookingDeposit } from './BookingDeposit'
 import './BookingSection.css'
 
 export function BookingSection(props: BookingSectionProps) {
@@ -63,6 +64,14 @@ function BookingStage({ children, stage, movement }: { children: ReactNode; stag
   )
 }
 
+const STEP_ORDER: Record<BookingStep, number> = {
+  services: 0,
+  datetime: 1,
+  info: 2,
+  summary: 3,
+  deposit: 4,
+}
+
 function BookingFlow({
   services = previewBookingServices,
   pricing = null,
@@ -75,7 +84,7 @@ function BookingFlow({
   const setStep = (next: BookingStep) => setStage(previous => {
     const from = previous.step
     const panelsOnly = (from === 'datetime' && next === 'info') || (from === 'info' && next === 'datetime')
-    const direction = panelsOnly ? (next === 'info' ? 1 : -1) : (from === 'summary' ? 1 : -1)
+    const direction = panelsOnly ? (next === 'info' ? 1 : -1) : (STEP_ORDER[next] < STEP_ORDER[from] ? 1 : -1)
     return { step: next, movement: { direction, panelsOnly } }
   })
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null)
@@ -101,7 +110,7 @@ function BookingFlow({
     effectiveStep = 'services'
   } else if (step === 'info' && (!selectedServiceId || !dateTime)) {
     effectiveStep = selectedServiceId ? 'datetime' : 'services'
-  } else if (step === 'summary' && (!selectedServiceId || !dateTime || !customerInfo)) {
+  } else if ((step === 'summary' || step === 'deposit') && (!selectedServiceId || !dateTime || !customerInfo)) {
     effectiveStep = 'services'
   }
 
@@ -188,6 +197,33 @@ function BookingFlow({
     )
   }
 
+  if (effectiveStep === 'deposit' && selectedService && dateTime && customerInfo) {
+    return (
+      <BookingStage movement={movement} stage="deposit">
+        <section id="booking" className="booking" aria-labelledby="booking-title">
+          <div className="booking__inner">
+            <BookingDeposit
+              service={selectedService}
+              people={attendees}
+              pricing={pricing}
+              dateTime={dateTime}
+              customerInfo={customerInfo}
+              photoPermissions={photoPermissions}
+              onBack={() => {
+                setStep('summary')
+                document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+              }}
+              onEdit={nextStep => {
+                setStep(nextStep)
+                document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+              }}
+            />
+          </div>
+        </section>
+      </BookingStage>
+    )
+  }
+
   return (
     <BookingStage movement={movement} stage="summary"><section id="booking" className="booking" aria-labelledby="booking-title">
       <div className="booking__inner">
@@ -203,7 +239,11 @@ function BookingFlow({
             setStep(nextStep)
             document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
           }}
-          onProceedToDeposit={onProceedToDeposit}
+          onProceedToDeposit={draft => {
+            onProceedToDeposit?.(draft)
+            setStep('deposit')
+            document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+          }}
         />}
       </div>
     </section></BookingStage>
