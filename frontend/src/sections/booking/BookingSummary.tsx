@@ -86,7 +86,7 @@ export function BookingSummary({ service, people, pricing = null, dateTime, cust
       </fieldset>
       <footer className="booking-review__footer">
         <div className="booking-review__price">
-          <span>SESSION TOTAL</span>
+          <span className="booking-review__total-label">SESSION TOTAL</span>
           <strong>{price}</strong>
           <div className="booking-review__deposit-block">
             <div className="booking-review__deposit-badge-row">
