@@ -21,7 +21,7 @@ export interface BookingTimeSlotsProps {
 }
 
 function normalizeSlots(rawSlots?: readonly string[] | readonly TimeSlotItem[]): TimeSlotItem[] {
-  if (!rawSlots) {
+  if (!rawSlots || rawSlots.length === 0) {
     return [...previewBookingTimeSlots]
   }
 
@@ -97,46 +97,56 @@ export function BookingTimeSlots({
 
       <div className="booking-time-slots__groups">
         {/* Morning */}
-        <div className="booking-time-slots__group">
-          <div className="booking-time-slots__group-heading">In the morning:</div>
-          <div className="booking-time-slots__grid" role="group" aria-label="Morning time slots">
-            {morningSlots.map(slot => {
-              const isSelected = selectedSlot === slot.time
-              return (
-                <button
-                  key={slot.id !== undefined ? `slot-${slot.id}` : slot.time}
-                  type="button"
-                  className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
-                  aria-pressed={isSelected}
-                  onClick={() => onSelectSlot(slot.time, slot.id)}
-                >
-                  {slot.time}
-                </button>
-              )
-            })}
+        {morningSlots.length > 0 && (
+          <div className="booking-time-slots__group">
+            <div className="booking-time-slots__group-heading">In the morning:</div>
+            <div className="booking-time-slots__grid" role="group" aria-label="Morning time slots">
+              {morningSlots.map(slot => {
+                const isSelected = selectedSlot === slot.time
+                return (
+                  <button
+                    key={slot.id !== undefined ? `slot-${slot.id}` : slot.time}
+                    type="button"
+                    className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
+                    aria-pressed={isSelected}
+                    onClick={() => onSelectSlot(slot.time, slot.id)}
+                  >
+                    {slot.time}
+                  </button>
+                )
+              })}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Afternoon */}
-        <div className="booking-time-slots__group">
-          <div className="booking-time-slots__group-heading">In the afternoon:</div>
-          <div className="booking-time-slots__grid" role="group" aria-label="Afternoon time slots">
-            {afternoonSlots.map(slot => {
-              const isSelected = selectedSlot === slot.time
-              return (
-                <button
-                  key={slot.id !== undefined ? `slot-${slot.id}` : slot.time}
-                  type="button"
-                  className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
-                  aria-pressed={isSelected}
-                  onClick={() => onSelectSlot(slot.time, slot.id)}
-                >
-                  {slot.time}
-                </button>
-              )
-            })}
+        {afternoonSlots.length > 0 && (
+          <div className="booking-time-slots__group">
+            <div className="booking-time-slots__group-heading">In the afternoon:</div>
+            <div className="booking-time-slots__grid" role="group" aria-label="Afternoon time slots">
+              {afternoonSlots.map(slot => {
+                const isSelected = selectedSlot === slot.time
+                return (
+                  <button
+                    key={slot.id !== undefined ? `slot-${slot.id}` : slot.time}
+                    type="button"
+                    className={`booking-time-slot-btn ${isSelected ? 'booking-time-slot-btn--selected' : ''}`}
+                    aria-pressed={isSelected}
+                    onClick={() => onSelectSlot(slot.time, slot.id)}
+                  >
+                    {slot.time}
+                  </button>
+                )
+              })}
+            </div>
           </div>
-        </div>
+        )}
+
+        {morningSlots.length === 0 && afternoonSlots.length === 0 && (
+          <div className="booking-time-slots__empty">
+            No appointment times available for this date.
+          </div>
+        )}
       </div>
 
       <footer className="booking-time-slots__footer">

@@ -108,7 +108,7 @@ export function BookingDateTime({
 
   const daySlots: TimeSlotItem[] = useMemo(() => {
     const matched = scheduleSlots.filter(s => s.date === currentDate && s.is_booked === 0)
-    if (matched.length > 0 || slotsLoadedFromApi) {
+    if (matched.length > 0) {
       return matched.map(slot => {
         const formatted = formatSlotTime(slot.start_time)
         const hour = parseInt(slot.start_time.split(':')[0], 10)
@@ -121,7 +121,11 @@ export function BookingDateTime({
       })
     }
 
-    return [...previewBookingTimeSlots]
+    if (!slotsLoadedFromApi || scheduleSlots.length === 0) {
+      return [...previewBookingTimeSlots]
+    }
+
+    return []
   }, [scheduleSlots, slotsLoadedFromApi, currentDate])
 
   const resolveSlotId = (date: string, time: string | null): number | undefined => {

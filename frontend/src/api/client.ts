@@ -317,9 +317,9 @@ export async function fetchServices(signal?: AbortSignal): Promise<ServicePackag
   return Array.isArray(items) ? items : []
 }
 
-export async function fetchAvailableSlots(signal?: AbortSignal): Promise<ScheduleSlotItem[]> {
+export async function fetchAvailableSlots(signal?: AbortSignal): Promise<ScheduleSlotItem[] | null> {
   const items = await apiGet<ScheduleSlotItem[]>('/schedule', signal)
-  return Array.isArray(items) ? items : []
+  return Array.isArray(items) ? items : null
 }
 
 export async function submitContactLead(payload: ContactLeadPayload): Promise<ApiResponse<{ id?: number }>> {

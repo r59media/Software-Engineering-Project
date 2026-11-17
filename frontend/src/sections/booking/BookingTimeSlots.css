@@ -48,6 +48,14 @@
   margin: 4px 0 4px 0;
 }
 
+.booking-time-slots__empty {
+  padding: 24px 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--color-gray);
+  text-align: center;
+}
+
 .booking-time-slots__grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
