@@ -113,7 +113,12 @@ function LensModel({ url, aperture, transition }: LensProps) {
 export default function LensScene({ url, aperture, transition }: LensProps) {
   return <Canvas
     className="about__lens-canvas"
-    onCreated={({ gl }) => { gl.domElement.addEventListener('webglcontextlost', () => transition?.fail(), { once: true }) }}
+    onCreated={({ gl }) => {
+      gl.domElement.addEventListener('webglcontextlost', event => {
+        event.preventDefault()
+        transition?.fail()
+      }, { once: true })
+    }}
     frameloop="demand"
     resize={{ offsetSize: true }}
     camera={aboutLens.camera}

@@ -183,6 +183,29 @@ async function evaluateMediaAuthorization(c: Context<{ Bindings: Bindings }>, fi
     return true
   }
 
+  // Allow same-origin non-document subresource requests for static build/model assets
+  if (!isApiMedia && (pathname.startsWith('/assets/') || pathname.startsWith('/models/'))) {
+    const fetchDest = c.req.header('Sec-Fetch-Dest')
+    const fetchSite = c.req.header('Sec-Fetch-Site')
+    if (fetchDest !== 'document') {
+      if (fetchSite === 'same-origin') {
+        return true
+      }
+      if (!fetchSite) {
+        const referer = c.req.header('Referer')
+        if (referer) {
+          try {
+            if (new URL(referer).origin === new URL(c.req.url).origin) {
+              return true
+            }
+          } catch {
+            // Ignore malformed Referer header
+          }
+        }
+      }
+    }
+  }
+
   const { token } = extractSessionToken(c)
   if (token) {
     const secret = getSigningSecret(c.env)

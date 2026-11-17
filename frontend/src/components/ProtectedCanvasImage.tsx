@@ -14,12 +14,22 @@ export interface ProtectedCanvasImageProps {
   onLoad?: () => void
 }
 
+type DrawableSource = ImageBitmap | HTMLImageElement
+
 const MAX_BLOB_CACHE_ENTRIES = 100
-const MAX_BITMAP_CACHE_ENTRIES = 48
+const MAX_DRAWABLE_CACHE_ENTRIES = 24
+const MAX_CANVAS_DIMENSION = 2048
 const blobCache = new Map<string, Blob>()
-const bitmapCache = new Map<string, ImageBitmap>()
+const drawableCache = new Map<string, DrawableSource>()
 const inFlightFetches = new Map<string, Promise<Blob>>()
-const inFlightDecodes = new Map<string, Promise<ImageBitmap>>()
+const inFlightDecodes = new Map<string, Promise<DrawableSource>>()
+
+function getDrawableDimensions(source: DrawableSource): { width: number; height: number } {
+  if ('naturalWidth' in source) {
+    return { width: source.naturalWidth, height: source.naturalHeight }
+  }
+  return { width: source.width, height: source.height }
+}
 
 function cacheBlob(src: string, blob: Blob) {
   if (blobCache.has(src)) {
@@ -33,29 +43,30 @@ function cacheBlob(src: string, blob: Blob) {
   blobCache.set(src, blob)
 }
 
-function cacheBitmap(src: string, bitmap: ImageBitmap) {
-  if (bitmapCache.has(src)) {
-    bitmapCache.delete(src)
-  } else if (bitmapCache.size >= MAX_BITMAP_CACHE_ENTRIES) {
-    const oldestKey = bitmapCache.keys().next().value
+function cacheDrawable(src: string, source: DrawableSource) {
+  if (drawableCache.has(src)) {
+    drawableCache.delete(src)
+  } else if (drawableCache.size >= MAX_DRAWABLE_CACHE_ENTRIES) {
+    const oldestKey = drawableCache.keys().next().value
     if (oldestKey !== undefined) {
       // Evict without calling .close() so any in-flight/queued drawImage doesn't hit InvalidStateError
-      bitmapCache.delete(oldestKey)
+      drawableCache.delete(oldestKey)
     }
   }
-  bitmapCache.set(src, bitmap)
+  drawableCache.set(src, source)
 }
 
-function getCachedBitmap(src: string): ImageBitmap | undefined {
-  const cached = bitmapCache.get(src)
+function getCachedDrawable(src: string): DrawableSource | undefined {
+  const cached = drawableCache.get(src)
   if (!cached) return undefined
-  if (cached.width === 0 || cached.height === 0) {
-    bitmapCache.delete(src)
+  const { width, height } = getDrawableDimensions(cached)
+  if (width === 0 || height === 0) {
+    drawableCache.delete(src)
     return undefined
   }
   // Refresh LRU order on read
-  bitmapCache.delete(src)
-  bitmapCache.set(src, cached)
+  drawableCache.delete(src)
+  drawableCache.set(src, cached)
   return cached
 }
 
@@ -93,9 +104,13 @@ function fetchProtectedBlob(src: string): Promise<Blob> {
   return request
 }
 
-async function decodeBlobToBitmap(blob: Blob): Promise<ImageBitmap> {
+async function decodeBlobToDrawable(blob: Blob): Promise<DrawableSource> {
   if (typeof createImageBitmap === 'function') {
-    return createImageBitmap(blob)
+    try {
+      return await createImageBitmap(blob)
+    } catch {
+      // Fall back to decoded HTMLImageElement when createImageBitmap fails
+    }
   }
   const img = new Image()
   const blobUrl = URL.createObjectURL(blob)
@@ -105,14 +120,17 @@ async function decodeBlobToBitmap(blob: Blob): Promise<ImageBitmap> {
       img.onerror = () => reject(new Error('Failed to load image'))
       img.src = blobUrl
     })
-    return await createImageBitmap(img)
+    if (typeof img.decode === 'function') {
+      await img.decode().catch(() => undefined)
+    }
+    return img
   } finally {
     URL.revokeObjectURL(blobUrl)
   }
 }
 
-async function getOrDecodeBitmap(src: string): Promise<ImageBitmap> {
-  const cached = getCachedBitmap(src)
+async function getOrDecodeDrawable(src: string): Promise<DrawableSource> {
+  const cached = getCachedDrawable(src)
   if (cached) return cached
 
   const inFlight = inFlightDecodes.get(src)
@@ -120,12 +138,12 @@ async function getOrDecodeBitmap(src: string): Promise<ImageBitmap> {
 
   const decodePromise = (async () => {
     const blob = await fetchProtectedBlob(src)
-    const rechecked = getCachedBitmap(src)
+    const rechecked = getCachedDrawable(src)
     if (rechecked) return rechecked
 
-    const bitmap = await decodeBlobToBitmap(blob)
-    cacheBitmap(src, bitmap)
-    return bitmap
+    const drawable = await decodeBlobToDrawable(blob)
+    cacheDrawable(src, drawable)
+    return drawable
   })().finally(() => {
     inFlightDecodes.delete(src)
   })
@@ -138,24 +156,28 @@ async function getOrDecodeBitmap(src: string): Promise<ImageBitmap> {
 export async function preloadProtectedImage(src: string): Promise<void> {
   if (!src) return
   try {
-    await getOrDecodeBitmap(src)
+    await getOrDecodeDrawable(src)
   } catch {
     // Ignore preload failures; component mount will handle/report errors if needed
   }
 }
 
-function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): boolean {
-  if (bitmap.width === 0 || bitmap.height === 0) {
+function drawDrawableToCanvas(canvas: HTMLCanvasElement, source: DrawableSource): boolean {
+  const { width: srcW, height: srcH } = getDrawableDimensions(source)
+  if (srcW === 0 || srcH === 0) {
     return false
   }
-  if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-    canvas.width = bitmap.width
-    canvas.height = bitmap.height
+  const scale = Math.min(1, MAX_CANVAS_DIMENSION / Math.max(srcW, srcH))
+  const targetW = Math.max(1, Math.round(srcW * scale))
+  const targetH = Math.max(1, Math.round(srcH * scale))
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW
+    canvas.height = targetH
   }
   const ctx = canvas.getContext('2d')
   if (ctx) {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(bitmap, 0, 0)
+    ctx.drawImage(source, 0, 0, targetW, targetH)
     return true
   }
   return false
@@ -186,9 +208,9 @@ export function ProtectedCanvasImage({
     onLoadRef.current = onLoad
   }, [onLoad])
 
-  const [loadedSrc, setLoadedSrc] = useState<string | null>(() => (src && (bitmapCache.has(src) || blobCache.has(src)) ? src : null))
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(() => (src && (drawableCache.has(src) || blobCache.has(src)) ? src : null))
   const [errorSrc, setErrorSrc] = useState<string | null>(null)
-  const isLoaded = Boolean(src) && (loadedSrc === src || bitmapCache.has(src) || blobCache.has(src))
+  const isLoaded = Boolean(src) && (loadedSrc === src || drawableCache.has(src) || blobCache.has(src))
   const hasError = Boolean(src && errorSrc === src)
 
   useEffect(() => {
@@ -200,19 +222,21 @@ export function ProtectedCanvasImage({
     let rafId: number | null = null
     let started = false
 
-    const renderBitmap = (bitmap: ImageBitmap) => {
+    const renderDrawable = (source: DrawableSource) => {
       if (signal.aborted) return
       const canvas = canvasRef.current
       if (!canvas) return
       try {
-        if (drawBitmapToCanvas(canvas, bitmap)) {
+        if (drawDrawableToCanvas(canvas, source)) {
           setLoadedSrc(src)
           onLoadRef.current?.()
         }
       } catch (err) {
-        if (bitmapCache.get(src) === bitmap) {
-          bitmapCache.delete(src)
-          bitmap.close?.()
+        if (drawableCache.get(src) === source) {
+          drawableCache.delete(src)
+          if ('close' in source && typeof source.close === 'function') {
+            source.close()
+          }
         }
         throw err
       }
@@ -223,19 +247,19 @@ export function ProtectedCanvasImage({
       started = true
 
       try {
-        const cachedBitmap = getCachedBitmap(src)
-        if (cachedBitmap) {
-          renderBitmap(cachedBitmap)
+        const cachedDrawable = getCachedDrawable(src)
+        if (cachedDrawable) {
+          renderDrawable(cachedDrawable)
           return
         }
 
-        const bitmap = await getOrDecodeBitmap(src)
+        const drawable = await getOrDecodeDrawable(src)
         if (signal.aborted) return
 
         rafId = requestAnimationFrame(() => {
           rafId = null
           try {
-            renderBitmap(bitmap)
+            renderDrawable(drawable)
           } catch (err: unknown) {
             if (signal.aborted) return
             console.error('ProtectedCanvasImage load error:', err)
@@ -254,7 +278,7 @@ export function ProtectedCanvasImage({
     }
 
     const canvas = canvasRef.current
-    if (eager || bitmapCache.has(src) || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
+    if (eager || drawableCache.has(src) || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
       void loadImage()
     } else {
       observer = new IntersectionObserver(

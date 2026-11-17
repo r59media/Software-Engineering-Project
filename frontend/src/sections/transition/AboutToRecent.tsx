@@ -131,8 +131,9 @@ export function AboutToRecent() {
 
     const calculateTarget = () => {
       if (document.body.style.position === 'fixed') return targetProgress
-      if (window.scrollY >= start + distance - 1) return 1
-      return clamp((window.scrollY - start) / distance)
+      const scrollY = Math.max(0, window.scrollY)
+      if (scrollY >= start + distance - 1) return 1
+      return clamp((scrollY - start) / distance)
     }
 
     const applyProgress = (progress: number) => {
@@ -251,8 +252,9 @@ export function AboutToRecent() {
     const trackPointer = () => { keyboardNavigation = false }
     const focusRecent = (event: FocusEvent) => {
       // Keyboard users should see the entire focused control; pointer focus must not move it.
+      const scrollY = Math.max(0, window.scrollY)
       if (keyboardNavigation && event.target instanceof HTMLElement &&
-          document.body.style.position !== 'fixed' && window.scrollY < start + distance - 1) {
+          document.body.style.position !== 'fixed' && scrollY < start + distance - 1) {
         window.scrollTo({ top: start + distance, behavior: 'instant' })
       }
     }
