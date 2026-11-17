@@ -1,6 +1,6 @@
 .hero { --site-header-height: 7rem; display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .hero__stage { position: relative; isolation: isolate; min-height: 33rem; flex: 1; display: flex; align-items: center; }
-.hero__background { position: absolute; inset: 0; z-index: -1; overflow: hidden; }
+.hero__background { position: absolute; inset: 0; z-index: -1; overflow: hidden; background-color: var(--color-brand-black, #0c0c0c); }
 .hero__preload { position: absolute; inset: 0; visibility: hidden; }
 .hero__slide, .hero__media { position: absolute; inset: 0; }
 .hero__image,

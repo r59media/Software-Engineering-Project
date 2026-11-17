@@ -4,7 +4,6 @@ import { fetchBookingServices, fetchHeroSlides, fetchPricing, submitContactLead,
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
 import { previewBookingServices } from './config/booking'
-import { AboutToRecent } from './sections/transition/AboutToRecent'
 import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
@@ -13,6 +12,7 @@ import type { BookingReviewDraft, BookingService } from './types/booking'
 import type { ContactInquiry } from './types/contact'
 import { DepositCheckoutModal } from './sections/booking/DepositCheckoutModal'
 
+const AboutToRecent = lazy(() => import('./sections/transition/AboutToRecent').then(m => ({ default: m.AboutToRecent })))
 const ContactSection = lazy(() => import('./sections/contact/ContactSection').then(m => ({ default: m.ContactSection })))
 const BookingSection = lazy(() => import('./sections/booking/BookingSection').then(m => ({ default: m.BookingSection })))
 const LegalPage = lazy(() => import('./pages/legal/LegalPage').then(m => ({ default: m.LegalPage })))
@@ -223,7 +223,9 @@ function App() {
       <div className="site-intro">
         <Hero slides={slides} destinations={heroDestinations} />
       </div>
-      <AboutToRecent />
+      <Suspense fallback={<div className="about-transition-placeholder" style={{ minHeight: '100vh' }} />}>
+        <AboutToRecent />
+      </Suspense>
       <PortfolioGallery />
       <Suspense fallback={null}>
         <BookingSection
