@@ -1026,7 +1026,9 @@
     $('#bkLocation').value = b.location || '';
     $('#bkNotes').value = b.notes || '';
     $('#bkEmail').value = b.email || '';
-    $('#bkPhone').value = b.phone || '';
+    $('#bkPhone').value = window.R59.formValidation?.formatPhoneInput
+      ? window.R59.formValidation.formatPhoneInput(b.phone || '')
+      : (b.phone || '');
     $('#bkAttendees').value = b.attendees || '';
     $('#bkDate').value = b.date || '';
     $('#bkStart').value = startOf(b);
@@ -1811,7 +1813,7 @@
     }
     try {
       const cfg = await window.R59.bookingsApi.fetchCalendarFeedConfig();
-      const feedUrl = String(cfg?.feedUrl || cfg?.icsUrl || cfg?.url || '').trim();
+      const feedUrl = String(cfg?.icsFeedUrl || cfg?.feedUrl || cfg?.icsUrl || cfg?.url || '').trim();
       const subscribeUrl = String(
         cfg?.googleCalendarSubscribeUrl ||
         (feedUrl ? `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(feedUrl.replace(/^https?:\/\//i, 'webcal://'))}` : '')
@@ -2568,6 +2570,20 @@
     $('#bkCancel')?.addEventListener('click', closeBookingEditor);
     $('#bookingModal')?.addEventListener('click', e => {
       if (e.target.id === 'bookingModal') closeBookingEditor();
+    });
+
+    // Format booking phone inputs as (XXX) XXX-XXXX
+    ['#nbPhone', '#bkPhone'].forEach(sel => {
+      const el = $(sel);
+      if (!el) return;
+      el.setAttribute('maxlength', '14');
+      el.setAttribute('inputmode', 'numeric');
+      el.addEventListener('input', e => {
+        const fmt = window.R59.formValidation?.formatPhoneInput;
+        if (!fmt) return;
+        const formatted = fmt(e.target.value);
+        if (e.target.value !== formatted) e.target.value = formatted;
+      });
     });
 
     // Clear a field's invalid mark as soon as the admin edits it

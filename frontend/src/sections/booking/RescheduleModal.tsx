@@ -7,6 +7,7 @@ import {
 } from '../../api/client'
 import type { RescheduleSlotOption } from '../../types/booking'
 import { formatSlotTime, parseYMD } from './bookingUtils'
+import { formatPhoneInput } from '../../utils/phone'
 
 interface RescheduleModalProps {
   bookingId?: string | number
@@ -295,14 +296,16 @@ export function RescheduleModal({ bookingId, token, onClose }: RescheduleModalPr
                 <input
                   id="reschedule-verify-phone"
                   type="tel"
+                  inputMode="numeric"
+                  maxLength={14}
                   autoComplete="tel"
                   value={verifyPhone}
                   disabled={verifying}
                   onChange={e => {
-                    setVerifyPhone(e.target.value)
+                    setVerifyPhone(formatPhoneInput(e.target.value))
                     setVerifyError(null)
                   }}
-                  placeholder="(555) 123-4567"
+                  placeholder="(212) 555-0148"
                   style={{
                     width: '100%',
                     padding: '10px 12px',

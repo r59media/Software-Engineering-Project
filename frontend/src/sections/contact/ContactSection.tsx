@@ -11,6 +11,7 @@ import seal from '../../assets/aboutMeImages/kevin_Logo_IMG.webp'
 import { FormField, FormHeader } from '../../components/FormField'
 import '../../components/FormField.css'
 import './ContactSection.css'
+import { extractPhoneDigits, formatPhoneInput } from '../../utils/phone'
 
 type Field = 'name' | 'email' | 'phone' | 'message' | 'location' | 'eventDate'
 const limits = { name: 100, email: 254, phone: 30, message: 2000, location: 200 }
@@ -37,7 +38,7 @@ function validate(draft: ContactInquiry): Partial<Record<Field, string>> {
   const errors: Partial<Record<Field, string>> = {}
   if (!draft.name.trim()) errors.name = 'Please enter your name.'
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email.trim())) errors.email = 'Please enter a valid email address.'
-  if (draft.phone.trim() && (!/^[+\d\s().-]+$/.test(draft.phone) || draft.phone.replace(/\D/g, '').length < 7 || draft.phone.replace(/\D/g, '').length > 15)) errors.phone = 'Please enter a valid phone number or leave this blank.'
+  if (draft.phone.trim() && extractPhoneDigits(draft.phone).length !== 10) errors.phone = 'Please enter a valid 10-digit phone number or leave this blank.'
   if (!draft.message.trim()) errors.message = 'Please tell me a little about your idea or question.'
   for (const key of Object.keys(limits) as (keyof typeof limits)[]) {
     if ((draft[key] ?? '').length > limits[key]) errors[key] = `Please use ${limits[key]} characters or fewer.`
@@ -166,7 +167,7 @@ export function ContactSection({ photos = contactPhotos, onSendInquiry }: Contac
                     <input {...fieldProps('email')} type="email" autoComplete="email" required maxLength={limits.email} placeholder="alex.morgan@example.com" className="r59-form__control" value={draft.email} onChange={e => change('email', e.target.value)} />
                   </FormField>
                   <FormField htmlFor="contact-phone" label="Phone number" optional errorNode={error('phone')}>
-                    <input {...fieldProps('phone')} type="tel" autoComplete="tel" maxLength={limits.phone} placeholder="+1 (212) 555-0148" className="r59-form__control" value={draft.phone} onChange={e => change('phone', e.target.value)} />
+                    <input {...fieldProps('phone')} type="tel" inputMode="numeric" autoComplete="tel" maxLength={14} placeholder="(212) 555-0148" className="r59-form__control" value={draft.phone} onChange={e => change('phone', formatPhoneInput(e.target.value))} />
                   </FormField>
                   <FormField htmlFor="contact-type" label="Inquiry type" required>
                     <select id="contact-type" className="r59-form__control r59-form__select" value={draft.inquiryType} onChange={e => change('inquiryType', e.target.value as InquiryType)}>{inquiryTypes.map(type => <option key={type.id} value={type.id}>{type.label}</option>)}</select>

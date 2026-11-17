@@ -1,4 +1,5 @@
 import type { BookingCustomerInfo } from '../../types/booking'
+import { extractPhoneDigits } from '../../utils/phone'
 
 export const bookingFieldLimits = { firstName: 99, lastName: 99, email: 254, phone: 25, notes: 2000 } as const
 export type BookingFormErrors = Partial<Record<keyof BookingCustomerInfo, string>>
@@ -20,7 +21,7 @@ export function validateBookingInfo(data: BookingCustomerInfo): BookingFormError
     if (Array.from(data[field]).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) errors[field] = 'Remove unsupported control characters.'
   }
   if (clean.email && !errors.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean.email)) errors.email = 'Enter a valid email address, such as name@example.com.'
-  if (clean.phone && !errors.phone && (!/^\+?[\d() -]+$/.test(clean.phone) || clean.phone.replace(/\D/g, '').length < 7 || clean.phone.replace(/\D/g, '').length > 15)) errors.phone = 'Enter a valid phone number with 7–15 digits.'
+  if (clean.phone && !errors.phone && extractPhoneDigits(clean.phone).length !== 10) errors.phone = 'Enter a valid 10-digit phone number.'
   if (Array.from(data.notes || '').some(char => { const code = char.charCodeAt(0); return (code < 32 && ![9, 10, 13].includes(code)) || code === 127 })) errors.notes = 'Remove unsupported control characters.'
   return errors
 }
