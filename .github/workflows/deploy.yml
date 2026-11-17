@@ -33,10 +33,13 @@ jobs:
           pnpm --dir admin install --frozen-lockfile
           pnpm --dir backend install --frozen-lockfile
 
-      - name: Build frontend & backend
+      - name: Build & test frontend, admin, & backend
         run: |
-          pnpm --dir frontend run build
+          pnpm --dir frontend run check
+          pnpm --dir admin run typecheck
+          pnpm --dir backend run typecheck
           pnpm --dir backend run build
+          pnpm --dir backend test
 
       - name: Check Cloudflare Credentials
         id: check_token

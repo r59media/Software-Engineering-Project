@@ -1,0 +1,63 @@
+name: Auto-Maintenance & Dependency Verification
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir admin install --frozen-lockfile
+          pnpm --dir backend install --frozen-lockfile
+
+      - name: Verify Frontend (lint, typecheck, build)
+        run: pnpm --dir frontend run check
+
+      - name: Verify Admin (strict typecheck)
+        run: pnpm --dir admin run typecheck
+
+      - name: Verify Backend (typecheck, build, test)
+        run: |
+          pnpm --dir backend run typecheck
+          pnpm --dir backend run build
+          pnpm --dir backend test
+
+  auto-merge-dependabot:
+    needs: verify
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Auto-merge safe patch and minor updates
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
