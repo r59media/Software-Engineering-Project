@@ -41,6 +41,13 @@ export function AboutToRecent() {
   const enabled = canAnimate && readyUrl === url
 
   useEffect(() => {
+    // Never leave #recent-photoshoot hidden if WebGL or model loading stalls.
+    if (!canReserve || enabled) return
+    const timer = window.setTimeout(() => setFailed(true), 6000)
+    return () => window.clearTimeout(timer)
+  }, [canReserve, enabled])
+
+  useEffect(() => {
     const media = matchMedia(aboutLens.mobileQuery)
     const update = () => setMobile(media.matches)
     media.addEventListener('change', update)
@@ -131,8 +138,9 @@ export function AboutToRecent() {
 
     const calculateTarget = () => {
       if (document.body.style.position === 'fixed') return targetProgress
-      if (window.scrollY >= start + distance - 1) return 1
-      return clamp((window.scrollY - start) / distance)
+      const scrollY = Math.max(0, window.scrollY)
+      if (scrollY >= start + distance - 1) return 1
+      return clamp((scrollY - start) / distance)
     }
 
     const applyProgress = (progress: number) => {
@@ -160,7 +168,10 @@ export function AboutToRecent() {
       viewport = nextViewport
       stage.style.top = `${Math.min(0, viewport - height)}px`
       recent.style.height = `${viewport}px`
-      start = host.getBoundingClientRect().top + window.scrollY + height - viewport
+      const scrollY = Math.max(0, window.scrollY)
+      if (scrollY > 0) {
+        start = host.getBoundingClientRect().top + scrollY + height - viewport
+      }
       return true
     }
 
@@ -209,7 +220,10 @@ export function AboutToRecent() {
       x = lensBounds.left - aboutBounds.left + lensBounds.width / 2
       y = lensBounds.top - aboutBounds.top + lensBounds.height / 2
       size = lensBounds.width
-      start = bounds.top + window.scrollY + height - viewport
+      const scrollY = Math.max(0, window.scrollY)
+      if (!hasSnapped || window.scrollY >= 0) {
+        start = bounds.top + scrollY + height - viewport
+      }
       targetProgress = calculateTarget()
       displayedProgress = targetProgress
       hasSnapped = true
@@ -252,7 +266,7 @@ export function AboutToRecent() {
     const focusRecent = (event: FocusEvent) => {
       // Keyboard users should see the entire focused control; pointer focus must not move it.
       if (keyboardNavigation && event.target instanceof HTMLElement &&
-          document.body.style.position !== 'fixed' && window.scrollY < start + distance - 1) {
+          document.body.style.position !== 'fixed' && Math.max(0, window.scrollY) < start + distance - 1) {
         window.scrollTo({ top: start + distance, behavior: 'instant' })
       }
     }

@@ -7,6 +7,7 @@
   overflow: clip;
 }
 .about__artwork { position: relative; }
+.about__artwork:not(.about__paper) .about__art-container { height: auto; }
 .about__motion { width: 100%; height: 100%; }
 .about__art { display: block; width: 100%; height: auto; user-select: none; }
 .about__paper { position: absolute; inset: 0; z-index: -2; pointer-events: none; overflow: hidden; }
@@ -39,6 +40,7 @@
   will-change: transform;
 }
 .about__portrait { left: 17.75%; top: 16%; width: 65.35%; aspect-ratio: 464 / 552; cursor: pointer; }
+.about__portrait > .about__motion { position: absolute; inset: 0; }
 .about__portrait-pose {
   position: relative;
   width: 100%;

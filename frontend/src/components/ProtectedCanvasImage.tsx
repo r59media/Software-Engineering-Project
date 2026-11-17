@@ -14,12 +14,22 @@ export interface ProtectedCanvasImageProps {
   onLoad?: () => void
 }
 
+type DrawableSource = ImageBitmap | HTMLImageElement
+
 const MAX_BLOB_CACHE_ENTRIES = 100
-const MAX_BITMAP_CACHE_ENTRIES = 48
+const MAX_DRAWABLE_CACHE_ENTRIES = 16
+const MAX_CANVAS_DIMENSION = 2048
 const blobCache = new Map<string, Blob>()
-const bitmapCache = new Map<string, ImageBitmap>()
+const drawableCache = new Map<string, DrawableSource>()
 const inFlightFetches = new Map<string, Promise<Blob>>()
-const inFlightDecodes = new Map<string, Promise<ImageBitmap>>()
+const inFlightDecodes = new Map<string, Promise<DrawableSource>>()
+
+function getDrawableSize(source: DrawableSource): { width: number; height: number } {
+  if (source instanceof HTMLImageElement) {
+    return { width: source.naturalWidth, height: source.naturalHeight }
+  }
+  return { width: source.width, height: source.height }
+}
 
 function cacheBlob(src: string, blob: Blob) {
   if (blobCache.has(src)) {
@@ -33,29 +43,30 @@ function cacheBlob(src: string, blob: Blob) {
   blobCache.set(src, blob)
 }
 
-function cacheBitmap(src: string, bitmap: ImageBitmap) {
-  if (bitmapCache.has(src)) {
-    bitmapCache.delete(src)
-  } else if (bitmapCache.size >= MAX_BITMAP_CACHE_ENTRIES) {
-    const oldestKey = bitmapCache.keys().next().value
+function cacheDrawable(src: string, drawable: DrawableSource) {
+  if (drawableCache.has(src)) {
+    drawableCache.delete(src)
+  } else if (drawableCache.size >= MAX_DRAWABLE_CACHE_ENTRIES) {
+    const oldestKey = drawableCache.keys().next().value
     if (oldestKey !== undefined) {
-      // Evict without calling .close() so any in-flight/queued drawImage doesn't hit InvalidStateError
-      bitmapCache.delete(oldestKey)
+      // Evict without calling .close() so active/queued canvases never hit InvalidStateError
+      drawableCache.delete(oldestKey)
     }
   }
-  bitmapCache.set(src, bitmap)
+  drawableCache.set(src, drawable)
 }
 
-function getCachedBitmap(src: string): ImageBitmap | undefined {
-  const cached = bitmapCache.get(src)
+function getCachedDrawable(src: string): DrawableSource | undefined {
+  const cached = drawableCache.get(src)
   if (!cached) return undefined
-  if (cached.width === 0 || cached.height === 0) {
-    bitmapCache.delete(src)
+  const { width, height } = getDrawableSize(cached)
+  if (width === 0 || height === 0) {
+    drawableCache.delete(src)
     return undefined
   }
   // Refresh LRU order on read
-  bitmapCache.delete(src)
-  bitmapCache.set(src, cached)
+  drawableCache.delete(src)
+  drawableCache.set(src, cached)
   return cached
 }
 
@@ -93,10 +104,15 @@ function fetchProtectedBlob(src: string): Promise<Blob> {
   return request
 }
 
-async function decodeBlobToBitmap(blob: Blob): Promise<ImageBitmap> {
+async function decodeBlobToDrawable(blob: Blob): Promise<DrawableSource> {
   if (typeof createImageBitmap === 'function') {
-    return createImageBitmap(blob)
+    try {
+      return await createImageBitmap(blob)
+    } catch {
+      // Fall back to HTMLImageElement decoding for WebKit, Ladybird, or hardened Gecko
+    }
   }
+
   const img = new Image()
   const blobUrl = URL.createObjectURL(blob)
   try {
@@ -105,14 +121,21 @@ async function decodeBlobToBitmap(blob: Blob): Promise<ImageBitmap> {
       img.onerror = () => reject(new Error('Failed to load image'))
       img.src = blobUrl
     })
-    return await createImageBitmap(img)
+    if (typeof img.decode === 'function') {
+      try {
+        await img.decode()
+      } catch {
+        // Image already loaded via onload; continue with decoded HTMLImageElement
+      }
+    }
+    return img
   } finally {
     URL.revokeObjectURL(blobUrl)
   }
 }
 
-async function getOrDecodeBitmap(src: string): Promise<ImageBitmap> {
-  const cached = getCachedBitmap(src)
+async function getOrDecodeDrawable(src: string): Promise<DrawableSource> {
+  const cached = getCachedDrawable(src)
   if (cached) return cached
 
   const inFlight = inFlightDecodes.get(src)
@@ -120,12 +143,12 @@ async function getOrDecodeBitmap(src: string): Promise<ImageBitmap> {
 
   const decodePromise = (async () => {
     const blob = await fetchProtectedBlob(src)
-    const rechecked = getCachedBitmap(src)
+    const rechecked = getCachedDrawable(src)
     if (rechecked) return rechecked
 
-    const bitmap = await decodeBlobToBitmap(blob)
-    cacheBitmap(src, bitmap)
-    return bitmap
+    const drawable = await decodeBlobToDrawable(blob)
+    cacheDrawable(src, drawable)
+    return drawable
   })().finally(() => {
     inFlightDecodes.delete(src)
   })
@@ -138,27 +161,134 @@ async function getOrDecodeBitmap(src: string): Promise<ImageBitmap> {
 export async function preloadProtectedImage(src: string): Promise<void> {
   if (!src) return
   try {
-    await getOrDecodeBitmap(src)
+    await getOrDecodeDrawable(src)
   } catch {
     // Ignore preload failures; component mount will handle/report errors if needed
   }
 }
 
-function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): boolean {
-  if (bitmap.width === 0 || bitmap.height === 0) {
+type ObjectFitMode = 'contain' | 'cover' | 'fill'
+
+function parsePositionToken(token: string, axis: 'x' | 'y'): number | null {
+  if (token === 'center') return 0.5
+  if (axis === 'x') {
+    if (token === 'left') return 0
+    if (token === 'right') return 1
+  } else {
+    if (token === 'top') return 0
+    if (token === 'bottom') return 1
+  }
+  if (token.endsWith('%')) {
+    const parsed = parseFloat(token.slice(0, -1))
+    if (Number.isFinite(parsed)) {
+      return parsed / 100
+    }
+  }
+  return null
+}
+
+function parseObjectPosition(value: string | undefined): { x: number; y: number } {
+  if (!value) return { x: 0.5, y: 0.5 }
+  const parts = value.trim().toLowerCase().split(/\s+/).filter(Boolean)
+  if (parts.length === 0) return { x: 0.5, y: 0.5 }
+
+  if (parts.length === 1) {
+    const token = parts[0]
+    if (token === 'top') return { x: 0.5, y: 0 }
+    if (token === 'bottom') return { x: 0.5, y: 1 }
+    const x = parsePositionToken(token, 'x')
+    return { x: x ?? 0.5, y: 0.5 }
+  }
+
+  const [first, second] = parts
+  // Handle swapped keyword order like "top left" or "bottom right"
+  if ((first === 'top' || first === 'bottom') && (second === 'left' || second === 'right' || second === 'center')) {
+    return {
+      x: parsePositionToken(second, 'x') ?? 0.5,
+      y: parsePositionToken(first, 'y') ?? 0.5,
+    }
+  }
+
+  return {
+    x: parsePositionToken(first, 'x') ?? 0.5,
+    y: parsePositionToken(second, 'y') ?? 0.5,
+  }
+}
+
+function drawDrawableToCanvas(
+  canvas: HTMLCanvasElement,
+  source: DrawableSource,
+  objectPositionProp?: string,
+): boolean {
+  const { width: sourceWidth, height: sourceHeight } = getDrawableSize(source)
+  if (sourceWidth === 0 || sourceHeight === 0) {
     return false
   }
-  if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-    canvas.width = bitmap.width
-    canvas.height = bitmap.height
+
+  const rect = canvas.getBoundingClientRect()
+  const dpr = Math.min(window.devicePixelRatio || 1, 2)
+  const hasLayoutSize = rect.width > 0 && rect.height > 0
+
+  const targetWidth = hasLayoutSize
+    ? Math.min(Math.max(1, Math.round(rect.width * dpr)), MAX_CANVAS_DIMENSION)
+    : Math.min(Math.max(1, sourceWidth), MAX_CANVAS_DIMENSION)
+  const targetHeight = hasLayoutSize
+    ? Math.min(Math.max(1, Math.round(rect.height * dpr)), MAX_CANVAS_DIMENSION)
+    : Math.min(Math.max(1, sourceHeight), MAX_CANVAS_DIMENSION)
+
+  if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+    canvas.width = targetWidth
+    canvas.height = targetHeight
   }
+
   const ctx = canvas.getContext('2d')
-  if (ctx) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(bitmap, 0, 0)
-    return true
+  if (!ctx) return false
+
+  const computedStyle = window.getComputedStyle(canvas)
+  const rawFit = computedStyle.objectFit
+  const objectFit: ObjectFitMode =
+    rawFit === 'contain' || rawFit === 'cover' || rawFit === 'fill' ? rawFit : 'cover'
+  const { x: posX, y: posY } = parseObjectPosition(
+    computedStyle.objectPosition || objectPositionProp || '50% 50%',
+  )
+
+  const cw = canvas.width
+  const ch = canvas.height
+
+  let sx = 0
+  let sy = 0
+  let sw = sourceWidth
+  let sh = sourceHeight
+  let dx = 0
+  let dy = 0
+  let dw = cw
+  let dh = ch
+
+  if (objectFit === 'cover') {
+    const canvasAspect = cw / ch
+    const sourceAspect = sourceWidth / sourceHeight
+    if (sourceAspect > canvasAspect) {
+      sh = sourceHeight
+      sw = sourceHeight * canvasAspect
+      sx = (sourceWidth - sw) * posX
+      sy = 0
+    } else {
+      sw = sourceWidth
+      sh = sourceWidth / canvasAspect
+      sx = 0
+      sy = (sourceHeight - sh) * posY
+    }
+  } else if (objectFit === 'contain') {
+    const scale = Math.min(cw / sourceWidth, ch / sourceHeight)
+    dw = sourceWidth * scale
+    dh = sourceHeight * scale
+    dx = (cw - dw) * posX
+    dy = (ch - dh) * posY
   }
-  return false
+
+  ctx.clearRect(0, 0, cw, ch)
+  ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)
+  return true
 }
 
 export function ProtectedCanvasImage({
@@ -196,26 +326,68 @@ export function ProtectedCanvasImage({
 
     const abortController = new AbortController()
     const { signal } = abortController
-    let observer: IntersectionObserver | null = null
+    let intersectionObserver: IntersectionObserver | null = null
+    let resizeObserver: ResizeObserver | null = null
     let rafId: number | null = null
+    let resizeRafId: number | null = null
     let started = false
+    let loaded = false
+    let notifiedLoad = false
 
-    const renderBitmap = (bitmap: ImageBitmap) => {
+    const renderDrawable = (drawable: DrawableSource) => {
       if (signal.aborted) return
       const canvas = canvasRef.current
       if (!canvas) return
       try {
-        if (drawBitmapToCanvas(canvas, bitmap)) {
+        if (drawDrawableToCanvas(canvas, drawable, objectPosition)) {
+          loaded = true
           setLoadedSrc(src)
-          onLoadRef.current?.()
+          if (!notifiedLoad) {
+            notifiedLoad = true
+            onLoadRef.current?.()
+          }
         }
       } catch (err) {
-        if (bitmapCache.get(src) === bitmap) {
-          bitmapCache.delete(src)
-          bitmap.close?.()
+        if (drawableCache.get(src) === drawable) {
+          drawableCache.delete(src)
         }
         throw err
       }
+    }
+
+    const redrawFromCache = async () => {
+      if (signal.aborted || !loaded) return
+      try {
+        const cached = getCachedDrawable(src)
+        if (cached) {
+          try {
+            renderDrawable(cached)
+            return
+          } catch {
+            // Stale/invalidated drawable; re-decode from blobCache below
+          }
+        }
+        const redecoded = await getOrDecodeDrawable(src)
+        if (signal.aborted) return
+        renderDrawable(redecoded)
+      } catch {
+        // Ignore transient redraw errors
+      }
+    }
+
+    const scheduleRedraw = () => {
+      if (signal.aborted || !loaded || resizeRafId !== null) return
+      resizeRafId = requestAnimationFrame(() => {
+        resizeRafId = null
+        void redrawFromCache()
+      })
+    }
+
+    const handleVisibilityOrPageShow = (event?: Event) => {
+      if (event?.type === 'visibilitychange' && document.visibilityState === 'hidden') {
+        return
+      }
+      scheduleRedraw()
     }
 
     async function loadImage() {
@@ -223,19 +395,19 @@ export function ProtectedCanvasImage({
       started = true
 
       try {
-        const cachedBitmap = getCachedBitmap(src)
-        if (cachedBitmap) {
-          renderBitmap(cachedBitmap)
+        const cachedDrawable = getCachedDrawable(src)
+        if (cachedDrawable) {
+          renderDrawable(cachedDrawable)
           return
         }
 
-        const bitmap = await getOrDecodeBitmap(src)
+        const drawable = await getOrDecodeDrawable(src)
         if (signal.aborted) return
 
         rafId = requestAnimationFrame(() => {
           rafId = null
           try {
-            renderBitmap(bitmap)
+            renderDrawable(drawable)
           } catch (err: unknown) {
             if (signal.aborted) return
             console.error('ProtectedCanvasImage load error:', err)
@@ -254,30 +426,46 @@ export function ProtectedCanvasImage({
     }
 
     const canvas = canvasRef.current
-    if (eager || bitmapCache.has(src) || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
+    if (canvas && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        scheduleRedraw()
+      })
+      resizeObserver.observe(canvas)
+    }
+
+    window.addEventListener('pageshow', handleVisibilityOrPageShow)
+    document.addEventListener('visibilitychange', handleVisibilityOrPageShow)
+
+    if (eager || drawableCache.has(src) || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
       void loadImage()
     } else {
-      observer = new IntersectionObserver(
+      intersectionObserver = new IntersectionObserver(
         (entries) => {
           if (entries.some((entry) => entry.isIntersecting)) {
-            observer?.disconnect()
-            observer = null
+            intersectionObserver?.disconnect()
+            intersectionObserver = null
             void loadImage()
           }
         },
         { rootMargin: '400px 0px' },
       )
-      observer.observe(canvas)
+      intersectionObserver.observe(canvas)
     }
 
     return () => {
       abortController.abort()
-      observer?.disconnect()
+      intersectionObserver?.disconnect()
+      resizeObserver?.disconnect()
+      window.removeEventListener('pageshow', handleVisibilityOrPageShow)
+      document.removeEventListener('visibilitychange', handleVisibilityOrPageShow)
       if (rafId !== null) {
         cancelAnimationFrame(rafId)
       }
+      if (resizeRafId !== null) {
+        cancelAnimationFrame(resizeRafId)
+      }
     }
-  }, [src, eager])
+  }, [src, eager, objectPosition])
 
   const canvasStyle: CSSProperties = objectPosition ? { objectPosition } : {}
 

@@ -659,3 +659,104 @@ test('Media Fast-Path, ETag/304, and Chunk-Bounded Range Requests preserve secur
   )
   assert.equal(resCross.status, 403)
 })
+
+test('Static Asset Subresource Allowance: same-origin and Referer fallback for /assets/* and /models/*', async () => {
+  const { env } = setupTestEnv()
+  const mockEnv: Bindings = {
+    ...env,
+    ASSETS: {
+      fetch: async (req: Request) => {
+        const pathname = new URL(req.url).pathname
+        return new Response(`ASSET:${pathname}`, {
+          status: 200,
+          headers: { 'Content-Type': 'image/webp' }
+        })
+      }
+    } as any
+  }
+
+  const realApp = loadRealBackendApp()
+
+  // 1. Same-origin non-document /assets/session-paper.webp -> 200
+  const resSameOriginAsset = await realApp.fetch(
+    new Request('http://localhost/assets/session-paper.webp', {
+      headers: {
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Dest': 'image'
+      }
+    }),
+    mockEnv
+  )
+  assert.equal(resSameOriginAsset.status, 200)
+  assert.equal(await resSameOriginAsset.text(), 'ASSET:/assets/session-paper.webp')
+
+  // 2. Same-origin Referer without Sec-Fetch-Site (Ladybird / older WebKit) on /models/r59-memory-card-preview.webp -> 200
+  const resRefererModel = await realApp.fetch(
+    new Request('http://localhost/models/r59-memory-card-preview.webp', {
+      headers: {
+        Referer: 'http://localhost/gallery'
+      }
+    }),
+    mockEnv
+  )
+  assert.equal(resRefererModel.status, 200)
+  assert.equal(await resRefererModel.text(), 'ASSET:/models/r59-memory-card-preview.webp')
+
+  // 3. Foreign Referer without Sec-Fetch-Site -> 302 blocked
+  const resForeignReferer = await realApp.fetch(
+    new Request('http://localhost/models/r59-memory-card-preview.webp', {
+      headers: {
+        Referer: 'https://evil.example/hotlink'
+      }
+    }),
+    mockEnv
+  )
+  assert.equal(resForeignReferer.status, 302)
+  assert.equal(resForeignReferer.headers.get('Location'), '/')
+
+  // 4. Direct navigation (Sec-Fetch-Dest: document) on /assets/* and /models/* -> 302 blocked
+  const resDocAsset = await realApp.fetch(
+    new Request('http://localhost/assets/session-paper.webp', {
+      headers: {
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Dest': 'document'
+      }
+    }),
+    mockEnv
+  )
+  assert.equal(resDocAsset.status, 302)
+
+  const resDocModel = await realApp.fetch(
+    new Request('http://localhost/models/r59-memory-card-preview.webp', {
+      headers: {
+        'Sec-Fetch-Dest': 'document',
+        Referer: 'http://localhost/gallery'
+      }
+    }),
+    mockEnv
+  )
+  assert.equal(resDocModel.status, 302)
+
+  // 5. Cross-site (Sec-Fetch-Site: cross-site) on /assets/* and /models/* -> 403 Forbidden
+  const resCrossAsset = await realApp.fetch(
+    new Request('http://localhost/assets/session-paper.webp', {
+      headers: {
+        'Sec-Fetch-Site': 'cross-site',
+        'Sec-Fetch-Dest': 'image'
+      }
+    }),
+    mockEnv
+  )
+  assert.equal(resCrossAsset.status, 403)
+
+  const resCrossModel = await realApp.fetch(
+    new Request('http://localhost/models/r59-memory-card-preview.webp', {
+      headers: {
+        'Sec-Fetch-Site': 'cross-site',
+        'Sec-Fetch-Dest': 'image'
+      }
+    }),
+    mockEnv
+  )
+  assert.equal(resCrossModel.status, 403)
+})

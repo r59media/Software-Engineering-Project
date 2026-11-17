@@ -1,4 +1,4 @@
-import { Suspense, useLayoutEffect, useMemo } from 'react'
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { Canvas, useLoader, useThree } from '@react-three/fiber'
 import { LinearFilter, LinearMipmapLinearFilter, Mesh, PMREMGenerator } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
@@ -110,17 +110,37 @@ function LensModel({ url, aperture, transition }: LensProps) {
   return <primitive object={model} dispose={null} />
 }
 
+function LensFallback({ onUnavailable }: { onUnavailable?: () => void }) {
+  useEffect(() => {
+    onUnavailable?.()
+  }, [onUnavailable])
+  return <div className="about__lens-fallback" data-lens-state="fallback" />
+}
+
 export default function LensScene({ url, aperture, transition }: LensProps) {
+  const handleUnavailable = useCallback(() => {
+    transition?.fail()
+  }, [transition])
+
   return <Canvas
     className="about__lens-canvas"
-    onCreated={({ gl }) => { gl.domElement.addEventListener('webglcontextlost', () => transition?.fail(), { once: true }) }}
+    onCreated={({ gl }) => {
+      gl.domElement.addEventListener(
+        'webglcontextlost',
+        event => {
+          event.preventDefault()
+          handleUnavailable()
+        },
+        { once: true },
+      )
+    }}
     frameloop="demand"
     resize={{ offsetSize: true }}
     camera={aboutLens.camera}
     dpr={aboutLens.pixelRatio}
     scene={{ environmentIntensity: 0.35 }}
     gl={{ alpha: true, antialias: true, powerPreference: 'high-performance' }}
-    fallback={<div className="about__lens-fallback" data-lens-state="fallback" />}
+    fallback={<LensFallback onUnavailable={handleUnavailable} />}
   >
     <StudioLighting />
     <Suspense fallback={null}><LensModel url={url} aperture={aperture} transition={transition} /></Suspense>
