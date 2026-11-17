@@ -22,13 +22,13 @@
     "test": "node --test test/*.test.ts"
   },
   "dependencies": {
-    "hono": "4.13.13",
+    "hono": "4.13.18",
     "square": "46.0.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261116.1",
     "typescript": "7.0.2",
-    "wrangler": "4.151.1"
+    "wrangler": "4.162.0"
   },
   "overrides": {
     "follow-redirects": ">=1.16.2"
