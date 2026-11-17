@@ -14,22 +14,12 @@ export interface ProtectedCanvasImageProps {
   onLoad?: () => void
 }
 
-type DrawableSource = ImageBitmap | HTMLImageElement
-
 const MAX_BLOB_CACHE_ENTRIES = 100
-const MAX_DRAWABLE_CACHE_ENTRIES = 16
-const MAX_CANVAS_DIMENSION = 2048
+const MAX_BITMAP_CACHE_ENTRIES = 48
 const blobCache = new Map<string, Blob>()
-const drawableCache = new Map<string, DrawableSource>()
+const bitmapCache = new Map<string, ImageBitmap>()
 const inFlightFetches = new Map<string, Promise<Blob>>()
-const inFlightDecodes = new Map<string, Promise<DrawableSource>>()
-
-function getDrawableSize(source: DrawableSource): { width: number; height: number } {
-  if (source instanceof HTMLImageElement) {
-    return { width: source.naturalWidth, height: source.naturalHeight }
-  }
-  return { width: source.width, height: source.height }
-}
+const inFlightDecodes = new Map<string, Promise<ImageBitmap>>()
 
 function cacheBlob(src: string, blob: Blob) {
   if (blobCache.has(src)) {
@@ -43,30 +33,29 @@ function cacheBlob(src: string, blob: Blob) {
   blobCache.set(src, blob)
 }
 
-function cacheDrawable(src: string, drawable: DrawableSource) {
-  if (drawableCache.has(src)) {
-    drawableCache.delete(src)
-  } else if (drawableCache.size >= MAX_DRAWABLE_CACHE_ENTRIES) {
-    const oldestKey = drawableCache.keys().next().value
+function cacheBitmap(src: string, bitmap: ImageBitmap) {
+  if (bitmapCache.has(src)) {
+    bitmapCache.delete(src)
+  } else if (bitmapCache.size >= MAX_BITMAP_CACHE_ENTRIES) {
+    const oldestKey = bitmapCache.keys().next().value
     if (oldestKey !== undefined) {
-      // Evict without calling .close() so active/queued canvases never hit InvalidStateError
-      drawableCache.delete(oldestKey)
+      // Evict without calling .close() so any in-flight/queued drawImage doesn't hit InvalidStateError
+      bitmapCache.delete(oldestKey)
     }
   }
-  drawableCache.set(src, drawable)
+  bitmapCache.set(src, bitmap)
 }
 
-function getCachedDrawable(src: string): DrawableSource | undefined {
-  const cached = drawableCache.get(src)
+function getCachedBitmap(src: string): ImageBitmap | undefined {
+  const cached = bitmapCache.get(src)
   if (!cached) return undefined
-  const { width, height } = getDrawableSize(cached)
-  if (width === 0 || height === 0) {
-    drawableCache.delete(src)
+  if (cached.width === 0 || cached.height === 0) {
+    bitmapCache.delete(src)
     return undefined
   }
   // Refresh LRU order on read
-  drawableCache.delete(src)
-  drawableCache.set(src, cached)
+  bitmapCache.delete(src)
+  bitmapCache.set(src, cached)
   return cached
 }
 
@@ -104,15 +93,10 @@ function fetchProtectedBlob(src: string): Promise<Blob> {
   return request
 }
 
-async function decodeBlobToDrawable(blob: Blob): Promise<DrawableSource> {
+async function decodeBlobToBitmap(blob: Blob): Promise<ImageBitmap> {
   if (typeof createImageBitmap === 'function') {
-    try {
-      return await createImageBitmap(blob)
-    } catch {
-      // Fall back to HTMLImageElement decoding for WebKit, Ladybird, or hardened Gecko
-    }
+    return createImageBitmap(blob)
   }
-
   const img = new Image()
   const blobUrl = URL.createObjectURL(blob)
   try {
@@ -121,21 +105,14 @@ async function decodeBlobToDrawable(blob: Blob): Promise<DrawableSource> {
       img.onerror = () => reject(new Error('Failed to load image'))
       img.src = blobUrl
     })
-    if (typeof img.decode === 'function') {
-      try {
-        await img.decode()
-      } catch {
-        // Image already loaded via onload; continue with decoded HTMLImageElement
-      }
-    }
-    return img
+    return await createImageBitmap(img)
   } finally {
     URL.revokeObjectURL(blobUrl)
   }
 }
 
-async function getOrDecodeDrawable(src: string): Promise<DrawableSource> {
-  const cached = getCachedDrawable(src)
+async function getOrDecodeBitmap(src: string): Promise<ImageBitmap> {
+  const cached = getCachedBitmap(src)
   if (cached) return cached
 
   const inFlight = inFlightDecodes.get(src)
@@ -143,12 +120,12 @@ async function getOrDecodeDrawable(src: string): Promise<DrawableSource> {
 
   const decodePromise = (async () => {
     const blob = await fetchProtectedBlob(src)
-    const rechecked = getCachedDrawable(src)
+    const rechecked = getCachedBitmap(src)
     if (rechecked) return rechecked
 
-    const drawable = await decodeBlobToDrawable(blob)
-    cacheDrawable(src, drawable)
-    return drawable
+    const bitmap = await decodeBlobToBitmap(blob)
+    cacheBitmap(src, bitmap)
+    return bitmap
   })().finally(() => {
     inFlightDecodes.delete(src)
   })
@@ -161,134 +138,27 @@ async function getOrDecodeDrawable(src: string): Promise<DrawableSource> {
 export async function preloadProtectedImage(src: string): Promise<void> {
   if (!src) return
   try {
-    await getOrDecodeDrawable(src)
+    await getOrDecodeBitmap(src)
   } catch {
     // Ignore preload failures; component mount will handle/report errors if needed
   }
 }
 
-type ObjectFitMode = 'contain' | 'cover' | 'fill'
-
-function parsePositionToken(token: string, axis: 'x' | 'y'): number | null {
-  if (token === 'center') return 0.5
-  if (axis === 'x') {
-    if (token === 'left') return 0
-    if (token === 'right') return 1
-  } else {
-    if (token === 'top') return 0
-    if (token === 'bottom') return 1
-  }
-  if (token.endsWith('%')) {
-    const parsed = parseFloat(token.slice(0, -1))
-    if (Number.isFinite(parsed)) {
-      return parsed / 100
-    }
-  }
-  return null
-}
-
-function parseObjectPosition(value: string | undefined): { x: number; y: number } {
-  if (!value) return { x: 0.5, y: 0.5 }
-  const parts = value.trim().toLowerCase().split(/\s+/).filter(Boolean)
-  if (parts.length === 0) return { x: 0.5, y: 0.5 }
-
-  if (parts.length === 1) {
-    const token = parts[0]
-    if (token === 'top') return { x: 0.5, y: 0 }
-    if (token === 'bottom') return { x: 0.5, y: 1 }
-    const x = parsePositionToken(token, 'x')
-    return { x: x ?? 0.5, y: 0.5 }
-  }
-
-  const [first, second] = parts
-  // Handle swapped keyword order like "top left" or "bottom right"
-  if ((first === 'top' || first === 'bottom') && (second === 'left' || second === 'right' || second === 'center')) {
-    return {
-      x: parsePositionToken(second, 'x') ?? 0.5,
-      y: parsePositionToken(first, 'y') ?? 0.5,
-    }
-  }
-
-  return {
-    x: parsePositionToken(first, 'x') ?? 0.5,
-    y: parsePositionToken(second, 'y') ?? 0.5,
-  }
-}
-
-function drawDrawableToCanvas(
-  canvas: HTMLCanvasElement,
-  source: DrawableSource,
-  objectPositionProp?: string,
-): boolean {
-  const { width: sourceWidth, height: sourceHeight } = getDrawableSize(source)
-  if (sourceWidth === 0 || sourceHeight === 0) {
+function drawBitmapToCanvas(canvas: HTMLCanvasElement, bitmap: ImageBitmap): boolean {
+  if (bitmap.width === 0 || bitmap.height === 0) {
     return false
   }
-
-  const rect = canvas.getBoundingClientRect()
-  const dpr = Math.min(window.devicePixelRatio || 1, 2)
-  const hasLayoutSize = rect.width > 0 && rect.height > 0
-
-  const targetWidth = hasLayoutSize
-    ? Math.min(Math.max(1, Math.round(rect.width * dpr)), MAX_CANVAS_DIMENSION)
-    : Math.min(Math.max(1, sourceWidth), MAX_CANVAS_DIMENSION)
-  const targetHeight = hasLayoutSize
-    ? Math.min(Math.max(1, Math.round(rect.height * dpr)), MAX_CANVAS_DIMENSION)
-    : Math.min(Math.max(1, sourceHeight), MAX_CANVAS_DIMENSION)
-
-  if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-    canvas.width = targetWidth
-    canvas.height = targetHeight
+  if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+    canvas.width = bitmap.width
+    canvas.height = bitmap.height
   }
-
   const ctx = canvas.getContext('2d')
-  if (!ctx) return false
-
-  const computedStyle = window.getComputedStyle(canvas)
-  const rawFit = computedStyle.objectFit
-  const objectFit: ObjectFitMode =
-    rawFit === 'contain' || rawFit === 'cover' || rawFit === 'fill' ? rawFit : 'cover'
-  const { x: posX, y: posY } = parseObjectPosition(
-    computedStyle.objectPosition || objectPositionProp || '50% 50%',
-  )
-
-  const cw = canvas.width
-  const ch = canvas.height
-
-  let sx = 0
-  let sy = 0
-  let sw = sourceWidth
-  let sh = sourceHeight
-  let dx = 0
-  let dy = 0
-  let dw = cw
-  let dh = ch
-
-  if (objectFit === 'cover') {
-    const canvasAspect = cw / ch
-    const sourceAspect = sourceWidth / sourceHeight
-    if (sourceAspect > canvasAspect) {
-      sh = sourceHeight
-      sw = sourceHeight * canvasAspect
-      sx = (sourceWidth - sw) * posX
-      sy = 0
-    } else {
-      sw = sourceWidth
-      sh = sourceWidth / canvasAspect
-      sx = 0
-      sy = (sourceHeight - sh) * posY
-    }
-  } else if (objectFit === 'contain') {
-    const scale = Math.min(cw / sourceWidth, ch / sourceHeight)
-    dw = sourceWidth * scale
-    dh = sourceHeight * scale
-    dx = (cw - dw) * posX
-    dy = (ch - dh) * posY
+  if (ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(bitmap, 0, 0)
+    return true
   }
-
-  ctx.clearRect(0, 0, cw, ch)
-  ctx.drawImage(source, sx, sy, sw, sh, dx, dy, dw, dh)
-  return true
+  return false
 }
 
 export function ProtectedCanvasImage({
@@ -316,9 +186,9 @@ export function ProtectedCanvasImage({
     onLoadRef.current = onLoad
   }, [onLoad])
 
-  const [loadedSrc, setLoadedSrc] = useState<string | null>(() => (src && (drawableCache.has(src) || blobCache.has(src)) ? src : null))
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(() => (src && (bitmapCache.has(src) || blobCache.has(src)) ? src : null))
   const [errorSrc, setErrorSrc] = useState<string | null>(null)
-  const isLoaded = Boolean(src) && (loadedSrc === src || drawableCache.has(src) || blobCache.has(src))
+  const isLoaded = Boolean(src) && (loadedSrc === src || bitmapCache.has(src) || blobCache.has(src))
   const hasError = Boolean(src && errorSrc === src)
 
   useEffect(() => {
@@ -326,68 +196,26 @@ export function ProtectedCanvasImage({
 
     const abortController = new AbortController()
     const { signal } = abortController
-    let intersectionObserver: IntersectionObserver | null = null
-    let resizeObserver: ResizeObserver | null = null
+    let observer: IntersectionObserver | null = null
     let rafId: number | null = null
-    let resizeRafId: number | null = null
     let started = false
-    let loaded = false
-    let notifiedLoad = false
 
-    const renderDrawable = (drawable: DrawableSource) => {
+    const renderBitmap = (bitmap: ImageBitmap) => {
       if (signal.aborted) return
       const canvas = canvasRef.current
       if (!canvas) return
       try {
-        if (drawDrawableToCanvas(canvas, drawable, objectPosition)) {
-          loaded = true
+        if (drawBitmapToCanvas(canvas, bitmap)) {
           setLoadedSrc(src)
-          if (!notifiedLoad) {
-            notifiedLoad = true
-            onLoadRef.current?.()
-          }
+          onLoadRef.current?.()
         }
       } catch (err) {
-        if (drawableCache.get(src) === drawable) {
-          drawableCache.delete(src)
+        if (bitmapCache.get(src) === bitmap) {
+          bitmapCache.delete(src)
+          bitmap.close?.()
         }
         throw err
       }
-    }
-
-    const redrawFromCache = async () => {
-      if (signal.aborted || !loaded) return
-      try {
-        const cached = getCachedDrawable(src)
-        if (cached) {
-          try {
-            renderDrawable(cached)
-            return
-          } catch {
-            // Stale/invalidated drawable; re-decode from blobCache below
-          }
-        }
-        const redecoded = await getOrDecodeDrawable(src)
-        if (signal.aborted) return
-        renderDrawable(redecoded)
-      } catch {
-        // Ignore transient redraw errors
-      }
-    }
-
-    const scheduleRedraw = () => {
-      if (signal.aborted || !loaded || resizeRafId !== null) return
-      resizeRafId = requestAnimationFrame(() => {
-        resizeRafId = null
-        void redrawFromCache()
-      })
-    }
-
-    const handleVisibilityOrPageShow = (event?: Event) => {
-      if (event?.type === 'visibilitychange' && document.visibilityState === 'hidden') {
-        return
-      }
-      scheduleRedraw()
     }
 
     async function loadImage() {
@@ -395,19 +223,19 @@ export function ProtectedCanvasImage({
       started = true
 
       try {
-        const cachedDrawable = getCachedDrawable(src)
-        if (cachedDrawable) {
-          renderDrawable(cachedDrawable)
+        const cachedBitmap = getCachedBitmap(src)
+        if (cachedBitmap) {
+          renderBitmap(cachedBitmap)
           return
         }
 
-        const drawable = await getOrDecodeDrawable(src)
+        const bitmap = await getOrDecodeBitmap(src)
         if (signal.aborted) return
 
         rafId = requestAnimationFrame(() => {
           rafId = null
           try {
-            renderDrawable(drawable)
+            renderBitmap(bitmap)
           } catch (err: unknown) {
             if (signal.aborted) return
             console.error('ProtectedCanvasImage load error:', err)
@@ -426,46 +254,30 @@ export function ProtectedCanvasImage({
     }
 
     const canvas = canvasRef.current
-    if (canvas && typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(() => {
-        scheduleRedraw()
-      })
-      resizeObserver.observe(canvas)
-    }
-
-    window.addEventListener('pageshow', handleVisibilityOrPageShow)
-    document.addEventListener('visibilitychange', handleVisibilityOrPageShow)
-
-    if (eager || drawableCache.has(src) || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
+    if (eager || bitmapCache.has(src) || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
       void loadImage()
     } else {
-      intersectionObserver = new IntersectionObserver(
+      observer = new IntersectionObserver(
         (entries) => {
           if (entries.some((entry) => entry.isIntersecting)) {
-            intersectionObserver?.disconnect()
-            intersectionObserver = null
+            observer?.disconnect()
+            observer = null
             void loadImage()
           }
         },
         { rootMargin: '400px 0px' },
       )
-      intersectionObserver.observe(canvas)
+      observer.observe(canvas)
     }
 
     return () => {
       abortController.abort()
-      intersectionObserver?.disconnect()
-      resizeObserver?.disconnect()
-      window.removeEventListener('pageshow', handleVisibilityOrPageShow)
-      document.removeEventListener('visibilitychange', handleVisibilityOrPageShow)
+      observer?.disconnect()
       if (rafId !== null) {
         cancelAnimationFrame(rafId)
       }
-      if (resizeRafId !== null) {
-        cancelAnimationFrame(resizeRafId)
-      }
     }
-  }, [src, eager, objectPosition])
+  }, [src, eager])
 
   const canvasStyle: CSSProperties = objectPosition ? { objectPosition } : {}
 

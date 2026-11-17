@@ -159,11 +159,9 @@ async function isAuthorizedMediaRequest(c: Context<{ Bindings: Bindings }>, file
 }
 
 async function evaluateMediaAuthorization(c: Context<{ Bindings: Bindings }>, fileKey?: string): Promise<boolean> {
-  let reqUrl: URL
   let pathname = ''
   try {
-    reqUrl = new URL(c.req.url)
-    pathname = decodeURIComponent(reqUrl.pathname)
+    pathname = decodeURIComponent(new URL(c.req.url).pathname)
   } catch {
     return false
   }
@@ -183,30 +181,6 @@ async function evaluateMediaAuthorization(c: Context<{ Bindings: Bindings }>, fi
   // Fast-path non-API media assets (e.g. /assets/*) for media-viewer before D1 session/portfolio queries
   if (!isApiMedia && clientHeader === 'media-viewer') {
     return true
-  }
-
-  // Permit same-origin non-document subresource requests for static build/model assets
-  // (e.g. CSS url(...) and <img> previews under /assets/* and /models/*) across Blink, Gecko, WebKit, and Ladybird
-  if (!isApiMedia && (pathname.startsWith('/assets/') || pathname.startsWith('/models/'))) {
-    const fetchSite = c.req.header('Sec-Fetch-Site')
-    const fetchDest = c.req.header('Sec-Fetch-Dest')
-    if (fetchDest !== 'document') {
-      if (fetchSite === 'same-origin') {
-        return true
-      }
-      if (!fetchSite) {
-        const referer = c.req.header('Referer')
-        if (referer) {
-          try {
-            if (new URL(referer).origin === reqUrl.origin) {
-              return true
-            }
-          } catch {
-            // Malformed Referer URL; fall through to standard auth checks
-          }
-        }
-      }
-    }
   }
 
   const { token } = extractSessionToken(c)

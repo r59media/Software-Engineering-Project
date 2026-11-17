@@ -27,14 +27,11 @@ button:disabled { cursor: not-allowed; }
 
 /* Protected Media Shield & Canvas Engine */
 .protected-media-container {
-  display: block;
   position: relative;
   width: 100%;
   height: 100%;
   overflow: hidden;
   user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
   -webkit-user-drag: none;
 }
 
@@ -45,8 +42,6 @@ button:disabled { cursor: not-allowed; }
   object-fit: cover;
   pointer-events: none;
   user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
   -webkit-user-drag: none;
   opacity: 0;
   transition: opacity 0.24s cubic-bezier(0.16, 1, 0.3, 1);
@@ -66,8 +61,6 @@ button:disabled { cursor: not-allowed; }
   pointer-events: auto;
   background: transparent;
   user-select: none;
-  -webkit-user-select: none;
-  -webkit-touch-callout: none;
   -webkit-user-drag: none;
   cursor: default;
 }
