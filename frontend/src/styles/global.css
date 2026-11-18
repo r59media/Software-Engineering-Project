@@ -295,5 +295,5 @@ button:disabled { cursor: not-allowed; }
 
 /* Reserve the original hero header space; the navigation itself is global. */
 .site-intro { padding-top: 8.0625rem; }
-@media (max-width: 850px) { .site-intro { padding-top: 0; } }
+@media (max-width: 850px) { .site-intro { padding-top: 5rem; } }
 .about-transition-placeholder { min-height: 100vh; min-height: 100svh; }
