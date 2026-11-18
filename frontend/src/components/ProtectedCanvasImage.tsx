@@ -238,7 +238,7 @@ export function ProtectedCanvasImage({
   loading,
   fetchPriority,
   forceOriginal = false,
-  placeholderColor = '#141414',
+  placeholderColor = 'transparent',
   onError,
   onLoad,
 }: ProtectedCanvasImageProps) {

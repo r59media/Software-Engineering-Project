@@ -53,6 +53,7 @@ function HeroImage({ slide, fallbackImageUrl, isFirst = false }: HeroImageProps)
           loading={isFirst ? 'eager' : undefined}
           fetchPriority={isFirst ? 'high' : undefined}
           eager={!isFirst}
+          placeholderColor="#141414"
           onError={handleImageError}
         />
       )}
