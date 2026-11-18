@@ -206,7 +206,7 @@
       const paidStr = st && st.formatCents ? st.formatCents(refundCents) : `$${(refundCents / 100).toFixed(2)}`;
       confirmDanger(
         'Cancel Booking?',
-        `Are you sure you want to cancel ${client}'s booking${date ? ' on ' + date : ''}? ${refundCents > 0 ? ` Everything paid so far (${paidStr}) will be marked for reimbursement.` : ' Nothing has been paid on it yet.'}`,
+        `Are you sure you want to cancel ${client}'s booking${date ? ' on ' + date : ''}? ${refundCents > 0 ? `Any card deposit paid through Square (${paidStr}) will be refunded automatically; any manual payments will be marked for reimbursement.` : 'Nothing has been paid on it yet.'}`,
         'Cancel Booking',
         onConfirm,
         'Keep Booking'

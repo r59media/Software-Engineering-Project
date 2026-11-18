@@ -52,7 +52,7 @@
 
     /** Cancel a booking and release its slot: PATCH /admin/bookings/:id/cancel */
     async cancelBooking(id) {
-      return client().patch(`/admin/bookings/${encodeURIComponent(id)}/cancel`, {});
+      return client().patch(`/admin/bookings/${encodeURIComponent(id)}/cancel`, { refund: true });
     },
 
     /** Permanently delete a booking: DELETE /admin/bookings/:id */

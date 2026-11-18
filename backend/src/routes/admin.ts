@@ -34,6 +34,7 @@ import {
 import {
   BillingError,
   cancelOpenInvoice,
+  getSquare,
   getStudioTimeZone,
   loadBookingTotals,
   OPEN_INVOICE_EXISTS_SQL,
@@ -1399,13 +1400,77 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
 
-    const booking = await c.env.DB.prepare('SELECT slot_id FROM Bookings WHERE id = ?').bind(id).first<{ slot_id: number }>()
+    const booking = await c.env.DB.prepare(
+      'SELECT slot_id, status, square_payment_id, deposit_paid FROM Bookings WHERE id = ?'
+    )
+      .bind(id)
+      .first<{
+        slot_id: number | null
+        status: string | null
+        square_payment_id: string | null
+        deposit_paid: number | null
+      }>()
     if (!booking) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
     }
 
+    const body = (await c.req.json().catch(() => ({}))) as { refund?: boolean; reason?: string } | null
+    const shouldRefund = body?.refund !== false
+
+    if (String(booking.status || '').toLowerCase() === 'cancelled') {
+      return c.json({ success: true, status: 'success', refundedCents: 0 })
+    }
+
     // Withdraw any open invoice first; a BillingError leaves the booking unchanged
     await cancelOpenInvoice(c.env.DB, c.env, id)
+
+    let refundedCents = 0
+    let squareRefundId: string | null = null
+
+    if (shouldRefund && booking.square_payment_id && Number(booking.deposit_paid || 0) > 0) {
+      try {
+        const { client } = await getSquare(c.env)
+        const paymentRes = await client.payments.get({ paymentId: booking.square_payment_id })
+        const payment = paymentRes?.payment
+        const refundableCents = Math.max(
+          0,
+          Number(payment?.amountMoney?.amount ?? booking.deposit_paid) - Number(payment?.refundedMoney?.amount ?? 0)
+        )
+
+        if (refundableCents > 0) {
+          const refundRes = await client.refunds.refundPayment({
+            idempotencyKey: `cancel_${id}_${booking.square_payment_id}`,
+            paymentId: booking.square_payment_id,
+            amountMoney: { amount: BigInt(refundableCents), currency: 'USD' },
+            reason: String(body?.reason || 'Photographer cancelled booking').slice(0, 192)
+          })
+          squareRefundId = refundRes?.refund?.id || null
+          refundedCents = refundableCents
+
+          const existingRefund = await c.env.DB.prepare(
+            "SELECT id FROM Booking_Payments WHERE booking_id = ? AND method = 'refund' AND amount = ? LIMIT 1"
+          )
+            .bind(id, -refundedCents)
+            .first<{ id: number }>()
+
+          if (!existingRefund) {
+            await c.env.DB.prepare(
+              'INSERT INTO Booking_Payments (booking_id, amount, method, paid_on, note) VALUES (?, ?, ?, ?, ?)'
+            )
+              .bind(
+                id,
+                -refundedCents,
+                'refund',
+                new Date().toISOString().slice(0, 10),
+                squareRefundId ? `Square refund (${squareRefundId})` : 'Square refund'
+              )
+              .run()
+          }
+        }
+      } catch (err: unknown) {
+        return billingErrorResponse(c, err, 'Could not refund Square payment.')
+      }
+    }
 
     // Guarded like every lock: a Send that claimed the booking after the withdraw above blocks the cancel
     const cancelled = await c.env.DB.prepare(
@@ -1421,7 +1486,7 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
 
     scheduleGoogleCalendarSync(c, id, 'delete')
 
-    return c.json({ success: true, status: 'success' })
+    return c.json({ success: true, status: 'success', refundedCents, squareRefundId })
   } catch (e: any) {
     return billingErrorResponse(c, e, 'Could not cancel booking.')
   }

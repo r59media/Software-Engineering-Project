@@ -902,13 +902,25 @@
       const btns = bookingButtons('data-cancel-booking', id);
       setDisabled(btns, true);
       try {
-        await window.R59.bookingsApi.cancelBooking(b.id);
+        const res = await window.R59.bookingsApi.cancelBooking(b.id);
+        const refundedCents = Number(res?.refundedCents || res?.data?.refundedCents || 0);
+        if (refundedCents > 0) {
+          b.paymentsTotal = (Number(b.paymentsTotal) || 0) - refundedCents;
+        }
         b.status = 'Cancelled';
         refreshBookingViews();
-        const refundCents = st().balanceOf({ ...b, status: 'Cancelled' }).refundOwedCents;
-        toast(refundCents > 0
-          ? `Booking cancelled — ${st().formatCents(refundCents)} paid so far marked for reimbursement`
-          : 'Booking cancelled — nothing had been paid', { type: 'success' });
+        const remainingOwedCents = st().balanceOf({ ...b, status: 'Cancelled' }).refundOwedCents;
+        let msg;
+        if (refundedCents > 0 && remainingOwedCents > 0) {
+          msg = `Booking cancelled — ${st().formatCents(refundedCents)} refunded via Square; ${st().formatCents(remainingOwedCents)} manual payment marked for reimbursement.`;
+        } else if (refundedCents > 0) {
+          msg = `Booking cancelled — ${st().formatCents(refundedCents)} refunded via Square.`;
+        } else if (remainingOwedCents > 0) {
+          msg = `Booking cancelled — ${st().formatCents(remainingOwedCents)} paid so far marked for reimbursement.`;
+        } else {
+          msg = 'Booking cancelled — nothing had been paid.';
+        }
+        toast(msg, { type: 'success' });
       } catch (err) {
         if (err.status !== 401) toast(`Couldn't cancel the booking. ${err.message}`, { type: 'error' });
         setDisabled(btns, false);
