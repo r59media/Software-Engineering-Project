@@ -51,8 +51,8 @@
     },
 
     /** Cancel a booking and release its slot: PATCH /admin/bookings/:id/cancel */
-    async cancelBooking(id) {
-      return client().patch(`/admin/bookings/${encodeURIComponent(id)}/cancel`, { refund: true });
+    async cancelBooking(id: string, opts: { refund?: boolean } = { refund: true }) {
+      return client().patch(`/admin/bookings/${encodeURIComponent(id)}/cancel`, { refund: opts.refund !== false });
     },
 
     /** Permanently delete a booking: DELETE /admin/bookings/:id */

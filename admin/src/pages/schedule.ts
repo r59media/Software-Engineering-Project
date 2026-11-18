@@ -898,11 +898,11 @@
     const b = findBooking(id);
     if (!b || statusKey(b) === 'cancelled') return;
 
-    window.R59.confirmation.confirmCancelBooking(b, async () => {
+    window.R59.confirmation.confirmCancelBooking(b, async (shouldRefund = true) => {
       const btns = bookingButtons('data-cancel-booking', id);
       setDisabled(btns, true);
       try {
-        const res = await window.R59.bookingsApi.cancelBooking(b.id);
+        const res = await window.R59.bookingsApi.cancelBooking(b.id, { refund: shouldRefund });
         const refundedCents = Number(res?.refundedCents || res?.data?.refundedCents || 0);
         if (refundedCents > 0) {
           b.paymentsTotal = (Number(b.paymentsTotal) || 0) - refundedCents;
@@ -915,7 +915,9 @@
           msg = `Booking cancelled — ${st().formatCents(refundedCents)} refunded via Square; ${st().formatCents(remainingOwedCents)} manual payment marked for reimbursement.`;
         } else if (refundedCents > 0) {
           msg = `Booking cancelled — ${st().formatCents(refundedCents)} refunded via Square.`;
-        } else if (remainingOwedCents > 0) {
+        } else if (!shouldRefund && remainingOwedCents > 0) {
+          msg = 'Booking cancelled — deposit kept (no Square refund issued).';
+        } else if (shouldRefund && remainingOwedCents > 0) {
           msg = `Booking cancelled — ${st().formatCents(remainingOwedCents)} paid so far marked for reimbursement.`;
         } else {
           msg = 'Booking cancelled — nothing had been paid.';

@@ -204,13 +204,47 @@
         ? st.balanceOf({ ...booking, status: 'Cancelled' }).refundOwedCents
         : Math.round((Number(booking.deposit) || 0) * 100);
       const paidStr = st && st.formatCents ? st.formatCents(refundCents) : `$${(refundCents / 100).toFixed(2)}`;
+      if (refundCents <= 0) {
+        confirmDanger(
+          'Cancel Booking?',
+          `Are you sure you want to cancel ${client}'s booking${date ? ' on ' + date : ''}? Nothing has been paid on it yet.`,
+          'Cancel Booking',
+          () => onConfirm(false),
+          'Keep Booking'
+        );
+        return;
+      }
+
+      let checkbox = null;
       confirmDanger(
         'Cancel Booking?',
-        `Are you sure you want to cancel ${client}'s booking${date ? ' on ' + date : ''}? ${refundCents > 0 ? `Any card deposit paid through Square (${paidStr}) will be refunded automatically; any manual payments will be marked for reimbursement.` : 'Nothing has been paid on it yet.'}`,
+        `Are you sure you want to cancel ${client}'s booking${date ? ' on ' + date : ''}? ${paidStr} has been paid so far; any manual payments will be marked for reimbursement.`,
         'Cancel Booking',
-        onConfirm,
+        () => onConfirm(checkbox ? checkbox.checked : true),
         'Keep Booking'
       );
+
+      const modalTextEl = document.getElementById('modalText');
+      if (modalTextEl) {
+        const wrap = document.createElement('div');
+        wrap.style.marginTop = '12px';
+        const label = document.createElement('label');
+        label.style.display = 'flex';
+        label.style.alignItems = 'flex-start';
+        label.style.gap = '8px';
+        label.style.cursor = 'pointer';
+        label.style.fontSize = '0.9em';
+
+        checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = true;
+        checkbox.style.marginTop = '3px';
+
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(`Refund card deposit (${paidStr}) via Square (uncheck to keep deposit if client cancelled)`));
+        wrap.appendChild(label);
+        modalTextEl.appendChild(wrap);
+      }
     },
 
     /**
