@@ -2,8 +2,8 @@
 @import './tokens.css';
 
 * { box-sizing: border-box; }
-html { min-width: 320px; background: var(--color-brand-black); }
-body { margin: 0; color: var(--color-brand-white); font-family: var(--font-body); font-size: var(--text-base); line-height: var(--line-body); }
+html { min-width: 320px; background: var(--color-brand-black); overflow-x: clip; }
+body { margin: 0; color: var(--color-brand-white); font-family: var(--font-body); font-size: var(--text-base); line-height: var(--line-body); overflow-x: clip; }
 img, canvas {
   -webkit-user-drag: none;
   user-select: none;
