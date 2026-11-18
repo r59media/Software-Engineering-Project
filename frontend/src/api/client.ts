@@ -464,13 +464,21 @@ export async function unlockRescheduleBooking(
     })
     const json = (await res.json()) as Record<string, unknown>
     if (!res.ok || json.status === 'error') {
+      const errorObj = (json.error && typeof json.error === 'object' ? json.error : null) as Record<string, unknown> | null
       return {
         status: 'error',
-        code: typeof json.code === 'string' ? json.code : 'REQUEST_FAILED',
+        code:
+          typeof json.code === 'string'
+            ? json.code
+            : typeof errorObj?.code === 'string'
+              ? errorObj.code
+              : 'REQUEST_FAILED',
         message:
           typeof json.message === 'string'
             ? json.message
-            : 'Unable to verify your booking details. Please check your information and try again.',
+            : typeof errorObj?.message === 'string'
+              ? errorObj.message
+              : 'Unable to verify your booking details. Please check your information and try again.',
       }
     }
     const payload = (json.data !== undefined && typeof json.data === 'object' ? json.data : json) as RescheduleUnlockData

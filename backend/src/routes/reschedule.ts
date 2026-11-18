@@ -162,7 +162,7 @@ async function loadBookingWithSlot(db: D1Database, bookingId: number) {
       `SELECT b.id, b.service_id, b.slot_id, b.client_name, b.client_email, b.customer_phone,
               COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
               ss.date AS slot_date, ss.start_time AS slot_start_time, ss.end_time AS slot_end_time,
-              s.name AS service_name, s.title AS service_title
+              s.name AS service_name
        FROM Bookings b
        LEFT JOIN Schedule_Slots ss ON b.slot_id = ss.id
        LEFT JOIN Services s ON b.service_id = s.id
@@ -200,7 +200,7 @@ rescheduleRoutes.get('/calendar.ics', async (c) => {
     const { results: bookingRows } = await c.env.DB.prepare(
       `SELECT b.id, b.client_name, b.client_email, b.customer_phone, COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes,
               b.attendees, b.status, ss.date, ss.start_time, ss.end_time,
-              s.name AS service_name, s.title AS service_title
+              s.name AS service_name
        FROM Bookings b
        INNER JOIN Schedule_Slots ss ON b.slot_id = ss.id
        LEFT JOIN Services s ON b.service_id = s.id
@@ -220,7 +220,7 @@ rescheduleRoutes.get('/calendar.ics', async (c) => {
       client_name: row.client_name,
       client_email: row.client_email,
       customer_phone: row.customer_phone,
-      package_name: row.service_title || row.service_name,
+      package_name: row.service_name,
       service_name: row.service_name,
       status: row.status,
       notes: row.notes,
@@ -281,7 +281,7 @@ async function buildReschedulePayload(
           client_name: booking.client_name,
           client_email: booking.client_email,
           customer_phone: booking.customer_phone,
-          package_name: booking.service_title || booking.service_name,
+          package_name: booking.service_name,
           service_name: booking.service_name,
           status: booking.status,
           location: booking.location,
@@ -300,7 +300,7 @@ async function buildReschedulePayload(
     end_time: booking.slot_end_time,
     client_name: booking.client_name,
     client_email: booking.client_email,
-    package_name: booking.service_title || booking.service_name || 'Photography Session',
+    package_name: booking.service_name || 'Photography Session',
     status: booking.status,
     can_reschedule: rescheduleAllowed,
     rescheduleAllowed,
@@ -410,7 +410,7 @@ rescheduleRoutes.post('/reschedule/unlock', async (c) => {
         `SELECT b.id, b.service_id, b.slot_id, b.client_name, b.client_email, b.customer_phone,
                 COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
                 ss.date AS slot_date, ss.start_time AS slot_start_time, ss.end_time AS slot_end_time,
-                s.name AS service_name, s.title AS service_title
+                s.name AS service_name
          FROM Bookings b
          LEFT JOIN Schedule_Slots ss ON b.slot_id = ss.id
          LEFT JOIN Services s ON b.service_id = s.id
@@ -432,7 +432,7 @@ rescheduleRoutes.post('/reschedule/unlock', async (c) => {
         `SELECT b.id, b.service_id, b.slot_id, b.client_name, b.client_email, b.customer_phone,
                 COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
                 ss.date AS slot_date, ss.start_time AS slot_start_time, ss.end_time AS slot_end_time,
-                s.name AS service_name, s.title AS service_title
+                s.name AS service_name
          FROM Bookings b
          LEFT JOIN Schedule_Slots ss ON b.slot_id = ss.id
          LEFT JOIN Services s ON b.service_id = s.id
@@ -514,7 +514,7 @@ rescheduleRoutes.get('/:id/reschedule', async (c) => {
         status: 'success',
         requiresVerification: true,
         id: booking.id,
-        serviceName: booking.service_title || booking.service_name || 'Photography Session'
+        serviceName: booking.service_name || 'Photography Session'
       })
     }
 
@@ -719,7 +719,7 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
       client_name: booking.client_name,
       client_email: booking.client_email,
       customer_phone: booking.customer_phone,
-      package_name: booking.service_title || booking.service_name,
+      package_name: booking.service_name,
       service_name: booking.service_name,
       status: booking.status,
       notes: booking.notes,
@@ -739,7 +739,7 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
       end_time: targetSlot.end_time,
       client_name: booking.client_name,
       client_email: booking.client_email,
-      package_name: booking.service_title || booking.service_name || 'Photography Session',
+      package_name: booking.service_name || 'Photography Session',
       status: booking.status,
       reschedule_url: rescheduleUrl,
       ics_url: icsUrl,
@@ -796,7 +796,7 @@ rescheduleRoutes.get('/:id/calendar.ics', async (c) => {
         client_name: booking.client_name,
         client_email: booking.client_email,
         customer_phone: booking.customer_phone,
-        package_name: booking.service_title || booking.service_name,
+        package_name: booking.service_name,
         service_name: booking.service_name,
         status: booking.status,
         notes: booking.notes,
