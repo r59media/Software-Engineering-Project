@@ -2,6 +2,16 @@ import { Hono } from 'hono'
 import { Bindings } from '../index'
 import { adminAuth, verifySessionToken, extractSessionToken, getSigningSecret, isTokenRevoked, isTokenRevokedInDb, hasForbiddenPaymentFields } from '../middleware/auth'
 import defaultPortfolioSeed from '../defaultPortfolioSeed.json'
+import {
+  buildEdgeCacheKey,
+  bumpPublicContentVersion,
+  getExecutionCtx,
+  getPublicContentVersion,
+  PUBLIC_READ_CACHE_CONTROL,
+  scheduleEdgeCachePut,
+  shouldBypassPublicEdgeCache,
+  tryEdgeCacheMatch
+} from '../lib/edgeCache'
 
 function isValidId(id: string | undefined): boolean {
   return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
@@ -244,6 +254,22 @@ export const servicesRouter = new Hono<{ Bindings: Bindings }>()
 servicesRouter.get('/', async (c) => {
   try {
     const includeAllRequested = c.req.query('all') === 'true'
+    const bypassEdgeCache = includeAllRequested || shouldBypassPublicEdgeCache(c)
+    let cacheKeyUrl: string | null = null
+
+    if (!bypassEdgeCache) {
+      const version = await getPublicContentVersion(c.env.DB)
+      cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
+      const cached = await tryEdgeCacheMatch(cacheKeyUrl)
+      if (cached) {
+        return new Response(cached.body, {
+          status: cached.status,
+          statusText: cached.statusText,
+          headers: cached.headers
+        })
+      }
+    }
+
     let includeAll = false
 
     if (includeAllRequested) {
@@ -266,8 +292,12 @@ servicesRouter.get('/', async (c) => {
     const { results } = await c.env.DB.prepare(query).all()
     const services = (results || []).map(mapServiceRow)
 
-    c.header('Cache-Control', 'no-store')
-    return c.json({ services, status: 'success', data: services })
+    c.header('Cache-Control', bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL)
+    const res = c.json({ services, status: 'success', data: services })
+    if (!bypassEdgeCache && cacheKeyUrl) {
+      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
+    }
+    return res
   } catch (e: any) {
     c.header('Cache-Control', 'no-store')
     return c.json({
@@ -287,13 +317,34 @@ servicesRouter.get('/:id', async (c) => {
     if (!isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
+
+    const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
+    let cacheKeyUrl: string | null = null
+    if (!bypassEdgeCache) {
+      const version = await getPublicContentVersion(c.env.DB)
+      cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
+      const cached = await tryEdgeCacheMatch(cacheKeyUrl)
+      if (cached) {
+        return new Response(cached.body, {
+          status: cached.status,
+          statusText: cached.statusText,
+          headers: cached.headers
+        })
+      }
+    }
+
     await ensureServicesSchemaAndDefaults(c.env.DB)
     const row = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(id).first()
     if (!row) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
     }
     const service = mapServiceRow(row)
-    return c.json({ service, status: 'success', data: service })
+    c.header('Cache-Control', bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL)
+    const res = c.json({ service, status: 'success', data: service })
+    if (!bypassEdgeCache && cacheKeyUrl) {
+      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
+    }
+    return res
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch service.', details: [] } }, 500)
   }
@@ -460,6 +511,8 @@ servicesRouter.post('/', adminAuth, async (c) => {
     const createdRow = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(newId).first()
     const mapped = mapServiceRow(createdRow)
 
+    await bumpPublicContentVersion(c.env.DB)
+
     return c.json({
       success: true,
       status: 'success',
@@ -505,6 +558,8 @@ servicesRouter.put('/order', adminAuth, async (c) => {
     if (statements.length > 0) {
       await c.env.DB.batch(statements)
     }
+
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
@@ -728,6 +783,8 @@ servicesRouter.put('/:id', adminAuth, async (c) => {
     const updatedRow = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(id).first()
     const mapped = mapServiceRow(updatedRow)
 
+    await bumpPublicContentVersion(c.env.DB)
+
     return c.json({
       success: true,
       status: 'success',
@@ -758,15 +815,18 @@ servicesRouter.delete('/:id', adminAuth, async (c) => {
 
     if (bookingCheck) {
       await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
+      await bumpPublicContentVersion(c.env.DB)
       return c.json({ success: true, status: 'success', message: 'Service deactivated (has associated bookings).' })
     }
 
     try {
       await c.env.DB.prepare('DELETE FROM Services WHERE id = ?').bind(id).run()
+      await bumpPublicContentVersion(c.env.DB)
       return c.json({ success: true, status: 'success' })
     } catch {
       // Fallback to soft-deactivation if foreign key constraint prevents deletion
       await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
+      await bumpPublicContentVersion(c.env.DB)
       return c.json({ success: true, status: 'success', message: 'Service deactivated (has associated records).' })
     }
   } catch (e: any) {

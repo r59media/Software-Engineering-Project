@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { HeroDestinations, HeroSlide } from '../../types/hero'
 import { ActionLink } from '../../components/ActionLink'
@@ -15,9 +15,10 @@ export interface HeroProps {
 interface HeroImageProps {
   slide: HeroSlide
   fallbackImageUrl?: string
+  isFirst?: boolean
 }
 
-function HeroImage({ slide, fallbackImageUrl }: HeroImageProps) {
+function HeroImage({ slide, fallbackImageUrl, isFirst = false }: HeroImageProps) {
   const [currentUrl, setCurrentUrl] = useState(slide.imageUrl)
   const [failed, setFailed] = useState(false)
 
@@ -49,7 +50,10 @@ function HeroImage({ slide, fallbackImageUrl }: HeroImageProps) {
           className="hero__canvas"
           width={slide.width}
           height={slide.height}
-          eager={true}
+          loading={isFirst ? 'eager' : undefined}
+          fetchPriority={isFirst ? 'high' : undefined}
+          eager={!isFirst}
+          placeholderColor="#141414"
           onError={handleImageError}
         />
       )}
@@ -68,8 +72,10 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
       return true
     })
   }, [slides])
+  const sectionRef = useRef<HTMLElement>(null)
   const [currentId, setCurrentId] = useState<string | undefined>(() => availableSlides[0]?.id)
   const [hidden, setHidden] = useState(() => document.hidden)
+  const [inView, setInView] = useState(true)
   const controlled = activeSlideId !== undefined
   const activeIndex = Math.max(0, availableSlides.findIndex(slide => slide.id === (controlled ? activeSlideId : currentId)))
   const activeSlide = availableSlides[activeIndex]
@@ -96,7 +102,18 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
   }, [])
 
   useEffect(() => {
-    if (controlled || availableSlides.length <= 1 || hidden) return
+    const el = sectionRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      ([entry]) => setInView(entry.isIntersecting),
+      { threshold: 0 },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    if (controlled || availableSlides.length <= 1 || hidden || !inView) return
     const interval = window.setInterval(() => {
       setCurrentId(prevId => {
         const currIndex = Math.max(0, availableSlides.findIndex(s => s.id === prevId))
@@ -105,10 +122,10 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
       })
     }, 1800)
     return () => window.clearInterval(interval)
-  }, [controlled, availableSlides, hidden])
+  }, [controlled, availableSlides, hidden, inView])
 
   return (
-    <section id="hero" className="hero" aria-labelledby="hero-title" tabIndex={-1}>
+    <section ref={sectionRef} id="hero" className="hero" aria-labelledby="hero-title" tabIndex={-1}>
       <div className="hero__stage">
         <div className="hero__background">
           <AnimatePresence initial={false}>
@@ -124,7 +141,7 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
                   ease: [0.16, 1, 0.3, 1],
                 }}
               >
-                <HeroImage slide={activeSlide} fallbackImageUrl={slides[0]?.imageUrl} />
+                <HeroImage slide={activeSlide} fallbackImageUrl={slides[0]?.imageUrl} isFirst={activeIndex === 0} />
               </motion.div>
             )}
           </AnimatePresence>

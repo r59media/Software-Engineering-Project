@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { isWebKit } from '../utils/browserEnv'
 
 export interface ProtectedCanvasImageProps {
   src: string
@@ -10,8 +11,41 @@ export interface ProtectedCanvasImageProps {
   width?: number
   height?: number
   eager?: boolean
+  loading?: 'lazy' | 'eager' | string
+  fetchPriority?: 'high' | 'low' | 'auto'
+  forceOriginal?: boolean
+  placeholderColor?: string
   onError?: () => void
   onLoad?: () => void
+}
+
+type MediaWidthVariant = 640 | 1280
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function pickRequiredMediaWidth(
+  cssWidth: number,
+  dpr: number,
+  forceOriginal: boolean,
+): MediaWidthVariant | undefined {
+  if (forceOriginal || cssWidth <= 0) {
+    return undefined
+  }
+  const needed = Math.ceil(cssWidth * Math.max(1, dpr))
+  if (needed <= 640) {
+    return 640
+  }
+  if (needed <= 1280) {
+    return 1280
+  }
+  return undefined
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function withMediaWidth(src: string, w?: MediaWidthVariant): string {
+  if (!w || !src.includes('/api/media/')) {
+    return src
+  }
+  return `${src}${src.includes('?') ? '&' : '?'}w=${w}`
 }
 
 type DrawableSource = ImageBitmap | HTMLImageElement
@@ -49,8 +83,11 @@ function cacheDrawable(src: string, source: DrawableSource) {
   } else if (drawableCache.size >= MAX_DRAWABLE_CACHE_ENTRIES) {
     const oldestKey = drawableCache.keys().next().value
     if (oldestKey !== undefined) {
-      // Evict without calling .close() so any in-flight/queued drawImage doesn't hit InvalidStateError
+      const evicted = drawableCache.get(oldestKey)
       drawableCache.delete(oldestKey)
+      if (evicted && evicted !== source && 'close' in evicted && typeof evicted.close === 'function') {
+        evicted.close()
+      }
     }
   }
   drawableCache.set(src, source)
@@ -70,7 +107,7 @@ function getCachedDrawable(src: string): DrawableSource | undefined {
   return cached
 }
 
-function fetchProtectedBlob(src: string): Promise<Blob> {
+function fetchProtectedBlob(src: string, fetchPriority?: 'high' | 'low' | 'auto'): Promise<Blob> {
   const cached = blobCache.get(src)
   if (cached) {
     cacheBlob(src, cached)
@@ -82,12 +119,17 @@ function fetchProtectedBlob(src: string): Promise<Blob> {
     return inFlight
   }
 
-  const request = fetch(src, {
+  const requestInit: RequestInit & { priority?: 'high' | 'low' | 'auto' } = {
     credentials: 'omit',
     headers: {
       'X-R59-Client': 'media-viewer',
     },
-  })
+  }
+  if (fetchPriority === 'high') {
+    requestInit.priority = 'high'
+  }
+
+  const request = fetch(src, requestInit)
     .then(async (response) => {
       if (!response.ok) {
         throw new Error(`Failed to load protected media: ${response.status}`)
@@ -129,7 +171,7 @@ async function decodeBlobToDrawable(blob: Blob): Promise<DrawableSource> {
   }
 }
 
-async function getOrDecodeDrawable(src: string): Promise<DrawableSource> {
+async function getOrDecodeDrawable(src: string, fetchPriority?: 'high' | 'low' | 'auto'): Promise<DrawableSource> {
   const cached = getCachedDrawable(src)
   if (cached) return cached
 
@@ -137,7 +179,7 @@ async function getOrDecodeDrawable(src: string): Promise<DrawableSource> {
   if (inFlight) return inFlight
 
   const decodePromise = (async () => {
-    const blob = await fetchProtectedBlob(src)
+    const blob = await fetchProtectedBlob(src, fetchPriority)
     const rechecked = getCachedDrawable(src)
     if (rechecked) return rechecked
 
@@ -193,9 +235,14 @@ export function ProtectedCanvasImage({
   width,
   height,
   eager = false,
+  loading,
+  fetchPriority,
+  forceOriginal = false,
+  placeholderColor = 'transparent',
   onError,
   onLoad,
 }: ProtectedCanvasImageProps) {
+  const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const onErrorRef = useRef(onError)
   const onLoadRef = useRef(onLoad)
@@ -219,21 +266,36 @@ export function ProtectedCanvasImage({
     const abortController = new AbortController()
     const { signal } = abortController
     let observer: IntersectionObserver | null = null
+    let webkitObserver: IntersectionObserver | null = null
+    let resizeObserver: ResizeObserver | null = null
     let rafId: number | null = null
     let started = false
+    let hasDrawn = false
+    let offscreenReleased = false
+    let loadedWidth = 0
+    let requestedWidth = 0
+    let activeEffectiveSrc = src
 
-    const renderDrawable = (source: DrawableSource) => {
-      if (signal.aborted) return
+    const measureCssWidth = (): number => {
+      const canvasWidth = canvasRef.current?.getBoundingClientRect().width ?? 0
+      if (canvasWidth > 0) return canvasWidth
+      return containerRef.current?.getBoundingClientRect().width ?? 0
+    }
+
+    const renderDrawable = (source: DrawableSource, cacheKey: string) => {
+      if (signal.aborted || offscreenReleased) return
       const canvas = canvasRef.current
       if (!canvas) return
       try {
         if (drawDrawableToCanvas(canvas, source)) {
+          hasDrawn = true
+          offscreenReleased = false
           setLoadedSrc(src)
           onLoadRef.current?.()
         }
       } catch (err) {
-        if (drawableCache.get(src) === source) {
-          drawableCache.delete(src)
+        if (drawableCache.get(cacheKey) === source) {
+          drawableCache.delete(cacheKey)
           if ('close' in source && typeof source.close === 'function') {
             source.close()
           }
@@ -242,29 +304,60 @@ export function ProtectedCanvasImage({
       }
     }
 
-    async function loadImage() {
-      if (started || signal.aborted) return
-      started = true
+    async function repaintFromCacheOrDecode() {
+      if (signal.aborted || offscreenReleased) return
+      const targetSrc = activeEffectiveSrc
+      try {
+        const cachedDrawable = getCachedDrawable(targetSrc)
+        if (cachedDrawable) {
+          renderDrawable(cachedDrawable, targetSrc)
+          return
+        }
+        const drawable = await getOrDecodeDrawable(targetSrc, fetchPriority)
+        if (signal.aborted || offscreenReleased) return
+        renderDrawable(drawable, targetSrc)
+      } catch (err: unknown) {
+        if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+          return
+        }
+        console.error('ProtectedCanvasImage repaint error:', err)
+      }
+    }
+
+    async function loadVariant(targetWidth: MediaWidthVariant | undefined, isUpgrade: boolean) {
+      if (signal.aborted) return
+      const numericWidth = targetWidth ?? Infinity
+      const effectiveSrc = withMediaWidth(src, targetWidth)
+      requestedWidth = Math.max(requestedWidth, numericWidth)
+      activeEffectiveSrc = effectiveSrc
 
       try {
-        const cachedDrawable = getCachedDrawable(src)
+        const cachedDrawable = getCachedDrawable(effectiveSrc)
         if (cachedDrawable) {
-          renderDrawable(cachedDrawable)
+          loadedWidth = Math.max(loadedWidth, numericWidth)
+          renderDrawable(cachedDrawable, effectiveSrc)
           return
         }
 
-        const drawable = await getOrDecodeDrawable(src)
-        if (signal.aborted) return
+        const drawable = await getOrDecodeDrawable(effectiveSrc, fetchPriority)
+        if (signal.aborted || numericWidth < requestedWidth) return
 
+        loadedWidth = Math.max(loadedWidth, numericWidth)
+
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId)
+        }
         rafId = requestAnimationFrame(() => {
           rafId = null
           try {
-            renderDrawable(drawable)
+            renderDrawable(drawable, effectiveSrc)
           } catch (err: unknown) {
             if (signal.aborted) return
             console.error('ProtectedCanvasImage load error:', err)
-            setErrorSrc(src)
-            onErrorRef.current?.()
+            if (!isUpgrade && !hasDrawn) {
+              setErrorSrc(src)
+              onErrorRef.current?.()
+            }
           }
         })
       } catch (err: unknown) {
@@ -272,13 +365,70 @@ export function ProtectedCanvasImage({
           return
         }
         console.error('ProtectedCanvasImage load error:', err)
-        setErrorSrc(src)
-        onErrorRef.current?.()
+        if (!isUpgrade && !hasDrawn) {
+          setErrorSrc(src)
+          onErrorRef.current?.()
+        }
       }
     }
 
+    async function loadImage() {
+      if (started || signal.aborted) return
+      started = true
+
+      if (drawableCache.has(src)) {
+        await loadVariant(undefined, false)
+        return
+      }
+
+      const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+      const targetWidth = pickRequiredMediaWidth(measureCssWidth(), dpr, forceOriginal)
+      await loadVariant(targetWidth, false)
+    }
+
     const canvas = canvasRef.current
-    if (eager || drawableCache.has(src) || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
+    const observeTarget = containerRef.current ?? canvas
+    if (src.includes('/api/media/') && !forceOriginal && typeof ResizeObserver !== 'undefined' && observeTarget) {
+      resizeObserver = new ResizeObserver(() => {
+        if (!started || signal.aborted) return
+        const currentMax = Math.max(loadedWidth, requestedWidth)
+        if (currentMax === Infinity) return
+
+        const cssWidth = measureCssWidth()
+        if (cssWidth <= 0) return
+
+        const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+        const neededWidth = pickRequiredMediaWidth(cssWidth, dpr, forceOriginal)
+        const neededNumeric = neededWidth ?? Infinity
+        if (neededNumeric > currentMax) {
+          void loadVariant(neededWidth, true)
+        }
+      })
+      resizeObserver.observe(observeTarget)
+    }
+
+    if (isWebKit && typeof IntersectionObserver !== 'undefined' && canvas) {
+      webkitObserver = new IntersectionObserver(
+        (entries) => {
+          const isVisible = entries.some((entry) => entry.isIntersecting)
+          if (!isVisible) {
+            if (hasDrawn && !offscreenReleased) {
+              offscreenReleased = true
+              canvas.width = 1
+              canvas.height = 1
+            }
+          } else if (offscreenReleased) {
+            offscreenReleased = false
+            void repaintFromCacheOrDecode()
+          }
+        },
+        { rootMargin: '900px' },
+      )
+      webkitObserver.observe(canvas)
+    }
+
+    const shouldLoadEagerly = eager || loading === 'eager' || fetchPriority === 'high'
+    if (shouldLoadEagerly || drawableCache.has(src) || blobCache.has(src) || typeof IntersectionObserver === 'undefined' || !canvas) {
       void loadImage()
     } else {
       observer = new IntersectionObserver(
@@ -289,7 +439,7 @@ export function ProtectedCanvasImage({
             void loadImage()
           }
         },
-        { rootMargin: '400px 0px' },
+        { rootMargin: '600px' },
       )
       observer.observe(canvas)
     }
@@ -297,18 +447,25 @@ export function ProtectedCanvasImage({
     return () => {
       abortController.abort()
       observer?.disconnect()
+      webkitObserver?.disconnect()
+      resizeObserver?.disconnect()
       if (rafId !== null) {
         cancelAnimationFrame(rafId)
       }
     }
-  }, [src, eager])
+  }, [src, eager, loading, fetchPriority, forceOriginal])
 
   const canvasStyle: CSSProperties = objectPosition ? { objectPosition } : {}
+  const containerStyle: CSSProperties = {
+    ...(!isLoaded && !hasError ? { backgroundColor: placeholderColor } : {}),
+    ...style,
+  }
 
   return (
     <div
+      ref={containerRef}
       className={`protected-media-container ${containerClassName || ''}`.trim()}
-      style={style}
+      style={containerStyle}
       onContextMenu={(e) => e.preventDefault()}
       onDragStart={(e) => e.preventDefault()}
     >

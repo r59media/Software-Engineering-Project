@@ -9,7 +9,13 @@ import {
   invoiceStatusLabel,
   addDaysISO,
   dateInTimeZone,
-  parseMoneyToCents
+  localDateTimeToRFC3339,
+  parseMoneyToCents,
+  DEFAULT_BOOKING_POLICY,
+  normalizeBookingPolicy,
+  normalizeFeeRules,
+  evaluateDynamicFees,
+  type DynamicFeeRule
 } from '../src/lib/billingMath.ts'
 import { verifySquareSignature } from '../src/lib/squareWebhookAuth.ts'
 import { buildHybridSquareNote } from '../src/lib/squareBilling.ts'
@@ -228,4 +234,261 @@ test('buildHybridSquareNote: formats all hybrid fields and enforces 500-char lim
   })
   assert.equal(oversized.length, 500)
   assert.ok(oversized.endsWith('...'))
+})
+
+test('localDateTimeToRFC3339: converts EST/EDT studio-local times to UTC RFC 3339', () => {
+  // Winter EST (UTC-5)
+  assert.equal(localDateTimeToRFC3339('2026-01-15', '14:30', 'America/New_York'), '2026-01-15T19:30:00Z')
+  assert.equal(localDateTimeToRFC3339('2026-11-20', '20:00:00', 'America/New_York'), '2026-11-21T01:00:00Z')
+
+  // Summer EDT (UTC-4)
+  assert.equal(localDateTimeToRFC3339('2026-07-15', '14:30', 'America/New_York'), '2026-07-15T18:30:00Z')
+  assert.equal(localDateTimeToRFC3339('2026-06-01', '09:15:30', 'America/New_York'), '2026-06-01T13:15:30Z')
+
+  // Invalid inputs return null
+  assert.equal(localDateTimeToRFC3339('2026-02-30', '10:00', 'America/New_York'), null)
+  assert.equal(localDateTimeToRFC3339('2026-07-15', '25:00', 'America/New_York'), null)
+  assert.equal(localDateTimeToRFC3339('2026-07-15', '10:00', 'Invalid/Zone'), null)
+})
+
+test('DEFAULT_BOOKING_POLICY and normalizeBookingPolicy', () => {
+  assert.deepEqual(DEFAULT_BOOKING_POLICY, {
+    balanceDueDaysAfterEvent: 4,
+    rescheduleCutoffDays: 3,
+    requireSignature: true,
+    agreementTitle: 'Photography Services Agreement'
+  })
+  assert.deepEqual(normalizeBookingPolicy(null), DEFAULT_BOOKING_POLICY)
+  assert.deepEqual(
+    normalizeBookingPolicy({
+      balanceDueDaysAfterEvent: 7,
+      rescheduleCutoffDays: 2,
+      requireSignature: false,
+      agreementTitle: 'Custom Studio Contract'
+    }),
+    {
+      balanceDueDaysAfterEvent: 7,
+      rescheduleCutoffDays: 2,
+      requireSignature: false,
+      agreementTitle: 'Custom Studio Contract'
+    }
+  )
+})
+
+test('evaluateDynamicFees: days_before_max, privacy_declined, weekend, client_selectable, per_person_cents, percent_of_subtotal', () => {
+  const rules: DynamicFeeRule[] = [
+    {
+      id: 'rush_fee',
+      name: 'Rush Booking Fee',
+      triggerType: 'days_before_max',
+      daysBefore: 3,
+      amountType: 'fixed_cents',
+      amountValue: 5000,
+      active: true
+    },
+    {
+      id: 'privacy_fee',
+      name: 'Privacy Opt-Out Fee',
+      triggerType: 'privacy_declined',
+      amountType: 'percent_of_subtotal',
+      amountValue: 15,
+      active: true
+    },
+    {
+      id: 'weekend_fee',
+      name: 'Weekend Surcharge',
+      triggerType: 'weekend',
+      amountType: 'fixed_cents',
+      amountValue: 3500,
+      active: true
+    },
+    {
+      id: 'rush_edits',
+      name: 'Express Editing Add-On',
+      triggerType: 'client_selectable',
+      amountType: 'per_person_cents',
+      amountValue: 1500,
+      active: true
+    },
+    {
+      id: 'inactive_fee',
+      name: 'Inactive Fee',
+      triggerType: 'always',
+      amountType: 'fixed_cents',
+      amountValue: 9900,
+      active: false
+    }
+  ]
+
+  // 2026-11-21 is a Saturday (weekend), 2 days after 2026-11-19 (within daysBefore=3)
+  // privacy declined (portfolio=false, social=false) -> 15% of 20000 = 3000
+  // client_selectable 'rush_edits' selected with 3 attendees -> 1500 * 3 = 4500
+  const hitAll = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-21',
+    todayDate: '2026-11-19',
+    timeZone: 'America/New_York',
+    attendees: 3,
+    photoPermissionPortfolio: false,
+    photoPermissionSocial: false,
+    selectedFeeIds: ['rush_edits']
+  })
+  assert.equal(hitAll.daysUntilSession, 2)
+  assert.equal(hitAll.totalFeeCents, 5000 + 3000 + 3500 + 4500)
+  assert.deepEqual(
+    hitAll.appliedFees.map((f) => ({ id: f.id, amountCents: f.amountCents })),
+    [
+      { id: 'rush_fee', amountCents: 5000 },
+      { id: 'privacy_fee', amountCents: 3000 },
+      { id: 'weekend_fee', amountCents: 3500 },
+      { id: 'rush_edits', amountCents: 4500 }
+    ]
+  )
+
+  // 2026-11-25 is a Wednesday (not weekend), 6 days after 2026-11-19 (outside daysBefore=3)
+  // portfolio=true -> privacy NOT declined
+  // selectedFeeIds empty -> client_selectable NOT applied
+  const hitNone = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19',
+    timeZone: 'America/New_York',
+    attendees: 2,
+    photoPermissionPortfolio: true,
+    photoPermissionSocial: false,
+    selectedFeeIds: []
+  })
+  assert.equal(hitNone.daysUntilSession, 6)
+  assert.equal(hitNone.totalFeeCents, 0)
+  assert.deepEqual(hitNone.appliedFees, [])
+})
+
+test('evaluateDynamicFees: calculates daysUntilSession in studio timezone', () => {
+  const rules: DynamicFeeRule[] = [
+    {
+      id: 'same_week',
+      name: 'Short Notice',
+      triggerType: 'days_before_max',
+      daysBefore: 2,
+      amountType: 'fixed_cents',
+      amountValue: 2500,
+      active: true
+    }
+  ]
+  // 2026-11-20T03:00:00Z is 2026-11-19 22:00 in America/New_York
+  // Session on 2026-11-22 is 3 days away in NY (outside daysBefore=2), vs 2 days away in UTC
+  const nyResult = evaluateDynamicFees(rules, {
+    subtotalCents: 10000,
+    sessionDate: '2026-11-22',
+    now: new Date('2026-11-20T03:00:00Z'),
+    timeZone: 'America/New_York'
+  })
+  assert.equal(nyResult.daysUntilSession, 3)
+  assert.equal(nyResult.totalFeeCents, 0)
+
+  const utcResult = evaluateDynamicFees(rules, {
+    subtotalCents: 10000,
+    sessionDate: '2026-11-22',
+    now: new Date('2026-11-20T03:00:00Z'),
+    timeZone: 'UTC'
+  })
+  assert.equal(utcResult.daysUntilSession, 2)
+  assert.equal(utcResult.totalFeeCents, 2500)
+})
+
+test('normalizeFeeRules: filters invalid rules and preserves valid ones', () => {
+  const normalized = normalizeFeeRules([
+    {
+      id: 'valid_1',
+      name: 'Travel Fee',
+      triggerType: 'always',
+      amountType: 'fixed_cents',
+      amountValue: 2500,
+      active: true
+    },
+    { id: 'bad_trigger', name: 'Bad', triggerType: 'unknown', amountType: 'fixed_cents', amountValue: 100 },
+    { id: 'missing_days', name: 'Rush', triggerType: 'days_before_max', amountType: 'fixed_cents', amountValue: 100 }
+  ])
+  assert.equal(normalized.length, 1)
+  assert.equal(normalized[0].id, 'valid_1')
+})
+
+test('evaluateDynamicFees: on_location triggers when isOnLocation is true and stays $0 when false', () => {
+  const rules = normalizeFeeRules([
+    {
+      id: 'transport_fee',
+      name: 'On-Location Transport Fee',
+      triggerType: 'on_location',
+      amountType: 'fixed_cents',
+      amountValue: 4500,
+      active: true
+    }
+  ])
+  assert.equal(rules.length, 1)
+  assert.equal(rules[0].triggerType, 'on_location')
+
+  const onLocationResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19',
+    isOnLocation: true
+  })
+  assert.equal(onLocationResult.totalFeeCents, 4500)
+  assert.deepEqual(
+    onLocationResult.appliedFees.map((f) => ({ id: f.id, amountCents: f.amountCents })),
+    [{ id: 'transport_fee', amountCents: 4500 }]
+  )
+
+  const studioResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19',
+    isOnLocation: false
+  })
+  assert.equal(studioResult.totalFeeCents, 0)
+  assert.deepEqual(studioResult.appliedFees, [])
+})
+
+test('evaluateDynamicFees: reschedule triggers only when isReschedule is true and stays $0 at initial checkout', () => {
+  const rules = normalizeFeeRules([
+    {
+      id: 'reschedule_fee',
+      name: 'Client Self-Reschedule Fee',
+      triggerType: 'reschedule',
+      amountType: 'fixed_cents',
+      amountValue: 3500,
+      active: true
+    }
+  ])
+  assert.equal(rules.length, 1)
+  assert.equal(rules[0].triggerType, 'reschedule')
+
+  const rescheduleResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19',
+    isReschedule: true
+  })
+  assert.equal(rescheduleResult.totalFeeCents, 3500)
+  assert.deepEqual(
+    rescheduleResult.appliedFees.map((f) => ({ id: f.id, amountCents: f.amountCents })),
+    [{ id: 'reschedule_fee', amountCents: 3500 }]
+  )
+
+  const checkoutFalseResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19',
+    isReschedule: false
+  })
+  assert.equal(checkoutFalseResult.totalFeeCents, 0)
+  assert.deepEqual(checkoutFalseResult.appliedFees, [])
+
+  const checkoutOmittedResult = evaluateDynamicFees(rules, {
+    subtotalCents: 20000,
+    sessionDate: '2026-11-25',
+    todayDate: '2026-11-19'
+  })
+  assert.equal(checkoutOmittedResult.totalFeeCents, 0)
+  assert.deepEqual(checkoutOmittedResult.appliedFees, [])
 })

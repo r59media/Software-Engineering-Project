@@ -51,8 +51,8 @@
     },
 
     /** Cancel a booking and release its slot: PATCH /admin/bookings/:id/cancel */
-    async cancelBooking(id) {
-      return client().patch(`/admin/bookings/${encodeURIComponent(id)}/cancel`, {});
+    async cancelBooking(id: string, opts: { refund?: boolean } = { refund: true }) {
+      return client().patch(`/admin/bookings/${encodeURIComponent(id)}/cancel`, { refund: opts.refund !== false });
     },
 
     /** Permanently delete a booking: DELETE /admin/bookings/:id */
@@ -111,6 +111,29 @@
     /** Cancel the open invoice: POST /admin/bookings/:id/invoice/cancel */
     async cancelInvoice(bookingId) {
       return client().post(`/admin/bookings/${encodeURIComponent(bookingId)}/invoice/cancel`, {});
+    },
+
+    /**
+     * Push the balance checkout to a Square Terminal device: POST /admin/bookings/:id/terminal-checkout
+     */
+    async sendTerminalCheckout(bookingId, expectedAmountCents, deviceId) {
+      const payload = { expected_amount_cents: expectedAmountCents };
+      if (deviceId) payload.device_id = deviceId;
+      return client().post(`/admin/bookings/${encodeURIComponent(bookingId)}/terminal-checkout`, payload);
+    },
+
+    /**
+     * Fetch Google Calendar / ICS live feed configuration: GET /admin/calendar-feed
+     */
+    async fetchCalendarFeedConfig() {
+      return client().get('/admin/calendar-feed');
+    },
+
+    /**
+     * Trigger real-time Google Calendar backfill sync: POST /admin/calendar-sync
+     */
+    async syncAllToGoogleCalendar() {
+      return client().post('/admin/calendar-sync', {});
     }
   };
 

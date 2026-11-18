@@ -107,7 +107,20 @@ export function BookingServices({
             </p>
             <h2 id="booking-title">BOOK YOUR SESSION</h2>
           </div>
-          <p className="booking__subtitle">Your next great photo starts here. Choose a session to get started.</p>
+          <p className="booking__subtitle">
+            Your next great photo starts here. Choose a session to get started.{' '}
+            <a
+              href={`${import.meta.env.BASE_URL}reschedule`}
+              style={{
+                color: 'var(--color-gold, #d4af37)',
+                textDecoration: 'underline',
+                textUnderlineOffset: '3px',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Already booked? Reschedule →
+            </a>
+          </p>
         </header>
 
         <BookingProgressBar currentStep="services" />

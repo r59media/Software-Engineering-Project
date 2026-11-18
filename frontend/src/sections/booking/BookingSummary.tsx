@@ -12,30 +12,73 @@ interface BookingSummaryProps {
   dateTime: BookingDateTimeSelection
   photoPermissions: BookingPhotoPermissions
   onPhotoPermissionsChange: (permissions: BookingPhotoPermissions) => void
+  selectedFeeIds?: string[]
+  onSelectedFeeIdsChange?: (ids: string[]) => void
   customerInfo: BookingCustomerInfo
   onEdit: (step: 'services' | 'datetime' | 'info') => void
   onProceedToDeposit?: (draft: BookingReviewDraft) => void | Promise<void>
 }
 
-export function BookingSummary({ service, people, pricing = null, dateTime, customerInfo, photoPermissions, onPhotoPermissionsChange, onEdit, onProceedToDeposit }: BookingSummaryProps) {
+export function BookingSummary({
+  service,
+  people,
+  pricing = null,
+  dateTime,
+  customerInfo,
+  photoPermissions,
+  onPhotoPermissionsChange,
+  selectedFeeIds = [],
+  onSelectedFeeIdsChange,
+  onEdit,
+  onProceedToDeposit,
+}: BookingSummaryProps) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lock = useRef(false)
   const date = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(new Date(`${dateTime.date}T12:00:00Z`))
-  const breakdown = computeSessionPricing(service, people, pricing, previewBookingDepositPercent)
-  const price = breakdown.subtotalMinor === null ? 'Custom pricing' : new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(breakdown.subtotalMinor / 100)
+  const breakdown = computeSessionPricing(service, people, pricing, previewBookingDepositPercent, {
+    sessionDate: dateTime.date,
+    photoPermissions,
+    selectedFeeIds,
+  })
+  const formatCurrency = (minor: number) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(minor / 100)
+  const price = breakdown.subtotalMinor === null ? 'Custom pricing' : formatCurrency(breakdown.subtotalMinor)
   const depositPrice = breakdown.depositMinor !== null
-    ? new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(breakdown.depositMinor / 100)
+    ? formatCurrency(breakdown.depositMinor)
     : null
   const balancePrice = breakdown.subtotalMinor !== null && breakdown.depositMinor !== null
-    ? new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format((breakdown.subtotalMinor - breakdown.depositMinor) / 100)
+    ? formatCurrency(breakdown.subtotalMinor - breakdown.depositMinor)
     : null
+  const optionalAddOns = (pricing?.feeRules ?? []).filter(
+    rule => rule.active !== false && String(rule.trigger).toLowerCase() === 'client_selectable'
+  )
+  const toggleAddOn = (ruleId: string, checked: boolean) => {
+    if (!onSelectedFeeIdsChange) return
+    if (checked) {
+      onSelectedFeeIdsChange(selectedFeeIds.includes(ruleId) ? selectedFeeIds : [...selectedFeeIds, ruleId])
+    } else {
+      onSelectedFeeIdsChange(selectedFeeIds.filter(id => id !== ruleId))
+    }
+  }
   const proceed = async () => {
     if (lock.current || !onProceedToDeposit) return
     lock.current = true
     setBusy(true)
     setError(null)
-    try { await onProceedToDeposit({ serviceId: service.id, people, dateTime, customerInfo, photoPermissions: { ...photoPermissions }, photoPermissionTextVersion: '2026-11-11-v1', slotId: dateTime.slotId, slot_id: dateTime.slotId }) }
+    try {
+      await onProceedToDeposit({
+        serviceId: service.id,
+        people,
+        dateTime,
+        customerInfo,
+        photoPermissions: { ...photoPermissions },
+        photoPermissionTextVersion: '2026-11-11-v1',
+        selectedFeeIds: [...selectedFeeIds],
+        slotId: dateTime.slotId,
+        slot_id: dateTime.slotId,
+      })
+    }
     catch { setError('We couldn’t continue to the deposit. Your details are still here. Please try again.') }
     finally { lock.current = false; setBusy(false) }
   }
@@ -84,6 +127,59 @@ export function BookingSummary({ service, people, pricing = null, dateTime, cust
         <label><input type="checkbox" checked={photoPermissions.socialMedia} onChange={event => onPhotoPermissionsChange({ ...photoPermissions, socialMedia: event.target.checked })} /><span>I allow R59MEDIA to share photos of me from this session on its social media accounts.</span></label>
         <p>These permissions do not include paid advertising, sale, or licensing to third parties.</p>
       </fieldset>
+      {optionalAddOns.length > 0 && (
+        <fieldset className="booking-review__permissions" disabled={busy}>
+          <legend>Optional session add-ons <span>— Optional</span></legend>
+          {optionalAddOns.map(rule => {
+            const checked = selectedFeeIds.includes(rule.id)
+            const feeLabel = rule.amountType === 'percent'
+              ? `+${rule.amount}%`
+              : `+${formatCurrency(rule.amountMinor !== undefined ? rule.amountMinor : Math.round(rule.amount * 100))}`
+            return (
+              <label key={rule.id}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={event => toggleAddOn(rule.id, event.target.checked)}
+                />
+                <span>
+                  <strong>{rule.name}</strong> ({feeLabel})
+                  {rule.description ? ` — ${rule.description}` : ''}
+                </span>
+              </label>
+            )
+          })}
+        </fieldset>
+      )}
+      {breakdown.subtotalMinor !== null && (breakdown.baseFeeMinor > 0 || breakdown.extraPeopleFeeMinor > 0 || breakdown.appliedFees.length > 0) && (
+        <div className="booking-review__permissions" style={{ paddingBottom: '4px' }} aria-label="Itemized price breakdown">
+          <p style={{ fontWeight: 700, marginBottom: '6px' }}>Itemized Summary</p>
+          <div style={{ display: 'grid', gap: '4px', fontSize: '0.875rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+              <span>{service.name}</span>
+              <span>{formatCurrency(service.priceMinor ?? 0)}</span>
+            </div>
+            {breakdown.baseFeeMinor > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                <span>Base booking fee</span>
+                <span>{formatCurrency(breakdown.baseFeeMinor)}</span>
+              </div>
+            )}
+            {breakdown.extraPeopleFeeMinor > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                <span>Additional attendees</span>
+                <span>{formatCurrency(breakdown.extraPeopleFeeMinor)}</span>
+              </div>
+            )}
+            {breakdown.appliedFees.map(fee => (
+              <div key={fee.id} style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
+                <span>{fee.name}</span>
+                <span>{formatCurrency(fee.amountMinor)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <footer className="booking-review__footer">
         <div className="booking-review__price">
           <span className="booking-review__total-label">SESSION TOTAL</span>

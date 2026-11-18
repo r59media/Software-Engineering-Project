@@ -105,6 +105,17 @@ export interface SquareConfig {
   environment: 'sandbox' | 'production'
 }
 
+export interface ConfirmedBookingSummary {
+  bookingId?: number
+  totalCents: number
+  depositPaidCents: number
+  balanceDueCents: number
+  eventLocation?: string
+  rescheduleUrl?: string
+  icsUrl?: string
+  googleCalendarUrl?: string
+}
+
 export interface BookingSectionProps {
   onProceedToDeposit?: (draft: BookingReviewDraft) => void | Promise<void>
   services?: readonly BookingService[]
@@ -113,6 +124,48 @@ export interface BookingSectionProps {
   status?: 'ready' | 'loading' | 'error'
   onRetry?: () => void
   inquiryHref?: string
+  confirmedBooking?: ConfirmedBookingSummary | null
+  onResetBooking?: () => void
+}
+
+export type DynamicFeeTrigger =
+  | 'rush_days'
+  | 'days_before_max'
+  | 'privacy_declined'
+  | 'weekend'
+  | 'client_selectable'
+  | 'on_location'
+  | 'reschedule'
+
+export interface DynamicFeeRule {
+  id: string
+  name: string
+  description?: string
+  trigger: DynamicFeeTrigger | string
+  amountType: 'fixed' | 'percent'
+  /** Amount in dollars when amountType is 'fixed', or 0-100 when 'percent'. */
+  amount: number
+  /** Optional explicit minor-unit (cents) amount when provided by API. */
+  amountMinor?: number
+  /** Threshold in days for rush/last-minute fee triggers (e.g. 1 = day-before). */
+  thresholdDays?: number
+  active?: boolean
+}
+
+export interface AppliedFeeItem {
+  id: string
+  name: string
+  trigger: DynamicFeeTrigger | string
+  amountMinor: number
+  amountDollars: number
+}
+
+export interface BookingPolicySettings {
+  balanceDueDaysAfterEvent: number
+  lateCancellationDays: number
+  requireSignature: boolean
+  photographerName?: string
+  studioName?: string
 }
 
 export interface BookingReviewDraft {
@@ -122,6 +175,7 @@ export interface BookingReviewDraft {
   people: number
   dateTime: BookingDateTimeSelection
   customerInfo: BookingCustomerInfo
+  selectedFeeIds?: string[]
   slotId?: number
   slot_id?: number
 }
@@ -129,4 +183,74 @@ export interface BookingReviewDraft {
 export interface BookingPhotoPermissions {
   websitePortfolio: boolean
   socialMedia: boolean
+}
+
+export interface CheckoutResponseData {
+  booking_id?: number
+  payment_id?: string
+  order_id?: string
+  reschedule_token?: string
+  reschedule_url?: string
+  ics_url?: string
+  google_calendar_url?: string
+}
+
+export interface RescheduleSlotOption {
+  id: number
+  date: string
+  start_time: string
+  end_time?: string
+}
+
+export interface RescheduleBookingData {
+  booking_id: number
+  status?: string
+  customer_name?: string
+  customer_email?: string
+  service_name?: string
+  service_title?: string
+  date: string
+  start_time: string
+  end_time?: string
+  deposit_cents?: number
+  deposit_amount?: number
+  total_cents?: number
+  currency?: string
+  reschedule_url?: string
+  ics_url?: string
+  google_calendar_url?: string
+  available_slots: RescheduleSlotOption[]
+  rescheduleFeeCents?: number
+  rescheduleFeeItems?: { name: string; amountCents: number }[]
+}
+
+export interface RescheduleResultData {
+  booking_id?: number
+  slot_id?: number
+  date?: string
+  start_time?: string
+  end_time?: string
+  balance_invoice_updated?: boolean
+  reschedule_url?: string
+  ics_url?: string
+  google_calendar_url?: string
+  rescheduleFeeCents?: number
+  rescheduleFeeItems?: { name: string; amountCents: number }[]
+}
+
+export interface RescheduleIdentityInput {
+  name?: string
+  email?: string
+  phone?: string
+}
+
+export interface RescheduleUnlockRequest extends RescheduleIdentityInput {
+  bookingId?: number | string
+  token?: string
+}
+
+export interface RescheduleUnlockData {
+  bookingId: number | string
+  token: string
+  booking: RescheduleBookingData
 }

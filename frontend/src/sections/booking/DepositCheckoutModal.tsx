@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { BookingReviewDraft, BookingService, SquareConfig } from '../../types/booking'
+import type { BookingReviewDraft, BookingService, ConfirmedBookingSummary, SquareConfig } from '../../types/booking'
 import { computeSessionPricing, submitCheckout, fetchPricing, validateCoupon, type PricingData } from '../../api/client'
 import { fallbackBookingDepositPercent } from '../../config/booking'
 
@@ -62,8 +62,10 @@ function loadSquareSdk(environment: 'sandbox' | 'production'): Promise<void> {
 interface DepositCheckoutModalProps {
   draft: BookingReviewDraft
   service: BookingService | null
+  pricing?: PricingData | null
+  selectedFeeIds?: string[]
   onClose: () => void
-  onSuccess?: (bookingId?: number) => void
+  onSuccess?: (summary: ConfirmedBookingSummary) => void
   squareConfig?: SquareConfig | null
   appId?: string
   locationId?: string
@@ -72,6 +74,8 @@ interface DepositCheckoutModalProps {
 export function DepositCheckoutModal({
   draft,
   service,
+  pricing: initialPricing = null,
+  selectedFeeIds: propSelectedFeeIds,
   onClose,
   onSuccess,
   squareConfig,
@@ -82,7 +86,11 @@ export function DepositCheckoutModal({
   const [error, setError] = useState<string | null>(null)
   const [cardLoading, setCardLoading] = useState(true)
   const [cardError, setCardError] = useState<string | null>(null)
-  const [pricing, setPricing] = useState<PricingData | null>(null)
+  const [pricing, setPricing] = useState<PricingData | null>(initialPricing)
+  const [locationMode, setLocationMode] = useState<'studio' | 'on_location'>('studio')
+  const [eventLocation, setEventLocation] = useState('')
+  const [agreementExpanded, setAgreementExpanded] = useState(false)
+  const [agreementSignatureName, setAgreementSignatureName] = useState('')
   const [couponCodeInput, setCouponCodeInput] = useState('')
   const [couponLoading, setCouponLoading] = useState(false)
   const [couponError, setCouponError] = useState<string | null>(null)
@@ -95,7 +103,13 @@ export function DepositCheckoutModal({
     bookingId?: number
     paymentId?: string
     orderId?: string
+    rescheduleToken?: string
+    rescheduleUrl?: string
+    icsUrl?: string
+    googleCalendarUrl?: string
   } | null>(null)
+  const [copiedLink, setCopiedLink] = useState(false)
+  const copyTimerRef = useRef<number | null>(null)
 
   const modalRef = useRef<HTMLDivElement>(null)
   const cardRef = useRef<SquareCard | null>(null)
@@ -123,6 +137,14 @@ export function DepositCheckoutModal({
     }).catch(() => {})
     return () => {
       active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) {
+        window.clearTimeout(copyTimerRef.current)
+      }
     }
   }, [])
 
@@ -193,11 +215,29 @@ export function DepositCheckoutModal({
     new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(val)
 
   const attendees = draft.people || 1
-  const breakdown = computeSessionPricing(service, attendees, pricing, fallbackBookingDepositPercent)
+  const effectiveSelectedFeeIds = draft.selectedFeeIds ?? propSelectedFeeIds ?? []
+  const isOnLocation = locationMode === 'on_location'
+  const resolvedEventLocation = isOnLocation ? eventLocation.trim() : 'R59 Media Studio'
+  const breakdown = computeSessionPricing(service, attendees, pricing, fallbackBookingDepositPercent, {
+    sessionDate: draft.dateTime.date,
+    photoPermissions: draft.photoPermissions,
+    selectedFeeIds: effectiveSelectedFeeIds,
+    isOnLocation,
+  })
   const depositPercent = breakdown.depositPercent
   const baseFeeDollars = breakdown.baseFeeMinor / 100
   const attendeeFeeDollars = breakdown.extraPeopleFeeMinor / 100
   const subtotalDollars = (breakdown.subtotalMinor ?? 0) / 100
+
+  const policy = pricing?.policy ?? {
+    balanceDueDaysAfterEvent: 7,
+    lateCancellationDays: 7,
+    requireSignature: true,
+  }
+  const requireSignature = policy.requireSignature !== false
+  const balanceDueDays = policy.balanceDueDaysAfterEvent
+  const lateCancellationDays = policy.lateCancellationDays
+  const clientFullName = `${draft.customerInfo.firstName} ${draft.customerInfo.lastName}`.trim() || 'Client'
 
   let discountDollars = 0
   if (appliedCoupon && subtotalDollars > 0) {
@@ -212,10 +252,19 @@ export function DepositCheckoutModal({
 
   const estimatedTotalDollars = Math.max(0, subtotalDollars - discountDollars)
   const estimatedDepositDollars = Math.round(estimatedTotalDollars * (depositPercent / 100) * 100) / 100
+  const estimatedRemainingDollars = Math.max(0, Math.round((estimatedTotalDollars - estimatedDepositDollars) * 100) / 100)
 
   const depositFormatted =
     subtotalDollars > 0
       ? formatCurrency(estimatedDepositDollars)
+      : 'Custom quote'
+  const totalFormatted =
+    subtotalDollars > 0
+      ? formatCurrency(estimatedTotalDollars)
+      : 'Custom quote'
+  const remainingFormatted =
+    subtotalDollars > 0
+      ? formatCurrency(estimatedRemainingDollars)
       : 'Custom quote'
 
   const handleApplyCoupon = async () => {
@@ -246,6 +295,16 @@ export function DepositCheckoutModal({
   const handlePayDeposit = async () => {
     if (!slotId) {
       setError('Please select an available appointment time slot to continue.')
+      return
+    }
+
+    if (locationMode === 'on_location' && !eventLocation.trim()) {
+      setError('Please enter the venue or street address for your on-location session.')
+      return
+    }
+
+    if (requireSignature && !agreementSignatureName.trim()) {
+      setError('Please enter your Full Legal Name to sign the Photography Services Agreement.')
       return
     }
 
@@ -283,6 +342,10 @@ export function DepositCheckoutModal({
           notes: draft.customerInfo.notes?.trim() || '',
           attendees: draft.people,
           coupon_code: appliedCoupon ? appliedCoupon.code : undefined,
+          selectedFeeIds: effectiveSelectedFeeIds.length > 0 ? effectiveSelectedFeeIds : undefined,
+          locationMode,
+          eventLocation: resolvedEventLocation,
+          agreementSignatureName: agreementSignatureName.trim() || undefined,
           photoPermissions: {
             websitePortfolio: Boolean(draft.photoPermissions?.websitePortfolio),
             socialMedia: Boolean(draft.photoPermissions?.socialMedia),
@@ -301,12 +364,28 @@ export function DepositCheckoutModal({
           cardRef.current = null
         }
         const bookingId = res.booking_id || res.data?.booking_id || res.id
+        const rescheduleUrl = res.reschedule_url || res.data?.reschedule_url
+        const icsUrl = res.ics_url || res.data?.ics_url
+        const googleCalendarUrl = res.google_calendar_url || res.data?.google_calendar_url
         setConfirmedResult({
           bookingId,
           paymentId: res.payment_id || res.data?.payment_id,
           orderId: res.order_id || res.data?.order_id,
+          rescheduleToken: res.reschedule_token || res.data?.reschedule_token,
+          rescheduleUrl,
+          icsUrl,
+          googleCalendarUrl,
         })
-        onSuccess?.(bookingId)
+        onSuccess?.({
+          bookingId,
+          totalCents: Math.round(estimatedTotalDollars * 100),
+          depositPaidCents: Math.round(estimatedDepositDollars * 100),
+          balanceDueCents: Math.round(estimatedRemainingDollars * 100),
+          eventLocation: resolvedEventLocation,
+          rescheduleUrl,
+          icsUrl,
+          googleCalendarUrl,
+        })
       } else {
         setError(res.message || 'Payment processing failed. Please verify your payment details.')
       }
@@ -417,6 +496,123 @@ export function DepositCheckoutModal({
               </p>
             </div>
 
+            {confirmedResult.rescheduleUrl && (
+              <div
+                style={{
+                  background: '#f9fafb',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: '8px',
+                  padding: '14px',
+                  margin: '0 0 16px 0',
+                  fontSize: '13px',
+                }}
+              >
+                <div style={{ fontWeight: 600, marginBottom: '6px', color: '#111827' }}>
+                  Manage / Reschedule Link
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    type="text"
+                    readOnly
+                    aria-label="Manage or reschedule link"
+                    value={
+                      confirmedResult.rescheduleUrl.startsWith('/')
+                        ? `${window.location.origin}${confirmedResult.rescheduleUrl}`
+                        : confirmedResult.rescheduleUrl
+                    }
+                    onClick={e => e.currentTarget.select()}
+                    style={{
+                      flex: 1,
+                      padding: '8px 10px',
+                      borderRadius: '6px',
+                      border: '1px solid #d1d5db',
+                      background: '#ffffff',
+                      color: '#374151',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const rawUrl = confirmedResult.rescheduleUrl || ''
+                      const fullUrl = rawUrl.startsWith('/') ? `${window.location.origin}${rawUrl}` : rawUrl
+                      void navigator.clipboard?.writeText(fullUrl).then(() => {
+                        setCopiedLink(true)
+                        if (copyTimerRef.current !== null) {
+                          window.clearTimeout(copyTimerRef.current)
+                        }
+                        copyTimerRef.current = window.setTimeout(() => {
+                          setCopiedLink(false)
+                          copyTimerRef.current = null
+                        }, 2500)
+                      })
+                    }}
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      background: copiedLink ? '#15803d' : '#1f2937',
+                      color: '#ffffff',
+                      border: 'none',
+                      fontWeight: 600,
+                      fontSize: '12px',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {copiedLink ? 'Copied!' : 'Copy Reschedule Link'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {(confirmedResult.googleCalendarUrl || confirmedResult.icsUrl) && (
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
+                {confirmedResult.googleCalendarUrl && (
+                  <a
+                    href={confirmedResult.googleCalendarUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      flex: 1,
+                      minWidth: '160px',
+                      textAlign: 'center',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      background: '#f3f4f6',
+                      color: '#111827',
+                      border: '1px solid #d1d5db',
+                      fontWeight: 600,
+                      fontSize: '13px',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    Add to Google Calendar
+                  </a>
+                )}
+                {confirmedResult.icsUrl && (
+                  <a
+                    href={confirmedResult.icsUrl}
+                    download
+                    style={{
+                      flex: 1,
+                      minWidth: '160px',
+                      textAlign: 'center',
+                      padding: '10px 12px',
+                      borderRadius: '8px',
+                      background: '#f3f4f6',
+                      color: '#111827',
+                      border: '1px solid #d1d5db',
+                      fontWeight: 600,
+                      fontSize: '13px',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    Download Calendar Invite (.ics)
+                  </a>
+                )}
+              </div>
+            )}
+
             <button
               type="button"
               onClick={onClose}
@@ -484,6 +680,12 @@ export function DepositCheckoutModal({
                   <span>{formatCurrency(attendeeFeeDollars)}</span>
                 </div>
               )}
+              {breakdown.appliedFees.map(fee => (
+                <div key={fee.id} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' }}>
+                  <span style={{ color: '#6b7280' }}>{fee.name}</span>
+                  <span>{formatCurrency(fee.amountDollars)}</span>
+                </div>
+              ))}
               {discountDollars > 0 && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px', color: '#15803d' }}>
                   <span>Discount ({appliedCoupon?.code})</span>
@@ -492,16 +694,123 @@ export function DepositCheckoutModal({
               )}
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
                 <span style={{ color: '#4b5563' }}>Estimated Total</span>
-                <strong>{subtotalDollars > 0 ? formatCurrency(estimatedTotalDollars) : 'Custom quote'}</strong>
+                <strong>{totalFormatted}</strong>
               </div>
               <hr style={{ border: 'none', borderTop: '1px solid #e5e7eb', margin: '12px 0' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '16px', fontWeight: 700 }}>
-                <span>Estimated Deposit Due Today ({depositPercent}%)</span>
+                <span>{depositPercent}% Non-Refundable Retainer Due Today</span>
                 <span>{depositFormatted}</span>
               </div>
+              {subtotalDollars > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px', fontSize: '13px', color: '#4b5563' }}>
+                  <span>Remaining Balance (due {balanceDueDays} days after event)</span>
+                  <span>{remainingFormatted}</span>
+                </div>
+              )}
               <p style={{ margin: '6px 0 0', fontSize: '12px', color: '#6b7280', fontStyle: 'italic' }}>
                 * Estimated breakdown; final charge is calculated by the server.
               </p>
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <div
+                style={{
+                  display: 'block',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  color: '#374151',
+                  marginBottom: '8px',
+                }}
+              >
+                Session Location <span style={{ color: '#dc2626' }}>*</span>
+              </div>
+              <div
+                role="group"
+                aria-label="Session Location"
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                  gap: '8px',
+                }}
+              >
+                <button
+                  type="button"
+                  aria-pressed={locationMode === 'studio'}
+                  disabled={busy}
+                  onClick={() => {
+                    setLocationMode('studio')
+                    setError(null)
+                  }}
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: locationMode === 'studio' ? '2px solid #2563eb' : '1px solid #d1d5db',
+                    background: locationMode === 'studio' ? '#eff6ff' : '#ffffff',
+                    color: locationMode === 'studio' ? '#1e40af' : '#374151',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: busy ? 'not-allowed' : 'pointer',
+                    textAlign: 'left',
+                  }}
+                >
+                  At R59 Media Studio
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={locationMode === 'on_location'}
+                  disabled={busy}
+                  onClick={() => {
+                    setLocationMode('on_location')
+                    setError(null)
+                  }}
+                  style={{
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: locationMode === 'on_location' ? '2px solid #2563eb' : '1px solid #d1d5db',
+                    background: locationMode === 'on_location' ? '#eff6ff' : '#ffffff',
+                    color: locationMode === 'on_location' ? '#1e40af' : '#374151',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: busy ? 'not-allowed' : 'pointer',
+                    textAlign: 'left',
+                  }}
+                >
+                  On-Location / Custom Address
+                </button>
+              </div>
+              {locationMode === 'on_location' && (
+                <div style={{ marginTop: '10px' }}>
+                  <label
+                    htmlFor="event-location-input"
+                    style={{
+                      display: 'block',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      color: '#374151',
+                      marginBottom: '6px',
+                    }}
+                  >
+                    Venue / Street Address <span style={{ color: '#dc2626' }}>*</span>
+                  </label>
+                  <input
+                    id="event-location-input"
+                    type="text"
+                    required
+                    placeholder="Enter venue name and street address"
+                    value={eventLocation}
+                    onChange={e => setEventLocation(e.target.value)}
+                    disabled={busy}
+                    style={{
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: '1px solid #d1d5db',
+                      fontSize: '14px',
+                    }}
+                  />
+                </div>
+              )}
             </div>
 
             <div
@@ -647,6 +956,151 @@ export function DepositCheckoutModal({
               )}
             </div>
 
+            <div
+              style={{
+                border: '1px solid #d1d5db',
+                borderRadius: '8px',
+                padding: '14px',
+                marginBottom: '16px',
+                background: '#f9fafb',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '13px', fontWeight: 700, color: '#111827' }}>
+                  Photography Services Agreement (6 Clauses)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setAgreementExpanded(prev => !prev)}
+                  aria-expanded={agreementExpanded}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: '#dc2626',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    padding: '4px 0',
+                  }}
+                >
+                  {agreementExpanded ? 'Hide Agreement' : 'Read Full Agreement'}
+                </button>
+              </div>
+              {agreementExpanded && (
+                <div
+                  style={{
+                    marginTop: '10px',
+                    maxHeight: '220px',
+                    overflowY: 'auto',
+                    padding: '12px',
+                    background: '#ffffff',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    lineHeight: 1.55,
+                    color: '#374151',
+                  }}
+                >
+                  <p style={{ margin: '0 0 8px 0' }}>
+                    <strong>1. Event Details &amp; Binding Reservation.</strong> This Photography Services Agreement
+                    (&ldquo;Agreement&rdquo;) is entered into between R59 Media (&ldquo;Photographer&rdquo;) and{' '}
+                    <strong>{clientFullName}</strong> (&ldquo;Client&rdquo;) for{' '}
+                    <strong>{service?.name || draft.serviceId}</strong> on{' '}
+                    <strong>{draft.dateTime.date}</strong> ({draft.dateTime.timeSlot}) at{' '}
+                    <strong>{resolvedEventLocation || 'Location to be confirmed'}</strong>. Payment of the
+                    Non-Refundable Retainer reserves the Photographer&rsquo;s exclusive availability for this session
+                    and creates a binding reservation.
+                  </p>
+                  <p style={{ margin: '0 0 8px 0' }}>
+                    <strong>2. Payment Terms.</strong> Total session investment is <strong>{totalFormatted}</strong>.
+                    A <strong>{depositPercent}% Non-Refundable Retainer</strong> ({depositFormatted}) is due upon
+                    booking. The remaining final balance ({remainingFormatted}) is due no later than{' '}
+                    <strong>{balanceDueDays} days</strong> after the event date.{' '}
+                    <em>Discount Voidance:</em> Any promotional, bundle, or coupon discount applied to this booking is
+                    contingent upon timely payment; if the final balance is not received by the deadline, any
+                    discounts are voided and the full standard rate applies. <em>Late Payments:</em> Overdue balances
+                    may accrue late fees and final edited images or gallery delivery will be withheld until paid in
+                    full.
+                  </p>
+                  <p style={{ margin: '0 0 8px 0' }}>
+                    <strong>3. Client Cancellation, Vendor Changes &amp; Liquidated Damages.</strong> Because the
+                    Photographer turns away other bookings for the reserved date, the {depositPercent}% retainer is
+                    retained as liquidated damages and not a penalty if the Client cancels. Cancellations or
+                    reschedule requests made within <strong>{lateCancellationDays} days</strong> of the scheduled
+                    session (&ldquo;Late Cancellation&rdquo;) forfeit the retainer and may require a new retainer or
+                    late-cancellation fee to rebook. If Photographer cannot perform due to unforeseen circumstances,
+                    a qualified associate may be substituted or unearned fees refunded.
+                  </p>
+                  <p style={{ margin: '0 0 8px 0' }}>
+                    <strong>4. Copyright, Ownership &amp; Usage License.</strong> R59 Media retains full copyright and
+                    ownership of all photographs and raw files created under this Agreement. Upon full payment,
+                    Client is granted a personal, non-commercial, non-transferable license to print and share the
+                    delivered final images. Commercial use, resale, or third-party licensing requires prior written
+                    consent.
+                  </p>
+                  <p style={{ margin: '0 0 8px 0' }}>
+                    <strong>5. Model Release &amp; Portfolio Usage / Privacy Fee.</strong> Client&rsquo;s current
+                    sharing selections are Portfolio:{' '}
+                    <strong>{draft.photoPermissions.websitePortfolio ? 'Allowed' : 'Declined'}</strong>, Social
+                    Media: <strong>{draft.photoPermissions.socialMedia ? 'Allowed' : 'Declined'}</strong>. Where
+                    granted, Client authorizes R59 Media to display selected images for portfolio, website, and social
+                    media promotion. If Client declines all public portfolio and social media usage, a Privacy Request
+                    Fee (when enabled) applies to cover private delivery and non-promotional archiving.
+                  </p>
+                  <p style={{ margin: 0 }}>
+                    <strong>6. Limitation of Liability, Force Majeure &amp; Venue Constraints.</strong> Photographer&rsquo;s
+                    total liability for any claim arising out of this Agreement is limited to the total amount
+                    actually paid by Client. Neither party is liable for failure to perform due to Force Majeure
+                    (including severe weather, illness, acts of God, or government restrictions), in which case the
+                    parties will reschedule to a mutually available date. Client is responsible for obtaining any
+                    required venue permissions, permits, and entry fees, and Photographer is not responsible for
+                    compromised coverage caused by venue restrictions.
+                  </p>
+                </div>
+              )}
+
+              {requireSignature && (
+                <div style={{ marginTop: '12px' }}>
+                  <label
+                    htmlFor="agreement-signature-input"
+                    style={{
+                      display: 'block',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      color: '#111827',
+                      marginBottom: '6px',
+                    }}
+                  >
+                    Typed Electronic Signature (Full Legal Name) <span style={{ color: '#dc2626' }}>*</span>
+                  </label>
+                  <input
+                    id="agreement-signature-input"
+                    type="text"
+                    required
+                    placeholder={`Type your full legal name (e.g. ${clientFullName})`}
+                    value={agreementSignatureName}
+                    onChange={e => setAgreementSignatureName(e.target.value)}
+                    disabled={busy}
+                    style={{
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: '1px solid #d1d5db',
+                      fontSize: '14px',
+                      fontFamily: 'Georgia, serif',
+                      fontStyle: 'italic',
+                    }}
+                  />
+                  <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#6b7280' }}>
+                    By typing your full legal name and paying the {depositPercent}% retainer, you electronically sign
+                    and agree to all 6 clauses of the Photography Services Agreement.
+                  </p>
+                </div>
+              )}
+            </div>
+
             <div style={{ marginBottom: '16px' }}>
               <label
                 htmlFor="card-container"
@@ -711,17 +1165,23 @@ export function DepositCheckoutModal({
               <button
                 type="button"
                 onClick={handlePayDeposit}
-                disabled={busy || cardLoading || Boolean(cardError) || !slotId}
+                disabled={busy || cardLoading || Boolean(cardError) || !slotId || (requireSignature && !agreementSignatureName.trim())}
                 style={{
                   flex: 2,
                   padding: '12px',
                   borderRadius: '8px',
-                  background: busy || cardLoading || Boolean(cardError) || !slotId ? '#9ca3af' : '#dc2626',
+                  background:
+                    busy || cardLoading || Boolean(cardError) || !slotId || (requireSignature && !agreementSignatureName.trim())
+                      ? '#9ca3af'
+                      : '#dc2626',
                   color: '#ffffff',
                   border: 'none',
                   fontWeight: 600,
                   fontSize: '14px',
-                  cursor: busy || cardLoading || Boolean(cardError) || !slotId ? 'not-allowed' : 'pointer',
+                  cursor:
+                    busy || cardLoading || Boolean(cardError) || !slotId || (requireSignature && !agreementSignatureName.trim())
+                      ? 'not-allowed'
+                      : 'pointer',
                 }}
               >
                 {busy

@@ -365,10 +365,28 @@
       const clean = pricing.data || pricing;
       const st = R().state;
       const cur = st.getState();
+      const rawFeeRules = Array.isArray(clean.feeRules) ? clean.feeRules : [];
+      const rawPolicy = clean.policy && typeof clean.policy === 'object' ? clean.policy : {};
       cur.pricing = {
         baseFee: Number(clean.baseFee ?? cur.pricing.baseFee ?? 0),
         perPerson: Number(clean.perPerson ?? cur.pricing.perPerson ?? 0),
-        depositPercent: Number(clean.depositPercent ?? cur.pricing.depositPercent ?? 60)
+        depositPercent: Number(clean.depositPercent ?? cur.pricing.depositPercent ?? 60),
+        feeRules: rawFeeRules.map((r, idx) => ({
+          id: String(r?.id || `fr_${idx + 1}`),
+          name: String(r?.name ?? ''),
+          trigger: String(r?.trigger ?? 'always'),
+          daysBefore: r?.trigger === 'days_before_max' && r?.daysBefore !== undefined && r?.daysBefore !== null && r?.daysBefore !== ''
+            ? Number(r.daysBefore)
+            : '',
+          amountType: String(r?.amountType ?? 'fixed_cents'),
+          amount: Number(r?.amount ?? 0),
+          active: r?.active !== false
+        })),
+        policy: {
+          balanceDueDaysAfterEvent: Number(rawPolicy.balanceDueDaysAfterEvent ?? 4),
+          rescheduleCutoffDays: Number(rawPolicy.rescheduleCutoffDays ?? 3),
+          requireSignature: rawPolicy.requireSignature !== false
+        }
       };
       st.commitSaved('pricing', st.getSettings().pricing);
     },
@@ -532,7 +550,26 @@
       const payload = {
         baseFee: Number(p.baseFee),
         perPerson: Number(p.perPerson),
-        depositPercent: Number(p.depositPercent)
+        depositPercent: Number(p.depositPercent),
+        feeRules: (Array.isArray(p.feeRules) ? p.feeRules : []).map(r => {
+          const rule = {
+            id: String(r.id || '').trim() || `fr_${Date.now().toString(36)}`,
+            name: String(r.name || '').trim(),
+            trigger: String(r.trigger || 'always'),
+            amountType: String(r.amountType || 'fixed_cents'),
+            amount: Number(r.amount) || 0,
+            active: r.active !== false
+          };
+          if (rule.trigger === 'days_before_max') {
+            rule.daysBefore = Number(r.daysBefore);
+          }
+          return rule;
+        }),
+        policy: {
+          balanceDueDaysAfterEvent: Number(p.policy?.balanceDueDaysAfterEvent ?? 4),
+          rescheduleCutoffDays: Number(p.policy?.rescheduleCutoffDays ?? 3),
+          requireSignature: p.policy?.requireSignature !== false
+        }
       };
       steps.push({ area: 'pricing', label: 'Pricing', payload, send: x => R().paymentsApi.updatePricingSettings(x) });
     }
@@ -839,7 +876,8 @@
         text: 'signin_with',
         shape: 'rectangular',
         width: 280,
-        logo_alignment: 'left'
+        logo_alignment: 'left',
+        locale: 'en'
       });
     }
   }

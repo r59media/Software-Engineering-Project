@@ -4,6 +4,7 @@ import { RecentPhotoshoot } from '../recent/RecentPhotoshoot'
 import { LensTransitionContext } from './LensTransitionContext'
 import { TransitionLens } from './TransitionLens'
 import { aboutLens } from '../../config/aboutLens'
+import { isIPad } from '../../utils/browserEnv'
 import './AboutToRecent.css'
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value))
@@ -50,7 +51,7 @@ export function AboutToRecent() {
   useEffect(() => {
     const section = root.current?.querySelector<HTMLElement>('#recent-photoshoot')
     if (!section) return
-    // Keep all gallery content scrollable on short/landscape viewports.
+    // Keep all gallery cards scrollable on short/landscape viewports.
     const measure = () => setFits(section.offsetHeight <= getViewportHeight(root.current) + 1)
     const observer = new ResizeObserver(measure)
     observer.observe(section)
@@ -128,6 +129,12 @@ export function AboutToRecent() {
     let displayedProgress = 0
     let hasSnapped = false
     let lastTime = 0
+    let prevRecentVisible: boolean | null = null
+    let prevOverlayVisible: boolean | null = null
+    let prevLensHidden: boolean | null = null
+    let prevRecentInert: boolean | null = null
+    let prevAboutInert: boolean | null = null
+    let prevProgressState: '0' | 'active' | '1' | null = null
 
     const calculateTarget = () => {
       if (document.body.style.position === 'fixed') return targetProgress
@@ -144,15 +151,39 @@ export function AboutToRecent() {
       const scale = 1 + zoom * (targetRadius / (size * 0.25) - 1)
       const cx = x + (width / 2 - x) * move
       const cy = y + (height - viewport / 2 - y) * move
-      overlay.style.transform = `translate(${cx - size * scale / 2}px, ${cy - size * scale / 2}px) scale(${size * scale / 640})`
+      overlay.style.transform = `translate3d(${cx - size * scale / 2}px, ${cy - size * scale / 2}px, 0) scale3d(${size * scale / 640}, ${size * scale / 640}, 1)`
       recent.style.clipPath = progress >= 1 ? 'none' : `circle(${size * scale * 0.32}px at ${cx}px ${cy - height + viewport}px)`
-      recent.style.visibility = progress > 0 ? 'visible' : 'hidden'
-      overlay.style.visibility = progress > 0 && progress < 1 ? 'visible' : 'hidden'
-      lens.style.visibility = progress > 0 ? 'hidden' : ''
+      const recentVisible = progress > 0
+      if (recentVisible !== prevRecentVisible) {
+        prevRecentVisible = recentVisible
+        recent.style.visibility = recentVisible ? 'visible' : 'hidden'
+      }
+      const overlayVisible = progress > 0 && progress < 1
+      if (overlayVisible !== prevOverlayVisible) {
+        prevOverlayVisible = overlayVisible
+        overlay.style.visibility = overlayVisible ? 'visible' : 'hidden'
+      }
+      const lensHidden = progress > 0
+      if (lensHidden !== prevLensHidden) {
+        prevLensHidden = lensHidden
+        lens.style.visibility = lensHidden ? 'hidden' : ''
+      }
       // Visible photos respond as soon as the iris starts opening.
-      recent.inert = aperture <= 0
-      about.inert = progress >= 1
-      host.dataset.progress = progress.toFixed(3)
+      const recentInert = aperture <= 0
+      if (recentInert !== prevRecentInert) {
+        prevRecentInert = recentInert
+        recent.inert = recentInert
+      }
+      const aboutInert = progress >= 1
+      if (aboutInert !== prevAboutInert) {
+        prevAboutInert = aboutInert
+        about.inert = aboutInert
+      }
+      const progressState: '0' | 'active' | '1' = progress <= 0 ? '0' : progress >= 1 ? '1' : 'active'
+      if (progressState !== prevProgressState) {
+        prevProgressState = progressState
+        host.dataset.progress = progressState
+      }
       subscribers.forEach(listener => listener(aperture))
     }
     const syncViewportHeight = () => {
@@ -171,7 +202,6 @@ export function AboutToRecent() {
         lastTime = 0
         return
       }
-      syncViewportHeight()
       targetProgress = calculateTarget()
       if (!hasSnapped) {
         hasSnapped = true
@@ -220,9 +250,10 @@ export function AboutToRecent() {
       applyProgress(displayedProgress)
     }
     const onResize = () => {
-      // On mobile viewports (<= 1000px), scrolling dynamically hides/shows the address bar.
+      // On mobile viewports (<= 1000px) and iPad (<= 1180px), scrolling dynamically hides/shows the address bar.
       // Sync viewport height in-place without resetting scroll distance or jumping the pin.
-      if (host.clientWidth <= 1000 && Math.abs(host.clientWidth - width) < 2) {
+      const isTouchViewport = host.clientWidth <= 1000 || (isIPad && host.clientWidth <= 1180)
+      if (isTouchViewport && Math.abs(host.clientWidth - width) < 2) {
         if (syncViewportHeight()) {
           targetProgress = calculateTarget()
           displayedProgress = targetProgress
@@ -284,6 +315,12 @@ export function AboutToRecent() {
       recent.style.clipPath = ''; recent.style.visibility = ''; lens.style.visibility = ''; overlay.style.cssText = ''
       delete host.dataset.progress
       recent.inert = false; about.inert = false
+      prevRecentVisible = null
+      prevOverlayVisible = null
+      prevLensHidden = null
+      prevRecentInert = null
+      prevAboutInert = null
+      prevProgressState = null
       subscribers.forEach(listener => listener(0))
     }
   }, [enabled, listeners])

@@ -13,19 +13,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: |
+            frontend/pnpm-lock.yaml
+            admin/pnpm-lock.yaml
+            backend/pnpm-lock.yaml
 
       - name: Install dependencies
         run: |
@@ -33,10 +38,13 @@ jobs:
           pnpm --dir admin install --frozen-lockfile
           pnpm --dir backend install --frozen-lockfile
 
-      - name: Build frontend & backend
+      - name: Build & test frontend, admin, & backend
         run: |
-          pnpm --dir frontend run build
+          pnpm --dir frontend run check
+          pnpm --dir admin run typecheck
+          pnpm --dir backend run typecheck
           pnpm --dir backend run build
+          pnpm --dir backend test
 
       - name: Check Cloudflare Credentials
         id: check_token

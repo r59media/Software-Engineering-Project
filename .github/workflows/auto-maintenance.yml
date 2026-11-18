@@ -1,0 +1,86 @@
+name: Auto-Maintenance & Dependency Verification
+
+on:
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: |
+            frontend/pnpm-lock.yaml
+            admin/pnpm-lock.yaml
+            backend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: |
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir admin install --frozen-lockfile
+          pnpm --dir backend install --frozen-lockfile
+
+      - name: Verify Frontend (lint, typecheck, build)
+        run: pnpm --dir frontend run check
+
+      - name: Verify Admin (strict typecheck)
+        run: pnpm --dir admin run typecheck
+
+      - name: Verify Backend (typecheck, build, test)
+        run: |
+          pnpm --dir backend run typecheck
+          pnpm --dir backend run build
+          pnpm --dir backend test
+
+  api-and-security-health:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: |
+            frontend/pnpm-lock.yaml
+            admin/pnpm-lock.yaml
+            backend/pnpm-lock.yaml
+
+      - name: Security audit (high/critical)
+        run: |
+          pnpm --dir frontend audit --audit-level=high
+          pnpm --dir admin audit --audit-level=high
+          pnpm --dir backend audit --audit-level=high
+
+      - name: Check external API & CDN endpoints
+        run: |
+          curl -fsSI https://accounts.google.com/.well-known/openid-configuration
+          curl -fsSI https://web.squarecdn.com/v1/square.js
+          curl -fsSI https://sandbox.web.squarecdn.com/v1/square.js

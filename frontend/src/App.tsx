@@ -8,8 +8,10 @@ import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
-import type { BookingService } from './types/booking'
+import type { BookingReviewDraft, BookingService, ConfirmedBookingSummary } from './types/booking'
 import type { ContactInquiry } from './types/contact'
+const DepositCheckoutModal = lazy(() => import('./sections/booking/DepositCheckoutModal').then(m => ({ default: m.DepositCheckoutModal })))
+const RescheduleModal = lazy(() => import('./sections/booking/RescheduleModal').then(m => ({ default: m.RescheduleModal })))
 
 const AboutToRecent = lazy(() => import('./sections/transition/AboutToRecent').then(m => ({ default: m.AboutToRecent })))
 const ContactSection = lazy(() => import('./sections/contact/ContactSection').then(m => ({ default: m.ContactSection })))
@@ -23,9 +25,33 @@ function App() {
   const [bookingServices, setBookingServices] = useState<readonly BookingService[]>(previewBookingServices)
   const [pricing, setPricing] = useState<PricingData | null>(null)
   const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
+  const [depositDraft, setDepositDraft] = useState<BookingReviewDraft | null>(null)
+  const [confirmedBooking, setConfirmedBooking] = useState<ConfirmedBookingSummary | null>(null)
+  const [rescheduleParams, setRescheduleParams] = useState<{ bookingId: string; token: string } | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+    const bookingId = (params.get('booking') || params.get('bookingId') || params.get('reschedule') || '').trim()
+    const token = (params.get('token') || '').trim()
+    return bookingId && token ? { bookingId, token } : null
+  })
   const baseUrl = import.meta.env.BASE_URL
   const normalizedPath = window.location.pathname.replace(/\/+$/, '') || '/'
   const cleanBase = baseUrl.replace(/\/$/, '')
+  const isRescheduleRoute =
+    normalizedPath === '/reschedule' || (cleanBase !== '' && normalizedPath === `${cleanBase}/reschedule`)
+  const handleCloseReschedule = useCallback(() => {
+    setRescheduleParams(null)
+    if (isRescheduleRoute) {
+      window.location.assign(baseUrl)
+      return
+    }
+    const url = new URL(window.location.href)
+    url.searchParams.delete('booking')
+    url.searchParams.delete('bookingId')
+    url.searchParams.delete('reschedule')
+    url.searchParams.delete('token')
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`
+    window.history.replaceState(window.history.state, '', nextUrl)
+  }, [baseUrl, isRescheduleRoute])
   const legalPage =
     normalizedPath === `${cleanBase}/privacy-policy` || normalizedPath === `${cleanBase}/privacy`
       ? 'privacy'
@@ -186,6 +212,26 @@ function App() {
     }
   }, [])
 
+  if (isRescheduleRoute || rescheduleParams) {
+    const homeDestinations = Object.fromEntries(
+      Object.entries(heroDestinations).map(([key, href]) => [key, href?.startsWith('#') ? `${baseUrl}${href}` : href])
+    )
+    return <div id="top" className="site-shell">
+      <a className="skip-link" href="#reschedule-content">Skip to content</a>
+      <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
+      <main id="reschedule-content" style={{ minHeight: '75vh', padding: '7rem 1.5rem 4rem', display: 'grid', placeItems: 'center', background: 'var(--color-brand-black, #0c0c0c)' }}>
+        <Suspense fallback={null}>
+          <RescheduleModal
+            bookingId={rescheduleParams?.bookingId}
+            token={rescheduleParams?.token}
+            onClose={handleCloseReschedule}
+          />
+        </Suspense>
+      </main>
+      <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+    </div>
+  }
+
   if (legalPage) {
     const homeDestinations = Object.fromEntries(
       Object.entries(heroDestinations).map(([key, href]) => [key, href?.startsWith('#') ? `${baseUrl}${href}` : href])
@@ -221,7 +267,7 @@ function App() {
       <div className="site-intro">
         <Hero slides={slides} destinations={heroDestinations} />
       </div>
-      <Suspense fallback={<div className="about-transition-placeholder" style={{ minHeight: '100vh' }} />}>
+      <Suspense fallback={<div className="about-transition-placeholder" />}>
         <AboutToRecent />
       </Suspense>
       <PortfolioGallery />
@@ -233,6 +279,12 @@ function App() {
           status={bookingStatus}
           onRetry={loadBookingServices}
           inquiryHref="#contact"
+          confirmedBooking={confirmedBooking}
+          onResetBooking={() => setConfirmedBooking(null)}
+          onProceedToDeposit={draft => {
+            setConfirmedBooking(null)
+            setDepositDraft(draft)
+          }}
         />
       </Suspense>
       <Suspense fallback={null}>
@@ -243,6 +295,18 @@ function App() {
       </Suspense>
     </main>
     <SiteFooter />
+    {depositDraft && (
+      <Suspense fallback={null}>
+        <DepositCheckoutModal
+          draft={depositDraft}
+          service={bookingServices.find(s => s.id === depositDraft.serviceId) || null}
+          pricing={pricing}
+          squareConfig={pricing?.squareConfig ?? null}
+          onClose={() => setDepositDraft(null)}
+          onSuccess={summary => setConfirmedBooking(summary)}
+        />
+      </Suspense>
+    )}
   </div>
 }
 

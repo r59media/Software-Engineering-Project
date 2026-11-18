@@ -33,6 +33,8 @@ export interface HybridSquareNoteInput {
   couponCode?: string | null
   photoPermissionPortfolio?: boolean | number | null
   photoPermissionSocial?: boolean | number | null
+  agreementSignedName?: string | null
+  eventLocation?: string | null
   bookingId?: string | number | null
 }
 
@@ -51,6 +53,9 @@ export function buildHybridSquareNote(input: HybridSquareNoteInput): string {
     .join(' ')
   if (dateTime) parts.push(dateTime)
 
+  const loc = typeof input.eventLocation === 'string' ? input.eventLocation.trim() : ''
+  if (loc) parts.push(`Loc: ${loc}`)
+
   if (input.guests != null && Number.isFinite(Number(input.guests)) && Number(input.guests) > 0) {
     parts.push(`Guests: ${Math.round(Number(input.guests))}`)
   }
@@ -61,6 +66,9 @@ export function buildHybridSquareNote(input: HybridSquareNoteInput): string {
   const websiteConsent = input.photoPermissionPortfolio ? 'YES' : 'NO'
   const socialConsent = input.photoPermissionSocial ? 'YES' : 'NO'
   parts.push(`Photo Consent: Website=${websiteConsent}, Social=${socialConsent}`)
+
+  const signedName = typeof input.agreementSignedName === 'string' ? input.agreementSignedName.trim() : ''
+  if (signedName) parts.push(`Signed: ${signedName}`)
 
   if (input.bookingId !== undefined && input.bookingId !== null && String(input.bookingId).trim() !== '') {
     parts.push(`Booking #${String(input.bookingId).trim()}`)
@@ -135,7 +143,7 @@ export function isSquareNotFound(err: unknown): boolean {
 
 // ── Phase 3: billing service (Flows 2–5 and 7 of the design doc) ──────────────
 
-export type BillingEnv = Pick<Bindings, 'SQUARE_ACCESS_TOKEN' | 'SQUARE_LOCATION_ID' | 'SQUARE_ENVIRONMENT'>
+export type BillingEnv = Pick<Bindings, 'SQUARE_ACCESS_TOKEN' | 'SQUARE_LOCATION_ID' | 'SQUARE_ENVIRONMENT' | 'SQUARE_TERMINAL_DEVICE_ID'>
 export type RequestOptions = { timeoutInSeconds?: number; maxRetries?: number }
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -330,7 +338,7 @@ function invoiceTitle(booking: any): string {
 }
 
 /** Flow 2 step 4: find the Square customer by the booking's normalized email, or create one. Nothing is stored. */
-async function ensureCustomer(client: SquareClient, booking: any, attemptKey: string): Promise<string> {
+export async function ensureCustomer(client: SquareClient, booking: any, attemptKey: string): Promise<string> {
   const email = String(booking.client_email ?? '').trim().toLowerCase()
   const found = await client.customers.search({
     query: { filter: { emailAddress: { exact: email } } },
@@ -340,11 +348,17 @@ async function ensureCustomer(client: SquareClient, booking: any, attemptKey: st
     (customer) => customer.id && String(customer.emailAddress ?? '').trim().toLowerCase() === email
   )
   if (match?.id) return match.id
-  const name = String(booking.client_name ?? '').trim()
+  const fullName = String(booking.client_name ?? '').trim()
+  const nameParts = fullName ? fullName.split(/\s+/) : []
+  const givenName = nameParts[0] || undefined
+  const familyName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : undefined
+  const phone = String(booking.customer_phone ?? '').trim() || undefined
   const created = await client.customers.create({
     idempotencyKey: `${attemptKey}-customer`,
-    givenName: name || undefined,
-    emailAddress: email
+    givenName,
+    familyName,
+    emailAddress: email,
+    phoneNumber: phone
   })
   const id = created.customer?.id
   if (!id) throw new Error('Square returned no customer id')
@@ -514,7 +528,8 @@ export async function sendBalanceInvoice(
   db: D1Database,
   env: BillingEnv,
   bookingId: string | number,
-  expectedCents: unknown
+  expectedCents: unknown,
+  options?: { scheduledAt?: string; dueDateOverride?: string }
 ): Promise<{ invoice: any; totals: BookingTotals }> {
   // Pre-checks, in the doc's order.
   const initial = await loadBookingTotals(db, bookingId)
@@ -581,7 +596,7 @@ export async function sendBalanceInvoice(
 
   // Optional context for hybrid Square metadata/descriptions (safe if legacy test DB omits these columns).
   const extraContext = await db.prepare(
-    `SELECT b.attendees, b.coupon_code, sl.start_time, s.best_for
+    `SELECT b.attendees, b.coupon_code, b.agreement_signed_name, b.agreement_signed_at, b.event_location, sl.start_time, s.best_for
      FROM Bookings b
      LEFT JOIN Services s ON b.service_id = s.id
      LEFT JOIN Schedule_Slots sl ON b.slot_id = sl.id
@@ -598,6 +613,8 @@ export async function sendBalanceInvoice(
     couponCode: extraContext?.coupon_code,
     photoPermissionPortfolio: booking.photo_permission_portfolio,
     photoPermissionSocial: booking.photo_permission_social,
+    agreementSignedName: extraContext?.agreement_signed_name,
+    eventLocation: extraContext?.event_location,
     bookingId: id
   })
 
@@ -645,18 +662,38 @@ export async function sendBalanceInvoice(
 
     // 6. Create the draft invoice.
     const today = dateInTimeZone(timeZone)
+    const defaultDueDate = addDaysISO(today, INVOICE_DUE_DAYS)
+    const scheduledAtMs = typeof options?.scheduledAt === 'string' ? Date.parse(options.scheduledAt) : NaN
+    const scheduledAt = Number.isFinite(scheduledAtMs) && scheduledAtMs > Date.now() + 60_000
+      ? options!.scheduledAt
+      : undefined
+    const bookingDate = typeof booking.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(booking.date)
+      ? booking.date
+      : ''
+    const overrideDueDate =
+      typeof options?.dueDateOverride === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(options.dueDateOverride)
+        ? options.dueDateOverride
+        : ''
+    const dueDate = overrideDueDate || (scheduledAt && bookingDate > defaultDueDate ? bookingDate : defaultDueDate)
     const createRes = await client.invoices.create({
       idempotencyKey: `${attemptKey}-invoice`,
       invoice: {
         locationId: square.locationId,
         orderId,
         primaryRecipient: { customerId },
+        ...(scheduledAt ? { scheduledAt } : {}),
         paymentRequests: [
           {
             requestType: 'BALANCE',
-            dueDate: addDaysISO(today, INVOICE_DUE_DAYS),
+            dueDate,
             automaticPaymentSource: 'NONE',
-            tippingEnabled: false
+            tippingEnabled: false,
+            reminders: [
+              {
+                relativeScheduledDays: 0,
+                message: 'Final reminder: today is the last day of your grace period to pay your remaining session balance.'
+              }
+            ]
           }
         ],
         deliveryMethod: 'EMAIL',
@@ -806,4 +843,181 @@ export async function cancelOpenInvoice(
 
   const updated = await db.prepare('SELECT * FROM Booking_Invoices WHERE id = ?').bind(row.id).first<any>()
   return { invoice: toInvoiceJSON(updated ?? row, await studioTodayISO(db)) }
+}
+
+// ── Flow 8: Square Terminal Checkouts ─────────────────────────────
+
+const SANDBOX_TERMINAL_DEVICE_ID = '9fa747a2-25ff-48ee-b078-04381f7c828f'
+
+function toTerminalCheckoutJSON(checkout: any) {
+  if (!checkout) return null
+  const amountMoney = pick(checkout, 'amountMoney', 'amount_money')
+  const deviceOptions = pick(checkout, 'deviceOptions', 'device_options')
+  return {
+    id: checkout.id ?? null,
+    status: checkout.status ?? null,
+    amount_cents: amountMoney?.amount !== undefined ? Number(amountMoney.amount) : null,
+    currency: amountMoney?.currency ?? 'USD',
+    reference_id: pick(checkout, 'referenceId', 'reference_id') ?? null,
+    device_id: pick(deviceOptions, 'deviceId', 'device_id') ?? null,
+    note: checkout.note ?? null,
+    created_at: pick(checkout, 'createdAt', 'created_at') ?? null,
+    updated_at: pick(checkout, 'updatedAt', 'updated_at') ?? null
+  }
+}
+
+/**
+ * Records a completed Square Terminal checkout as a card payment in Booking_Payments.
+ * Idempotent: checks for an existing Booking_Payments row whose note contains checkout.id.
+ */
+export async function syncTerminalCheckout(db: D1Database, checkout: any, timeZone: string): Promise<void> {
+  if (checkout?.status !== 'COMPLETED') return
+  const checkoutId = typeof checkout?.id === 'string' ? checkout.id.trim() : ''
+  if (!checkoutId) return
+
+  const rawRef = String(pick(checkout, 'referenceId', 'reference_id') ?? '').trim()
+  if (!/^[1-9]\d{0,9}$/.test(rawRef)) return
+  const bookingId = Number(rawRef)
+
+  const amountMoney = pick(checkout, 'amountMoney', 'amount_money')
+  const amountCents = Math.round(Number(amountMoney?.amount) || 0)
+  if (!(amountCents > 0)) return
+
+  const bookingExists = await db.prepare('SELECT id FROM Bookings WHERE id = ?').bind(bookingId).first()
+  if (!bookingExists) return
+
+  const existing = await db.prepare(
+    'SELECT id FROM Booking_Payments WHERE booking_id = ? AND note LIKE ? LIMIT 1'
+  ).bind(bookingId, `%${checkoutId}%`).first()
+  if (existing) return
+
+  const updatedAtRaw = pick(checkout, 'updatedAt', 'updated_at') ?? pick(checkout, 'createdAt', 'created_at')
+  let paidAt = updatedAtRaw ? new Date(updatedAtRaw) : new Date()
+  if (Number.isNaN(paidAt.getTime())) paidAt = new Date()
+
+  await db.prepare(
+    `INSERT INTO Booking_Payments (booking_id, amount, method, paid_on, note)
+     VALUES (?, ?, 'card', ?, ?)`
+  ).bind(bookingId, amountCents, dateInTimeZone(timeZone, paidAt), `Square Terminal (${checkoutId})`).run()
+}
+
+/** terminal.checkouts.get, then syncTerminalCheckout. Rethrows Square errors. */
+export async function fetchAndSyncTerminalCheckout(
+  db: D1Database,
+  env: BillingEnv,
+  checkoutId: string,
+  requestOptions?: RequestOptions
+): Promise<any> {
+  const { client } = await getSquare(env)
+  const res = await client.terminal.checkouts.get({ checkoutId }, requestOptions)
+  const checkout = res.checkout
+  if (checkout) {
+    await syncTerminalCheckout(db, checkout, await getStudioTimeZone(db))
+  }
+  return checkout
+}
+
+/** Pushes the booking's remaining balance to a Square Terminal device. */
+export async function sendTerminalCheckout(
+  db: D1Database,
+  env: BillingEnv,
+  bookingId: string | number,
+  expectedCents: unknown,
+  deviceId?: string
+): Promise<{ checkout: ReturnType<typeof toTerminalCheckoutJSON> }> {
+  const initial = await loadBookingTotals(db, bookingId)
+  if (!initial) throw new BillingError('NOT_FOUND', 404, 'Booking not found.')
+  if (String(initial.booking.status ?? '').trim().toLowerCase() === 'cancelled') {
+    throw new BillingError('BOOKING_CANCELLED', 409, "Cancelled bookings can't be charged.")
+  }
+  if (!isSquareConfigured(env)) throw new SquareNotConfiguredError()
+  if (typeof expectedCents !== 'number' || !Number.isSafeInteger(expectedCents)) {
+    throw new BillingError('VALIDATION_FAILED', 400, 'Check the highlighted fields.', [
+      { field: 'expected_amount_cents', message: 'Expected amount must be a whole number of cents.' }
+    ])
+  }
+
+  const isSandbox = env.SQUARE_ENVIRONMENT !== 'production'
+  const targetDeviceId = (
+    (typeof deviceId === 'string' ? deviceId : '') ||
+    env.SQUARE_TERMINAL_DEVICE_ID ||
+    (isSandbox ? SANDBOX_TERMINAL_DEVICE_ID : '')
+  ).trim()
+  if (!targetDeviceId) {
+    throw new BillingError(
+      'TERMINAL_NOT_CONFIGURED',
+      400,
+      'Configure SQUARE_TERMINAL_DEVICE_ID or pass a Square Terminal device_id.'
+    )
+  }
+
+  const id = initial.booking.id
+
+  // Cancel any open/scheduled Square invoice first so the client is never double-billed.
+  const openInvoice = await db.prepare(OPEN_INVOICE_SELECT_SQL).bind(id).first<any>()
+  if (openInvoice) {
+    await cancelOpenInvoice(db, env, id)
+  }
+
+  const fresh = await loadBookingTotals(db, id)
+  if (!fresh) throw new BillingError('NOT_FOUND', 404, 'Booking not found.')
+  const booking = fresh.booking
+  const balance = fresh.totals.balance_cents
+  if (balance <= 0) throw new BillingError('NO_BALANCE', 409, 'This booking has no balance to charge.')
+  if (balance !== expectedCents) {
+    throw new BillingError('BALANCE_CHANGED', 409, `The balance changed to $${formatDollars(balance)}. Review and send again.`, [
+      { balance_cents: balance }
+    ])
+  }
+
+  const extraContext = await db.prepare(
+    `SELECT b.attendees, b.coupon_code, sl.start_time, s.best_for
+     FROM Bookings b
+     LEFT JOIN Services s ON b.service_id = s.id
+     LEFT JOIN Schedule_Slots sl ON b.slot_id = sl.id
+     WHERE b.id = ?`
+  ).bind(id).first<any>().catch(() => null)
+
+  const serviceCategory = String(extraContext?.best_for || '').trim() || 'Photography'
+  const hybridNote = buildHybridSquareNote({
+    category: serviceCategory,
+    packageName: booking.service_name,
+    date: booking.date,
+    time: extraContext?.start_time,
+    guests: extraContext?.attendees,
+    couponCode: extraContext?.coupon_code,
+    photoPermissionPortfolio: booking.photo_permission_portfolio,
+    photoPermissionSocial: booking.photo_permission_social,
+    bookingId: id
+  })
+
+  try {
+    const { client } = await getSquare(env)
+    const timeZone = await getStudioTimeZone(db)
+    const idempotencyKey = crypto.randomUUID()
+    const customerId = EMAIL_PATTERN.test(String(booking.client_email ?? '').trim())
+      ? await ensureCustomer(client, booking, idempotencyKey)
+      : undefined
+
+    const res = await client.terminal.checkouts.create({
+      idempotencyKey,
+      checkout: {
+        amountMoney: { amount: BigInt(balance), currency: 'USD' },
+        referenceId: String(id),
+        note: hybridNote,
+        ...(customerId ? { customerId } : {}),
+        deviceOptions: { deviceId: targetDeviceId }
+      }
+    })
+    const checkout = res.checkout
+    if (!checkout) throw new Error('Square returned no terminal checkout')
+
+    if (checkout.status === 'COMPLETED') {
+      await syncTerminalCheckout(db, checkout, timeZone)
+    }
+
+    return { checkout: toTerminalCheckoutJSON(checkout) }
+  } catch (err) {
+    throw toSquareFailure(err)
+  }
 }

@@ -20,7 +20,7 @@
 /* Bookings roll: manager | calendar */
 @container (min-width:54rem){
   .frames.bc{grid-template-columns:minmax(0,1fr) minmax(0,1.45fr)}
-  .frames.bc #ovBookingsList{max-height:40rem;overflow:auto;overscroll-behavior:contain;padding-right:var(--s1)}
+  .frames.bc #ovBookingsList{max-height:40rem;overflow:auto;overscroll-behavior:auto;padding-right:var(--s1)}
 }
 
 /* ================= Live preview · About me ================= */

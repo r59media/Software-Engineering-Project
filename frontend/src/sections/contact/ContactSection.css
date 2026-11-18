@@ -601,6 +601,25 @@
   }
 }
 
+@media (min-width: 768px) and (max-width: 1120px) {
+  .contact-section__camera {
+    width: clamp(200px, 28cqw, 320px);
+    left: -28px;
+    top: clamp(260px, 28cqw, 330px);
+    z-index: 2;
+  }
+
+  .contact-section[data-step='details'] .contact-section__camera,
+  .contact-section[data-step='success'] .contact-section__camera {
+    width: clamp(200px, 28cqw, 320px);
+    left: -36px;
+    top: clamp(240px, 26cqw, 320px);
+    transform: rotate(12deg);
+    z-index: 1;
+    opacity: 0.9;
+  }
+}
+
 @media (max-width: 767px) {
   .contact-section__inner {
     min-height: 0;

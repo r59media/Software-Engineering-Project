@@ -2,14 +2,19 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { Bindings } from '../index'
 import { verifySquareSignature } from '../lib/squareWebhookAuth.ts'
-import { fetchAndSyncInvoice, isSquareNotFound } from '../lib/squareBilling.ts'
+import { fetchAndSyncInvoice, fetchAndSyncTerminalCheckout, isSquareNotFound } from '../lib/squareBilling.ts'
 import { ensureSchemaReady } from './admin'
 
 // Flow 6 of docs/designs/square-deposits-and-invoices.md.
 // Logs carry the event id only — never the body, headers or signature.
 
 const MAX_WEBHOOK_BYTES = 65536
-const HANDLED_EVENT_TYPES = ['invoice.payment_made', 'invoice.updated', 'invoice.canceled']
+const HANDLED_EVENT_TYPES = [
+  'invoice.payment_made',
+  'invoice.updated',
+  'invoice.canceled',
+  'terminal.checkout.updated'
+]
 
 type WebhookContext = Context<{ Bindings: Bindings }>
 
@@ -72,6 +77,26 @@ squareWebhookRouter.post('/', async (c) => {
 
   if (!HANDLED_EVENT_TYPES.includes(event?.type)) {
     return ignored(c)
+  }
+
+  if (event?.type === 'terminal.checkout.updated') {
+    const checkoutId = nonEmptyString(event?.data?.object?.checkout?.id) || nonEmptyString(event?.data?.id)
+    if (!checkoutId) {
+      console.warn(`[square-webhook] ignored event ${eventId}: no terminal checkout id`)
+      return ignored(c)
+    }
+
+    try {
+      await fetchAndSyncTerminalCheckout(c.env.DB, c.env, checkoutId)
+      return c.json({ received: true }, 200)
+    } catch (err) {
+      if (isSquareNotFound(err)) {
+        console.warn(`[square-webhook] ignored event ${eventId}: terminal checkout not found in Square`)
+        return ignored(c)
+      }
+      console.error(`[square-webhook] event ${eventId} failed; Square will retry`)
+      return errorResponse(c, 500, 'INTERNAL_SERVER_ERROR', 'Failed to process the webhook.')
+    }
   }
 
   const invoiceId = nonEmptyString(event?.data?.object?.invoice?.id) || nonEmptyString(event?.data?.id)

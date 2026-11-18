@@ -253,17 +253,17 @@
     const name = b.customer || 'Unknown Client';
     const pkg = b.package || st().NO_PACKAGE;
     const time = bookingTimeText(b);
-    const aria = `${time}, ${name}, ${pkg}, ${b.status || 'Pending'}`;
+    const aria = `${time}, ${name}, ${pkg}${b.location ? `, ${b.location}` : ''}, ${b.status || 'Pending'}`;
     if (detailed) {
       const consentIcon = (b.photo_permission_portfolio || b.photo_permission_social || b.photoPermissionPortfolio || b.photoPermissionSocial) ? ' 📸' : '';
       return `<button type="button" class="cal-ev cal-ev--block${key === 'cancelled' ? ' is-cancelled' : ''}" ${attr} aria-label="${esc(aria)}">
           <span class="cal-ev__time num">${esc(time)}</span>
           <strong class="cal-ev__name">${esc(name)}${consentIcon}</strong>
-          <span class="cal-ev__pkg">${esc(pkg)}</span>
+          <span class="cal-ev__pkg">${esc(pkg)}${b.location ? ` · ${esc(b.location)}` : ''}</span>
           ${statusTagHTML(b)}
         </button>`;
     }
-    return `<button type="button" class="cal-ev${key === 'cancelled' ? ' is-cancelled' : ''}" ${attr} aria-label="${esc(aria)}" title="${esc(name)} (${esc(pkg)})"><span class="cal-ev__pip" aria-hidden="true"></span><span class="cal-ev__t"><span class="num">${esc(from24(startOf(b)) || time)}</span> ${esc(name)}</span></button>`;
+    return `<button type="button" class="cal-ev${key === 'cancelled' ? ' is-cancelled' : ''}" ${attr} aria-label="${esc(aria)}" title="${esc(name)} (${esc(pkg)})${b.location ? ` · ${esc(b.location)}` : ''}"><span class="cal-ev__pip" aria-hidden="true"></span><span class="cal-ev__t"><span class="num">${esc(from24(startOf(b)) || time)}</span> ${esc(name)}</span></button>`;
   }
 
   /**
@@ -420,7 +420,7 @@
       <div class="tl-booking${statusKey(b) === 'cancelled' ? ' is-cancelled' : ''}">
         <div class="tl-booking__main">
           <p class="tl-booking__title"><strong>${esc(b.customer || 'Unknown Client')}</strong>${consentIcon} — ${esc(b.package || st().NO_PACKAGE)}</p>
-          <p class="sub num">${esc(bookingTimeText(b))} · Total ${esc(fmtCents(m.totalCents))} · Paid ${esc(fmtCents(m.paidCents))} · ${esc(dueOf(b).text)}</p>
+          <p class="sub num">${esc(bookingTimeText(b))}${b.location ? ` · ${esc(b.location)}` : ''} · Total ${esc(fmtCents(m.totalCents))} · Paid ${esc(fmtCents(m.paidCents))} · ${esc(dueOf(b).text)}</p>
         </div>
         ${statusTagHTML(b)}
       </div>`;
@@ -898,17 +898,31 @@
     const b = findBooking(id);
     if (!b || statusKey(b) === 'cancelled') return;
 
-    window.R59.confirmation.confirmCancelBooking(b, async () => {
+    window.R59.confirmation.confirmCancelBooking(b, async (shouldRefund = true) => {
       const btns = bookingButtons('data-cancel-booking', id);
       setDisabled(btns, true);
       try {
-        await window.R59.bookingsApi.cancelBooking(b.id);
+        const res = await window.R59.bookingsApi.cancelBooking(b.id, { refund: shouldRefund });
+        const refundedCents = Number(res?.refundedCents || res?.data?.refundedCents || 0);
+        if (refundedCents > 0) {
+          b.paymentsTotal = (Number(b.paymentsTotal) || 0) - refundedCents;
+        }
         b.status = 'Cancelled';
         refreshBookingViews();
-        const refundCents = st().balanceOf({ ...b, status: 'Cancelled' }).refundOwedCents;
-        toast(refundCents > 0
-          ? `Booking cancelled — ${st().formatCents(refundCents)} paid so far marked for reimbursement`
-          : 'Booking cancelled — nothing had been paid', { type: 'success' });
+        const remainingOwedCents = st().balanceOf({ ...b, status: 'Cancelled' }).refundOwedCents;
+        let msg;
+        if (refundedCents > 0 && remainingOwedCents > 0) {
+          msg = `Booking cancelled — ${st().formatCents(refundedCents)} refunded via Square; ${st().formatCents(remainingOwedCents)} manual payment marked for reimbursement.`;
+        } else if (refundedCents > 0) {
+          msg = `Booking cancelled — ${st().formatCents(refundedCents)} refunded via Square.`;
+        } else if (!shouldRefund && remainingOwedCents > 0) {
+          msg = 'Booking cancelled — deposit kept (no Square refund issued).';
+        } else if (shouldRefund && remainingOwedCents > 0) {
+          msg = `Booking cancelled — ${st().formatCents(remainingOwedCents)} paid so far marked for reimbursement.`;
+        } else {
+          msg = 'Booking cancelled — nothing had been paid.';
+        }
+        toast(msg, { type: 'success' });
       } catch (err) {
         if (err.status !== 401) toast(`Couldn't cancel the booking. ${err.message}`, { type: 'error' });
         setDisabled(btns, false);
@@ -1026,7 +1040,9 @@
     $('#bkLocation').value = b.location || '';
     $('#bkNotes').value = b.notes || '';
     $('#bkEmail').value = b.email || '';
-    $('#bkPhone').value = b.phone || '';
+    $('#bkPhone').value = window.R59.formValidation?.formatPhoneInput
+      ? window.R59.formValidation.formatPhoneInput(b.phone || '')
+      : (b.phone || '');
     $('#bkAttendees').value = b.attendees || '';
     $('#bkDate').value = b.date || '';
     $('#bkStart').value = startOf(b);
@@ -1089,6 +1105,7 @@
   let billingSeq = 0;        // only the newest billing response is applied
   let chargeBusy = false;    // an add-charge request is running
   let invoiceBusy = null;    // 'send' | 'cancel' | 'check' while an invoice request is running
+  let terminalBusy = false;  // true while a Square Terminal checkout push is running
   const CHARGE_FIELDS = ['#chargeDesc', '#chargeAmount'];
   const LOCK_FIELDS = ['#bkPrice', '#bkDeposit', '#bkPackage'];
   const LOCKED_TEXT = 'An invoice is out for this booking. Cancel it to change amounts.';
@@ -1574,6 +1591,22 @@
     cancel.hidden = !(loaded && now && now.is_open && status !== 'CREATING' && status !== 'PAYMENT_PENDING');
     cancel.textContent = invoiceBusy === 'cancel' ? INVOICE_BUSY_TEXT.cancel : 'Cancel invoice';
     cancel.disabled = Boolean(invoiceBusy);
+
+    syncTerminalButton();
+  }
+
+  function syncTerminalButton() {
+    const btn = $('#bkTerminalBtn');
+    if (!btn) return;
+    const b = payBooking();
+    const loaded = billingStatus === 'loaded';
+    const m = b ? st().balanceOf(b) : null;
+    const cancelled = !b || Boolean(m?.cancelled) || payIsCancelled(b);
+    const balanceCents = m ? m.balanceCents : 0;
+    btn.disabled = !b || !loaded || cancelled || balanceCents <= 0 || terminalBusy || Boolean(invoiceBusy);
+    btn.textContent = terminalBusy
+      ? 'Pushing…'
+      : (balanceCents > 0 ? `Push to Terminal (${fmtCents(balanceCents)})` : 'Push to Terminal');
   }
 
   /** After a request the busy button may be hidden, or was disabled: put focus back on a live control. */
@@ -1700,6 +1733,168 @@
         }
       }
     });
+  }
+
+  async function pushToTerminal() {
+    const b = payBooking();
+    const btn = $('#bkTerminalBtn');
+    if (!b || !btn || btn.disabled || terminalBusy || invoiceBusy) return;
+    const { balanceCents, cancelled } = st().balanceOf(b);
+    if (cancelled || payIsCancelled(b) || balanceCents <= 0) return;
+    const bookingId = b.id;
+    const token = payToken;
+
+    terminalBusy = true;
+    syncBillingControls();
+    try {
+      const res = await window.R59.bookingsApi.sendTerminalCheckout(bookingId, balanceCents);
+      if (totalsOf(res)) applyBillingTotals(findBooking(bookingId), totalsOf(res));
+      if (samePay(token, bookingId)) await refreshBilling({ quiet: true });
+      const checkoutStatus = res?.checkout?.status || res?.status || 'PENDING';
+      toast(`Terminal checkout sent (${fmtCents(balanceCents)}, ${checkoutStatus}).`, { type: 'success' });
+    } catch (err) {
+      const code = errCode(err);
+      if (code === 'BOOKING_CANCELLED') {
+        markPayCancelled(bookingId, token);
+      } else if (code === 'BALANCE_CHANGED') {
+        const cents = Number(errDetails(err)[0]?.balance_cents);
+        if (samePay(token, bookingId)) refreshBilling({ quiet: true });
+        toast(Number.isFinite(cents) ? `The balance changed to ${fmtCents(cents)}. Review and push again.` : err.message, { type: 'error' });
+        return;
+      } else if (samePay(token, bookingId) && err.status !== 401 && code !== 'SQUARE_NOT_CONFIGURED') {
+        refreshBilling({ quiet: true });
+      }
+      if (err.status !== 401) toast(`Couldn't push to terminal. ${err.message}`, { type: 'error' });
+    } finally {
+      terminalBusy = false;
+      if (samePay(token, bookingId)) syncBillingControls();
+    }
+  }
+
+  function openBookingGoogleCalendar() {
+    const b = payBooking() || findBooking(editingBookingId);
+    if (!b || !b.date) {
+      toast('Save a booking date before adding to Google Calendar.', { type: 'error' });
+      return;
+    }
+    const dateCompact = String(b.date).replace(/-/g, '');
+    const start24 = startOf(b) || '09:00';
+    let end24 = to24(b.end_time);
+    if (!end24) {
+      const [h, m] = start24.split(':').map(Number);
+      const totalMin = (Number.isFinite(h) ? h : 9) * 60 + (Number.isFinite(m) ? m : 0) + 60;
+      const eh = String(Math.floor(totalMin / 60) % 24).padStart(2, '0');
+      const em = String(totalMin % 60).padStart(2, '0');
+      end24 = `${eh}:${em}`;
+    }
+    const startCompact = `${dateCompact}T${start24.replace(':', '')}00`;
+    const endCompact = `${dateCompact}T${end24.replace(':', '')}00`;
+
+    const title = `R59 Media — ${b.customer || 'Session'}${b.package ? ` (${b.package})` : ''}`;
+    const details = [
+      b.id ? `Booking #${b.id}` : '',
+      b.customer ? `Client: ${b.customer}` : '',
+      b.email ? `Email: ${b.email}` : '',
+      b.phone ? `Phone: ${b.phone}` : '',
+      b.package ? `Package: ${b.package}` : '',
+      b.notes ? `Notes: ${b.notes}` : ''
+    ].filter(Boolean).join('\n');
+
+    const guests = ['r59mediatesting@gmail.com', String(b.email || '').trim()]
+      .filter(Boolean)
+      .map(encodeURIComponent)
+      .join(',');
+
+    const params = new URLSearchParams({
+      action: 'TEMPLATE',
+      text: title,
+      dates: `${startCompact}/${endCompact}`,
+      details
+    });
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) params.set('ctz', tz);
+
+    const url = `https://calendar.google.com/calendar/render?${params.toString()}&add=${guests}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  async function syncGoogleCalendar() {
+    const btn = $('#syncGcalBtn');
+    if (btn && btn.disabled) return;
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = 'Syncing…';
+    }
+    try {
+      let syncRes = null;
+      let syncErr = null;
+      try {
+        syncRes = await window.R59.bookingsApi.syncAllToGoogleCalendar();
+      } catch (err) {
+        if (err?.status === 401) throw err;
+        syncErr = err;
+      }
+
+      const cfg = await window.R59.bookingsApi.fetchCalendarFeedConfig();
+      const feedUrl = String(cfg?.icsFeedUrl || cfg?.feedUrl || cfg?.icsUrl || cfg?.url || '').trim();
+      const subscribeUrl = String(
+        cfg?.googleCalendarSubscribeUrl ||
+        (feedUrl ? `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(feedUrl.replace(/^https?:\/\//i, 'webcal://'))}` : '')
+      ).trim();
+
+      let copied = false;
+      if (feedUrl && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(feedUrl);
+          copied = true;
+        } catch {
+          copied = false;
+        }
+      }
+
+      const syncedCount = Number(syncRes?.syncedCount || 0);
+      const failedCount = Number(syncRes?.failedCount || 0);
+      const reasons = Array.isArray(syncRes?.reasons) ? syncRes.reasons.map(String).filter(Boolean) : [];
+      const targetCalendarEmail = String(syncRes?.targetCalendarEmail || cfg?.targetCalendarEmail || 'r59mediatesting@gmail.com').trim();
+      const isNotConfigured = reasons.includes('not_configured');
+      const otherReasons = reasons.filter((r) => r !== 'not_configured');
+
+      if (syncErr) {
+        toast(`Google Calendar sync failed: ${syncErr?.message || 'Server error.'}`, { type: 'error' });
+      } else if (syncRes && (failedCount > 0 || otherReasons.length > 0)) {
+        const displayReasons = otherReasons.length > 0 ? otherReasons : reasons;
+        toast(`Google Calendar sync issue: ${displayReasons.join(', ') || 'Sync failed.'}`, { type: 'error' });
+      } else if (syncRes && syncedCount > 0 && failedCount === 0) {
+        const icsNote = copied ? ' Live .ics URL also copied.' : '';
+        toast(`Synced ${syncedCount} booking(s) to Google Calendar (${targetCalendarEmail}).${icsNote}`, { type: 'success' });
+      } else if (syncRes && !isNotConfigured) {
+        const icsNote = copied ? ' Live .ics URL also copied.' : '';
+        toast(`Google Calendar is up to date (${targetCalendarEmail}).${icsNote}`, { type: 'success' });
+      } else {
+        if (subscribeUrl) {
+          window.open(subscribeUrl, '_blank', 'noopener,noreferrer');
+        }
+
+        if (copied && subscribeUrl) {
+          toast(`Live .ics feed URL copied. Subscribe in Google Calendar for ${targetCalendarEmail} in the opened tab.`, { type: 'success' });
+        } else if (copied) {
+          toast(`Live .ics feed URL copied. In Google Calendar (${targetCalendarEmail}), choose Other calendars -> From URL.`, { type: 'success' });
+        } else if (subscribeUrl) {
+          toast(`Opened Google Calendar subscription for ${targetCalendarEmail}.`, { type: 'success' });
+        } else if (syncErr) {
+          toast(`Couldn't sync Google Calendar. ${syncErr.message}`, { type: 'error' });
+        } else {
+          toast('Calendar feed configuration did not return a feed URL.', { type: 'error' });
+        }
+      }
+    } catch (err) {
+      if (err.status !== 401) toast(`Couldn't sync Google Calendar. ${err.message}`, { type: 'error' });
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = 'Sync Google Calendar';
+      }
+    }
   }
 
   function cancelInvoice() {
@@ -1925,6 +2120,8 @@
       if ((el = target.closest('#chargeAdd'))) { e.preventDefault(); addCharge(); return; }
       if ((el = target.closest('[data-remove-charge]'))) { e.preventDefault(); if (!el.disabled) promptRemoveCharge(el.dataset.removeCharge); return; }
       if ((el = target.closest('#invoiceSend'))) { e.preventDefault(); sendInvoice(); return; }
+      if ((el = target.closest('#bkTerminalBtn'))) { e.preventDefault(); pushToTerminal(); return; }
+      if ((el = target.closest('#bkGoogleCalBtn'))) { e.preventDefault(); openBookingGoogleCalendar(); return; }
       if ((el = target.closest('#invoiceCheck'))) { e.preventDefault(); checkInvoice(); return; }
       if ((el = target.closest('#invoiceCancel'))) { e.preventDefault(); cancelInvoice(); }
     });
@@ -2372,6 +2569,7 @@
     });
     $('#calPrev')?.addEventListener('click', e => { e.preventDefault(); moveCalendar(-1); });
     $('#calNext')?.addEventListener('click', e => { e.preventDefault(); moveCalendar(1); });
+    $('#syncGcalBtn')?.addEventListener('click', e => { e.preventDefault(); syncGoogleCalendar(); });
 
     $('#btnBlockDate')?.addEventListener('click', addBlockedDate);
     $('#blockDateInput')?.addEventListener('input', e => {
@@ -2417,6 +2615,20 @@
     $('#bkCancel')?.addEventListener('click', closeBookingEditor);
     $('#bookingModal')?.addEventListener('click', e => {
       if (e.target.id === 'bookingModal') closeBookingEditor();
+    });
+
+    // Format booking phone inputs as (XXX) XXX-XXXX
+    ['#nbPhone', '#bkPhone'].forEach(sel => {
+      const el = $(sel);
+      if (!el) return;
+      el.setAttribute('maxlength', '14');
+      el.setAttribute('inputmode', 'numeric');
+      el.addEventListener('input', e => {
+        const fmt = window.R59.formValidation?.formatPhoneInput;
+        if (!fmt) return;
+        const formatted = fmt(e.target.value);
+        if (e.target.value !== formatted) e.target.value = formatted;
+      });
     });
 
     // Clear a field's invalid mark as soon as the admin edits it

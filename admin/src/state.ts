@@ -35,6 +35,8 @@
 
   let socialSeq = 0;
   const newSocialId = () => `s${++socialSeq}`;
+  let feeRuleSeq = 0;
+  const newFeeRuleId = () => `fr_${Date.now().toString(36)}_${++feeRuleSeq}`;
 
   const clone = o => (o === undefined ? undefined : JSON.parse(JSON.stringify(o)));
 
@@ -47,7 +49,17 @@
     travel: '',
     social: [],
     images: { main: [], gallery: [], hero: [], about: [] },
-    pricing: { baseFee: 0, perPerson: 0, depositPercent: 60 },
+    pricing: {
+      baseFee: 0,
+      perPerson: 0,
+      depositPercent: 60,
+      feeRules: [],
+      policy: {
+        balanceDueDaysAfterEvent: 4,
+        rescheduleCutoffDays: 3,
+        requireSignature: true
+      }
+    },
     packages: [],
     coupons: []
   };
@@ -143,10 +155,27 @@
       ? state.social.map(s => ({ _id: s?._id ?? '', platform: s?.platform ?? '', url: s?.url ?? '' }))
       : [];
 
+    const rawPolicy = state.pricing?.policy || {};
     const pricing = {
       baseFee: state.pricing?.baseFee ?? '',
       perPerson: state.pricing?.perPerson ?? '',
-      depositPercent: state.pricing?.depositPercent ?? ''
+      depositPercent: state.pricing?.depositPercent ?? '',
+      feeRules: Array.isArray(state.pricing?.feeRules)
+        ? state.pricing.feeRules.map(r => ({
+            id: r?.id ?? '',
+            name: r?.name ?? '',
+            trigger: r?.trigger ?? 'always',
+            daysBefore: r?.daysBefore ?? '',
+            amountType: r?.amountType ?? 'fixed_cents',
+            amount: r?.amount ?? 0,
+            active: r?.active !== false
+          }))
+        : [],
+      policy: {
+        balanceDueDaysAfterEvent: rawPolicy.balanceDueDaysAfterEvent ?? 4,
+        rescheduleCutoffDays: rawPolicy.rescheduleCutoffDays ?? 3,
+        requireSignature: rawPolicy.requireSignature !== false
+      }
     };
 
     const packages = {};
@@ -169,6 +198,11 @@
     }
     if (snap.pricing) {
       state.pricing = Object.assign({}, state.pricing, snap.pricing);
+      if (!Array.isArray(state.pricing.feeRules)) state.pricing.feeRules = [];
+      state.pricing.policy = Object.assign(
+        { balanceDueDaysAfterEvent: 4, rescheduleCutoffDays: 3, requireSignature: true },
+        state.pricing.policy || {}
+      );
     }
     if (Array.isArray(snap.availability)) {
       weeklyAvailability = snap.availability;
@@ -342,6 +376,7 @@
     balanceOf,
     formatCents,
     newSocialId,
+    newFeeRuleId,
     DAYS_OF_WEEK,
     SETTINGS_AREAS,
     LOAD_AREAS,

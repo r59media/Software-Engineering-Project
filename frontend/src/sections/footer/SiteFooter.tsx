@@ -92,10 +92,13 @@ export function SiteFooter({
   const liveEmail = profile?.email?.trim() || (error ? footerContent.email : '')
   const livePhone = profile?.phone?.trim() || (error ? footerContent.phone : '')
 
+  const rescheduleHref = `${import.meta.env.BASE_URL}reschedule`
+
   const links = [
     ['About Me', destinations.about],
     ['Portfolio', destinations.portfolio],
     ['Booking', destinations.booking],
+    ['Reschedule', rescheduleHref],
     ['FAQ', destinations.faq],
     ['Get In Touch', destinations.contact],
   ] as const

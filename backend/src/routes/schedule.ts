@@ -11,14 +11,6 @@ export function isSlotInWeeklyAvailability(
     return true
   }
 
-  // Check if weekly availability has any active window configured
-  const hasActiveRules = weeklyAvailability.some(
-    d => Boolean(d.available) && Array.isArray(d.timeframes) && d.timeframes.length > 0
-  )
-  if (!hasActiveRules) {
-    return true
-  }
-
   const match = String(slot.date).match(/^(\d{4})-(\d{2})-(\d{2})/)
   const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
   let dayOfWeek = ''
@@ -108,12 +100,8 @@ scheduleRouter.get('/', async (c) => {
       } catch {}
     }
 
-    const hasActiveRules = weeklyAvailability.some(
-      d => Boolean(d.available) && Array.isArray(d.timeframes) && d.timeframes.length > 0
-    )
-
     let finalSlots: any[] = []
-    if (!hasActiveRules) {
+    if (weeklyAvailability.length === 0) {
       const { results } = await c.env.DB.prepare(
         `SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots 
          WHERE is_booked = 0 

@@ -18,28 +18,37 @@ import {
   clearLoginAttempts
 } from '../middleware/auth'
 import { DEFAULT_PROFILE, ensurePortfolioDefaults, listPortfolio, portfolioListQuery } from './portfolio'
+import { bumpPublicContentVersion } from '../lib/edgeCache'
 import { isEmailConfigured, sendEmail } from '../email'
 import {
   addDaysISO,
   bookingTotalCents,
   computeTotals,
+  DEFAULT_BOOKING_POLICY,
   DEFAULT_DEPOSIT_PERCENT,
   DESCRIPTION_MAX,
+  normalizeBookingPolicy,
   normalizeDepositPercent,
+  normalizeFeeRules,
   parseMoneyToCents
 } from '../lib/billingMath'
 import {
   BillingError,
   cancelOpenInvoice,
+  getSquare,
+  getStudioTimeZone,
   loadBookingTotals,
   OPEN_INVOICE_EXISTS_SQL,
   PAYMENTS_SELECT_SQL,
   refreshBilling,
   sendBalanceInvoice,
+  sendTerminalCheckout,
   studioTodayISO,
   toChargeJSON,
   toPayment
 } from '../lib/squareBilling'
+import { signCalendarFeedToken } from './reschedule'
+import { syncBookingToGoogleCalendarApi } from '../lib/googleCalendar'
 import {
   BOOKING_PAYMENTS_TABLE_SQL,
   BOOKING_PAYMENTS_INDEX_SQL,
@@ -47,10 +56,63 @@ import {
   ensurePhotoPermissionsColumns,
   replaceMediaStorageChunks
 } from '../lib/billingSchema'
-import { signMediaKey } from '../utils/signedUrl'
+import { signMediaKey, parseMediaVariantWidth } from '../utils/signedUrl'
 
 function isValidId(id: string | undefined): boolean {
   return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
+}
+
+const ADMIN_CALENDAR_BOOKING_SELECT = `SELECT b.id, b.client_name, b.client_email, b.customer_phone,
+        COALESCE(NULLIF(b.event_location, ''), b.location) AS location,
+        b.notes, b.attendees, b.status,
+        ss.date, ss.start_time, ss.end_time,
+        s.name AS service_name
+ FROM Bookings b
+ INNER JOIN Schedule_Slots ss ON b.slot_id = ss.id
+ LEFT JOIN Services s ON b.service_id = s.id`
+
+function mapRowToCalendarBooking(row: any, timeZone: string) {
+  return {
+    id: row.id,
+    date: row.date,
+    start_time: row.start_time,
+    end_time: row.end_time,
+    client_name: row.client_name,
+    client_email: row.client_email,
+    customer_phone: row.customer_phone,
+    package_name: row.service_name,
+    service_name: row.service_name,
+    status: row.status,
+    notes: row.notes,
+    location: row.location,
+    attendees: row.attendees,
+    timeZone
+  }
+}
+
+function scheduleGoogleCalendarSync(
+  c: Context<{ Bindings: Bindings }>,
+  bookingId: number | string,
+  action: 'upsert' | 'delete'
+) {
+  const task = (async () => {
+    if (action === 'delete') {
+      await syncBookingToGoogleCalendarApi(c.env, { id: bookingId, date: '', start_time: '' }, 'delete')
+      return
+    }
+    const row = await c.env.DB.prepare(`${ADMIN_CALENDAR_BOOKING_SELECT} WHERE b.id = ?`).bind(bookingId).first<any>()
+    if (!row || !row.date || !row.start_time) return
+    const timeZone = await getStudioTimeZone(c.env.DB)
+    await syncBookingToGoogleCalendarApi(c.env, mapRowToCalendarBooking(row, timeZone), 'upsert')
+  })().catch((err) => {
+    console.warn('Non-blocking admin calendar sync error:', err)
+  })
+
+  try {
+    c.executionCtx?.waitUntil(task)
+  } catch {
+    // Ignore when executionCtx is unavailable (e.g. unit tests)
+  }
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -103,7 +165,8 @@ const BOOKINGS_REBUILD_COLUMNS = [
   'id', 'service_id', 'slot_id', 'client_name', 'client_email', 'price_at_booking',
   'square_payment_id', 'status', 'customer_phone', 'location', 'notes', 'attendees',
   'deposit_paid', 'coupon_code', 'custom_price', 'deposit_percent', 'created_at',
-  'photo_permission_portfolio', 'photo_permission_social', 'photo_permission_accepted_at', 'photo_permission_version'
+  'photo_permission_portfolio', 'photo_permission_social', 'photo_permission_accepted_at', 'photo_permission_version',
+  'event_location', 'agreement_signed_name', 'agreement_signed_at', 'applied_fees_json'
 ]
 
 const BOOKINGS_SLOT_UNIQUE_RE = /slot_id\s+INTEGER\s+NOT\s+NULL\s+UNIQUE/i
@@ -172,6 +235,10 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
       photo_permission_social BOOLEAN DEFAULT 0,
       photo_permission_accepted_at TEXT,
       photo_permission_version TEXT DEFAULT 'v1',
+      event_location TEXT,
+      agreement_signed_name TEXT,
+      agreement_signed_at TEXT,
+      applied_fees_json TEXT,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (service_id) REFERENCES Services(id),
       FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)
@@ -181,6 +248,7 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
       square_payment_id, status, customer_phone, location, notes, attendees,
       deposit_paid, coupon_code, custom_price, deposit_percent,
       photo_permission_portfolio, photo_permission_social, photo_permission_accepted_at, photo_permission_version,
+      event_location, agreement_signed_name, agreement_signed_at, applied_fees_json,
       created_at
     ) SELECT
       id,
@@ -191,6 +259,7 @@ async function rebuildBookingsTableIfNeeded(db: D1Database): Promise<void> {
       COALESCE(coupon_code, ''), custom_price, deposit_percent,
       COALESCE(photo_permission_portfolio, 0), COALESCE(photo_permission_social, 0),
       photo_permission_accepted_at, COALESCE(photo_permission_version, 'v1'),
+      event_location, agreement_signed_name, agreement_signed_at, applied_fees_json,
       created_at
     FROM Bookings`),
     db.prepare('DROP TABLE Bookings'),
@@ -415,10 +484,11 @@ adminRouter.post('/media-token', async (c) => {
         }
       }, 500)
     }
-    const { exp, sig } = await signMediaKey(fileKey, secret, 30)
+    const width = parseMediaVariantWidth(body?.w)
+    const { exp, sig } = await signMediaKey(fileKey, secret, 30, width)
 
     return c.json({
-      url: `/api/media/${fileKey}?exp=${exp}&sig=${sig}`
+      url: `/api/media/${fileKey}?exp=${exp}&sig=${sig}${width ? `&w=${width}` : ''}`
     }, 200)
   } catch (err: any) {
     return c.json({
@@ -810,7 +880,7 @@ adminRouter.get('/bookings', async (c) => {
     const { results } = await c.env.DB.prepare(
       `SELECT b.id, b.client_name, b.client_email, b.price_at_booking, b.square_payment_id, b.status, b.created_at,
               b.service_id, b.slot_id,
-              b.customer_phone, b.location, b.notes, b.attendees, b.deposit_paid, b.coupon_code, b.custom_price,
+              b.customer_phone, COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.deposit_paid, b.coupon_code, b.custom_price,
               b.deposit_percent, b.photo_permission_portfolio, b.photo_permission_social, b.photo_permission_accepted_at, b.photo_permission_version,
               s.name as service_name, s.price as service_price, sl.date, sl.start_time, sl.end_time,
               COALESCE(p.payments_total, 0) AS payments_total, COALESCE(p.payments_count, 0) AS payments_count,
@@ -1064,6 +1134,10 @@ adminRouter.post('/bookings', async (c) => {
       throw insertErr
     }
 
+    if (bookingResult.meta.last_row_id) {
+      scheduleGoogleCalendarSync(c, bookingResult.meta.last_row_id, 'upsert')
+    }
+
     return c.json({
       success: true,
       status: 'success',
@@ -1250,6 +1324,7 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
            client_email = ?,
            customer_phone = ?,
            location = ?,
+           event_location = ?,
            notes = ?,
            attendees = ?,
            deposit_paid = ?,
@@ -1267,6 +1342,7 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
       client_name,
       client_email,
       customer_phone,
+      location,
       location,
       notes,
       attendees,
@@ -1309,6 +1385,8 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ?').bind(existing.slot_id).run()
     }
 
+    scheduleGoogleCalendarSync(c, id, 'upsert')
+
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
     return billingErrorResponse(c, e, 'Could not update booking.')
@@ -1326,13 +1404,77 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
 
-    const booking = await c.env.DB.prepare('SELECT slot_id FROM Bookings WHERE id = ?').bind(id).first<{ slot_id: number }>()
+    const booking = await c.env.DB.prepare(
+      'SELECT slot_id, status, square_payment_id, deposit_paid FROM Bookings WHERE id = ?'
+    )
+      .bind(id)
+      .first<{
+        slot_id: number | null
+        status: string | null
+        square_payment_id: string | null
+        deposit_paid: number | null
+      }>()
     if (!booking) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
     }
 
+    const body = (await c.req.json().catch(() => ({}))) as { refund?: boolean; reason?: string } | null
+    const shouldRefund = body?.refund !== false
+
+    if (String(booking.status || '').toLowerCase() === 'cancelled') {
+      return c.json({ success: true, status: 'success', refundedCents: 0 })
+    }
+
     // Withdraw any open invoice first; a BillingError leaves the booking unchanged
     await cancelOpenInvoice(c.env.DB, c.env, id)
+
+    let refundedCents = 0
+    let squareRefundId: string | null = null
+
+    if (shouldRefund && booking.square_payment_id && Number(booking.deposit_paid || 0) > 0) {
+      try {
+        const { client } = await getSquare(c.env)
+        const paymentRes = await client.payments.get({ paymentId: booking.square_payment_id })
+        const payment = paymentRes?.payment
+        const refundableCents = Math.max(
+          0,
+          Number(payment?.amountMoney?.amount ?? booking.deposit_paid) - Number(payment?.refundedMoney?.amount ?? 0)
+        )
+
+        if (refundableCents > 0) {
+          const refundRes = await client.refunds.refundPayment({
+            idempotencyKey: `cancel_${id}_${booking.square_payment_id}`,
+            paymentId: booking.square_payment_id,
+            amountMoney: { amount: BigInt(refundableCents), currency: 'USD' },
+            reason: String(body?.reason || 'Photographer cancelled booking').slice(0, 192)
+          })
+          squareRefundId = refundRes?.refund?.id || null
+          refundedCents = refundableCents
+
+          const existingRefund = await c.env.DB.prepare(
+            "SELECT id FROM Booking_Payments WHERE booking_id = ? AND method = 'refund' AND amount = ? LIMIT 1"
+          )
+            .bind(id, -refundedCents)
+            .first<{ id: number }>()
+
+          if (!existingRefund) {
+            await c.env.DB.prepare(
+              'INSERT INTO Booking_Payments (booking_id, amount, method, paid_on, note) VALUES (?, ?, ?, ?, ?)'
+            )
+              .bind(
+                id,
+                -refundedCents,
+                'refund',
+                new Date().toISOString().slice(0, 10),
+                squareRefundId ? `Square refund (${squareRefundId})` : 'Square refund'
+              )
+              .run()
+          }
+        }
+      } catch (err: unknown) {
+        return billingErrorResponse(c, err, 'Could not refund Square payment.')
+      }
+    }
 
     // Guarded like every lock: a Send that claimed the booking after the withdraw above blocks the cancel
     const cancelled = await c.env.DB.prepare(
@@ -1346,7 +1488,9 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(booking.slot_id).run()
     }
 
-    return c.json({ success: true, status: 'success' })
+    scheduleGoogleCalendarSync(c, id, 'delete')
+
+    return c.json({ success: true, status: 'success', refundedCents, squareRefundId })
   } catch (e: any) {
     return billingErrorResponse(c, e, 'Could not cancel booking.')
   }
@@ -1387,6 +1531,8 @@ adminRouter.delete('/bookings/:id', async (c) => {
     if (!results[2]?.meta?.changes) {
       return c.json(INVOICE_OPEN_RESPONSE, 409)
     }
+
+    scheduleGoogleCalendarSync(c, id, 'delete')
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
@@ -1719,6 +1865,112 @@ adminRouter.post('/bookings/:id/invoice', async (c) => {
   }
 })
 
+// POST: Push the booking's remaining balance to a Square Terminal device
+adminRouter.post('/bookings/:id/terminal-checkout', async (c) => {
+  noStore(c)
+  try {
+    const id = c.req.param('id')
+    if (!isValidId(id)) {
+      return c.json(INVALID_ID_RESPONSE, 400)
+    }
+    const body = await c.req.json().catch(() => ({}))
+    if (hasForbiddenPaymentFields(body)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
+    }
+    const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+    const deviceId = typeof input.device_id === 'string' ? input.device_id : undefined
+
+    const { checkout } = await sendTerminalCheckout(c.env.DB, c.env, id, input.expected_amount_cents, deviceId)
+    const billing = await refreshBilling(c.env.DB, c.env, id)
+    return c.json({ status: 'success', checkout, billing, data: { checkout, billing } })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not start terminal checkout.')
+  }
+})
+
+// GET: Admin calendar feed URLs for Google Calendar / Apple Calendar subscription
+adminRouter.get('/calendar-feed', async (c) => {
+  noStore(c)
+  try {
+    const secret = getSigningSecret(c.env) || (await getMediaSigningSecret(c.env))
+    if (!secret) {
+      return c.json(
+        { error: { code: 'SIGNING_NOT_CONFIGURED', message: 'Calendar feed signing is not configured.', details: [] } },
+        503
+      )
+    }
+
+    const token = await signCalendarFeedToken(secret)
+    const origin = new URL(c.req.url).origin
+    const icsFeedUrl = `${origin}/api/bookings/calendar.ics?token=${encodeURIComponent(token)}`
+    const webcalUrl = icsFeedUrl.replace(/^https?:\/\//i, 'webcal://')
+    const googleCalendarSubscribeUrl = `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(webcalUrl)}`
+    const targetCalendarEmail = (c.env.GOOGLE_CALENDAR_ID || 'r59mediatesting@gmail.com').trim() || 'r59mediatesting@gmail.com'
+
+    return c.json({
+      status: 'success',
+      targetCalendarEmail,
+      icsFeedUrl,
+      webcalUrl,
+      googleCalendarSubscribeUrl,
+      data: {
+        targetCalendarEmail,
+        icsFeedUrl,
+        webcalUrl,
+        googleCalendarSubscribeUrl
+      }
+    })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not generate calendar feed URL.')
+  }
+})
+
+// POST: Backfill sync all active non-cancelled bookings to Google Calendar
+adminRouter.post('/calendar-sync', async (c) => {
+  noStore(c)
+  try {
+    const timeZone = await getStudioTimeZone(c.env.DB)
+    const { results: bookingRows } = await c.env.DB.prepare(
+      `${ADMIN_CALENDAR_BOOKING_SELECT}
+       WHERE LOWER(COALESCE(b.status, '')) != 'cancelled'
+       ORDER BY ss.date ASC, ss.start_time ASC`
+    ).all<any>()
+
+    const rows = bookingRows || []
+    let syncedCount = 0
+    let failedCount = 0
+    const reasonsSet = new Set<string>()
+
+    for (const row of rows) {
+      const res = await syncBookingToGoogleCalendarApi(c.env, mapRowToCalendarBooking(row, timeZone), 'upsert')
+      if (res.synced) {
+        syncedCount++
+      } else {
+        failedCount++
+        if (res.reason) reasonsSet.add(res.reason)
+      }
+    }
+
+    const total = rows.length
+    const reasons = Array.from(reasonsSet)
+    return c.json({
+      status: 'success',
+      total,
+      syncedCount,
+      failedCount,
+      reasons,
+      data: {
+        total,
+        syncedCount,
+        failedCount,
+        reasons
+      }
+    })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not sync bookings to Google Calendar.')
+  }
+})
+
 // POST: Cancel the booking's open invoice
 adminRouter.post('/bookings/:id/invoice/cancel', async (c) => {
   noStore(c)
@@ -1754,7 +2006,20 @@ async function handleGetPricing(c: Context<{ Bindings: Bindings }>) {
       "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
     ).first<{ setting_value: string }>()
 
-    const pricing = row?.setting_value ? JSON.parse(row.setting_value) : { baseFee: 0, perPerson: 0, depositPercent: DEFAULT_DEPOSIT_PERCENT }
+    let parsed: any = {}
+    if (row?.setting_value) {
+      try {
+        parsed = JSON.parse(row.setting_value) || {}
+      } catch {}
+    }
+
+    const pricing = {
+      baseFee: Number.isFinite(Number(parsed.baseFee)) && Number(parsed.baseFee) >= 0 ? Number(parsed.baseFee) : 0,
+      perPerson: Number.isFinite(Number(parsed.perPerson)) && Number(parsed.perPerson) >= 0 ? Number(parsed.perPerson) : 0,
+      depositPercent: normalizeDepositPercent(parsed.depositPercent),
+      feeRules: normalizeFeeRules(parsed.feeRules),
+      policy: normalizeBookingPolicy(parsed.policy)
+    }
     return c.json({ ...pricing, status: 'success', data: pricing })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch pricing settings.', details: [] } }, 500)
@@ -1773,18 +2038,59 @@ async function handleUpdatePricing(c: Context<{ Bindings: Bindings }>) {
         }
       }, 400)
     }
-    const depositPercent = normalizeDepositPercent(body.depositPercent)
+    if (body.feeRules !== undefined && !Array.isArray(body.feeRules)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'feeRules must be an array.',
+          details: [{ field: 'feeRules', message: 'feeRules must be an array.' }]
+        }
+      }, 400)
+    }
+    if (body.policy !== undefined && (!body.policy || typeof body.policy !== 'object' || Array.isArray(body.policy))) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'policy must be an object.',
+          details: [{ field: 'policy', message: 'policy must be an object.' }]
+        }
+      }, 400)
+    }
 
-    const parsedBaseFee = Number(body.baseFee)
+    const existingRow = await c.env.DB.prepare(
+      "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
+    ).first<{ setting_value: string }>()
+    let existing: any = {}
+    if (existingRow?.setting_value) {
+      try {
+        existing = JSON.parse(existingRow.setting_value) || {}
+      } catch {}
+    }
+
+    const depositPercent =
+      body.depositPercent !== undefined
+        ? normalizeDepositPercent(body.depositPercent)
+        : normalizeDepositPercent(existing.depositPercent)
+
+    const parsedBaseFee = body.baseFee !== undefined ? Number(body.baseFee) : Number(existing.baseFee)
     const baseFee = Number.isFinite(parsedBaseFee) && parsedBaseFee >= 0 ? Math.round(parsedBaseFee * 100) / 100 : 0
 
-    const parsedPerPerson = Number(body.perPerson)
+    const parsedPerPerson = body.perPerson !== undefined ? Number(body.perPerson) : Number(existing.perPerson)
     const perPerson = Number.isFinite(parsedPerPerson) && parsedPerPerson >= 0 ? Math.round(parsedPerPerson * 100) / 100 : 0
+
+    const feeRules =
+      body.feeRules !== undefined ? normalizeFeeRules(body.feeRules) : normalizeFeeRules(existing.feeRules)
+    const policy =
+      body.policy !== undefined
+        ? normalizeBookingPolicy({ ...normalizeBookingPolicy(existing.policy), ...body.policy })
+        : normalizeBookingPolicy(existing.policy ?? DEFAULT_BOOKING_POLICY)
 
     const cleanPricing = {
       baseFee,
       perPerson,
-      depositPercent
+      depositPercent,
+      feeRules,
+      policy
     }
     const val = JSON.stringify(cleanPricing)
 
@@ -1814,6 +2120,7 @@ async function handleUpdatePricing(c: Context<{ Bindings: Bindings }>) {
     }
 
     await c.env.DB.batch(statements)
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success', pricing: cleanPricing, data: cleanPricing })
   } catch (e: any) {
@@ -2146,6 +2453,8 @@ adminRouter.put('/packages/:id', async (c) => {
       id
     ).run()
 
+    await bumpPublicContentVersion(c.env.DB)
+
     return c.json({
       success: true,
       status: 'success',
@@ -2192,6 +2501,7 @@ adminRouter.delete('/packages/:id', async (c) => {
 
     if (bookingCheck) {
       await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
+      await bumpPublicContentVersion(c.env.DB)
       return c.json({
         success: true,
         status: 'success',
@@ -2202,6 +2512,7 @@ adminRouter.delete('/packages/:id', async (c) => {
     }
 
     await c.env.DB.prepare('DELETE FROM Services WHERE id = ?').bind(id).run()
+    await bumpPublicContentVersion(c.env.DB)
     return c.json({ success: true, status: 'success', data: { id: Number(id), deleted: true } })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete service.', details: [] } }, 500)
@@ -2287,10 +2598,14 @@ adminRouter.put('/portfolio/:id', async (c) => {
       ).bind(media_key, section, title, category, alt_text, is_active, is_featured, display_order, id)
     ]
 
-    // If replacing image file with a new key, delete old chunks from Media_Storage atomically
+    // If replacing image file with a new key, delete old chunks and variants from Media_Storage atomically
     if (rawMediaKey && existing.media_key && rawMediaKey !== existing.media_key && !existing.media_key.startsWith('/assets/')) {
       updateStatements.push(
-        c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(existing.media_key)
+        c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key IN (?, ?, ?)').bind(
+          existing.media_key,
+          `${existing.media_key}__w640`,
+          `${existing.media_key}__w1280`
+        )
       )
     }
 
@@ -2299,6 +2614,8 @@ adminRouter.put('/portfolio/:id', async (c) => {
     } else {
       await c.env.DB.batch(updateStatements)
     }
+
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({
       success: true,
@@ -2324,6 +2641,13 @@ adminRouter.put('/media/*', async (c) => {
     return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid media key', details: [] } }, 400)
   }
 
+  const rawVariant = url.searchParams.get('variant')
+  const variant = parseMediaVariantWidth(rawVariant)
+  if (rawVariant !== null && rawVariant !== '' && !variant) {
+    return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid variant width. Must be 640 or 1280.', details: [] } }, 400)
+  }
+  const storageKey = variant ? `${key}__w${variant}` : key
+
   const contentType = (c.req.header('Content-Type') || 'image/webp').split(';')[0].trim().toLowerCase()
   const arrayBuffer = await c.req.arrayBuffer()
   if (!arrayBuffer || arrayBuffer.byteLength === 0) {
@@ -2334,8 +2658,9 @@ adminRouter.put('/media/*', async (c) => {
   }
 
   try {
-    await replaceMediaStorageChunks(c.env.DB, key, arrayBuffer, contentType)
-    return c.json({ success: true, fileKey: key, key }, 200)
+    await replaceMediaStorageChunks(c.env.DB, storageKey, arrayBuffer, contentType)
+    await bumpPublicContentVersion(c.env.DB)
+    return c.json({ success: true, fileKey: storageKey, key: storageKey, baseKey: key, variant: variant ?? null }, 200)
   } catch (err: any) {
     return c.json({
       error: {
@@ -2365,8 +2690,14 @@ adminRouter.delete('/portfolio/:id', async (c) => {
     await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
 
     if (existing.media_key && !existing.media_key.startsWith('/assets/')) {
-      await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(existing.media_key).run().catch(() => {})
+      await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key IN (?, ?, ?)').bind(
+        existing.media_key,
+        `${existing.media_key}__w640`,
+        `${existing.media_key}__w1280`
+      ).run().catch(() => {})
     }
+
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
@@ -2454,6 +2785,8 @@ adminRouter.put('/profile', async (c) => {
     await c.env.DB.prepare(
       "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('profile', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
     ).bind(val).run()
+
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success', profile: cleanProfile, data: cleanProfile })
   } catch (e: any) {

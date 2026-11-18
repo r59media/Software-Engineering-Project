@@ -10,6 +10,7 @@ import './BookingYourInfo.css'
 
 import { bookingFieldLimits, normalizeBookingInfo, validateBookingInfo } from './bookingValidation'
 import type { BookingFormErrors } from './bookingValidation'
+import { formatPhoneInput } from '../../utils/phone'
 
 export function BookingYourInfo({
   service,
@@ -27,7 +28,7 @@ export function BookingYourInfo({
     firstName: initialInfo?.firstName || '',
     lastName: initialInfo?.lastName || '',
     email: initialInfo?.email || '',
-    phone: initialInfo?.phone || '',
+    phone: formatPhoneInput(initialInfo?.phone || ''),
     notes: initialInfo?.notes || '',
   })
 
@@ -41,7 +42,8 @@ export function BookingYourInfo({
   const busy = isSubmitting || localSubmitting
 
   const handleChange = (field: keyof BookingCustomerInfo, value: string) => {
-    const next = { ...formData, [field]: value }
+    const nextValue = field === 'phone' ? formatPhoneInput(value) : value
+    const next = { ...formData, [field]: nextValue }
     setFormData(next)
     onDraftChange?.(next)
     setLocalError(null)
@@ -252,10 +254,11 @@ export function BookingYourInfo({
                     id="field-phone"
                     name="phone"
                     required
-                    maxLength={bookingFieldLimits.phone}
+                    maxLength={14}
                     type="tel"
+                    inputMode="numeric"
                     autoComplete="tel"
-                    placeholder="+1 (212) 555-0148"
+                    placeholder="(212) 555-0148"
                     className={`r59-form__control ${errors.phone ? 'r59-form__control--error' : ''}`}
                     value={formData.phone}
                     onChange={e => handleChange('phone', e.target.value)}
