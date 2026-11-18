@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useLoader, useThree } from '@react-three/fiber'
 import { LinearFilter, LinearMipmapLinearFilter, Mesh, PMREMGenerator } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
@@ -72,12 +72,6 @@ function LensModel({ url, aperture, transition, staticSnapshot, onSnapshot }: Le
   // Clone the hierarchy so future aperture/transform changes do not mutate the loader cache.
   const model = useMemo(() => gltf.scene.clone(true), [gltf.scene])
   const { gl, scene, camera, invalidate } = useThree()
-  const isLowPowerGpu = useMemo(
-    () => (staticSnapshot ? false : isIntegratedOrLowPowerGpu(gl.getContext())),
-    [gl, staticSnapshot],
-  )
-  const restDpr = Math.min(window.devicePixelRatio || 1, isLowPowerGpu ? 1.5 : 2)
-  const motionDpr = isLowPowerGpu ? 1.0 : Math.min(restDpr, 1.5)
 
   useLayoutEffect(() => {
     const maxAnisotropy = gl.capabilities?.getMaxAnisotropy?.() ?? 1
@@ -124,7 +118,6 @@ function LensModel({ url, aperture, transition, staticSnapshot, onSnapshot }: Le
       blades.push({ mesh: object, rest, travel, restX, restY, hx, hy })
     })
     let lastOpening = -1
-    let restoreDprTimer: number | undefined
     const update = (value: number) => {
       const opening = Math.min(1, Math.max(0, value))
       if (Math.abs(opening - lastOpening) < 0.0004) return
@@ -139,31 +132,12 @@ function LensModel({ url, aperture, transition, staticSnapshot, onSnapshot }: Le
         mesh.position.y = hy + dx * sin + dy * cos
         mesh.rotation.z = rest + delta
       }
-      if (!staticSnapshot && isLowPowerGpu) {
-        if (restoreDprTimer !== undefined) {
-          window.clearTimeout(restoreDprTimer)
-          restoreDprTimer = undefined
-        }
-        if (opening > 0 && opening < 1) {
-          gl.setPixelRatio(motionDpr)
-          restoreDprTimer = window.setTimeout(() => {
-            restoreDprTimer = undefined
-            gl.setPixelRatio(restDpr)
-            invalidate()
-          }, 120)
-        } else {
-          gl.setPixelRatio(restDpr)
-        }
-      }
       invalidate()
     }
     update(aperture)
     transition?.ready()
     const unsubscribe = transition?.subscribe(update)
     return () => {
-      if (restoreDprTimer !== undefined) {
-        window.clearTimeout(restoreDprTimer)
-      }
       unsubscribe?.()
       for (const { mesh, rest, restX, restY } of blades) {
         mesh.position.x = restX
@@ -171,7 +145,7 @@ function LensModel({ url, aperture, transition, staticSnapshot, onSnapshot }: Le
         mesh.rotation.z = rest
       }
     }
-  }, [model, aperture, invalidate, transition, staticSnapshot, isLowPowerGpu, gl, motionDpr, restDpr])
+  }, [model, aperture, invalidate, transition])
 
   useEffect(() => {
     if (!staticSnapshot || !onSnapshot) return
@@ -204,6 +178,16 @@ const lensDpr: [number, number] = isWebKit ? [1, 1.5] : aboutLens.pixelRatio
 
 export default function LensScene({ url, aperture, transition, staticSnapshot }: LensProps) {
   const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null)
+  const intentionalUnmountRef = useRef(false)
+
+  useEffect(() => () => {
+    intentionalUnmountRef.current = true
+  }, [])
+
+  const handleSnapshot = useCallback((dataUrl: string) => {
+    intentionalUnmountRef.current = true
+    setSnapshotUrl(dataUrl)
+  }, [])
 
   if (staticSnapshot && snapshotUrl) {
     return (
@@ -218,10 +202,15 @@ export default function LensScene({ url, aperture, transition, staticSnapshot }:
 
   return <Canvas
     className="about__lens-canvas"
-    onCreated={({ gl }) => {
+    onCreated={({ gl, setDpr }) => {
+      if (!staticSnapshot && isIntegratedOrLowPowerGpu(gl.getContext())) {
+        setDpr(Math.min(window.devicePixelRatio || 1, 1.25))
+      }
       gl.domElement.addEventListener('webglcontextlost', event => {
         event.preventDefault()
-        transition?.fail()
+        if (!intentionalUnmountRef.current) {
+          transition?.fail()
+        }
       }, { once: true })
     }}
     frameloop="demand"
@@ -239,7 +228,7 @@ export default function LensScene({ url, aperture, transition, staticSnapshot }:
         aperture={aperture}
         transition={transition}
         staticSnapshot={staticSnapshot}
-        onSnapshot={staticSnapshot ? setSnapshotUrl : undefined}
+        onSnapshot={staticSnapshot ? handleSnapshot : undefined}
       />
     </Suspense>
   </Canvas>
