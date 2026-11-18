@@ -1,4 +1,4 @@
-import { Suspense, useLayoutEffect, useMemo } from 'react'
+import { Suspense, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { Canvas, useLoader, useThree } from '@react-three/fiber'
 import { LinearFilter, LinearMipmapLinearFilter, Mesh, PMREMGenerator } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
@@ -6,7 +6,7 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import type { LensTransitionController } from '../transition/LensTransitionContext'
 import { aboutLens } from '../../config/aboutLens'
-import { isWebKit } from '../../utils/browserEnv'
+import { isIntegratedOrLowPowerGpu, isWebKit } from '../../utils/browserEnv'
 
 function StudioLighting() {
   const { gl, scene, invalidate } = useThree()
@@ -35,7 +35,16 @@ function StudioLighting() {
   </>
 }
 
-type LensProps = { url: string; aperture: number; transition?: LensTransitionController | null }
+type LensProps = {
+  url: string
+  aperture: number
+  transition?: LensTransitionController | null
+  staticSnapshot?: boolean
+}
+
+type LensModelProps = LensProps & {
+  onSnapshot?: (dataUrl: string) => void
+}
 
 function configureLensLoader(loader: GLTFLoader) {
   loader.setMeshoptDecoder(MeshoptDecoder)
@@ -58,11 +67,17 @@ export function preloadLensModel(url: string) {
   useLoader.preload(GLTFLoader, url, configureLensLoader)
 }
 
-function LensModel({ url, aperture, transition }: LensProps) {
+function LensModel({ url, aperture, transition, staticSnapshot, onSnapshot }: LensModelProps) {
   const gltf = useLoader(GLTFLoader, url, configureLensLoader)
   // Clone the hierarchy so future aperture/transform changes do not mutate the loader cache.
   const model = useMemo(() => gltf.scene.clone(true), [gltf.scene])
-  const { gl, invalidate } = useThree()
+  const { gl, scene, camera, invalidate } = useThree()
+  const isLowPowerGpu = useMemo(
+    () => (staticSnapshot ? false : isIntegratedOrLowPowerGpu(gl.getContext())),
+    [gl, staticSnapshot],
+  )
+  const restDpr = Math.min(window.devicePixelRatio || 1, isLowPowerGpu ? 1.5 : 2)
+  const motionDpr = isLowPowerGpu ? 1.0 : Math.min(restDpr, 1.5)
 
   useLayoutEffect(() => {
     const maxAnisotropy = gl.capabilities?.getMaxAnisotropy?.() ?? 1
@@ -109,6 +124,7 @@ function LensModel({ url, aperture, transition }: LensProps) {
       blades.push({ mesh: object, rest, travel, restX, restY, hx, hy })
     })
     let lastOpening = -1
+    let restoreDprTimer: number | undefined
     const update = (value: number) => {
       const opening = Math.min(1, Math.max(0, value))
       if (Math.abs(opening - lastOpening) < 0.0004) return
@@ -123,12 +139,31 @@ function LensModel({ url, aperture, transition }: LensProps) {
         mesh.position.y = hy + dx * sin + dy * cos
         mesh.rotation.z = rest + delta
       }
+      if (!staticSnapshot && isLowPowerGpu) {
+        if (restoreDprTimer !== undefined) {
+          window.clearTimeout(restoreDprTimer)
+          restoreDprTimer = undefined
+        }
+        if (opening > 0 && opening < 1) {
+          gl.setPixelRatio(motionDpr)
+          restoreDprTimer = window.setTimeout(() => {
+            restoreDprTimer = undefined
+            gl.setPixelRatio(restDpr)
+            invalidate()
+          }, 120)
+        } else {
+          gl.setPixelRatio(restDpr)
+        }
+      }
       invalidate()
     }
     update(aperture)
     transition?.ready()
     const unsubscribe = transition?.subscribe(update)
     return () => {
+      if (restoreDprTimer !== undefined) {
+        window.clearTimeout(restoreDprTimer)
+      }
       unsubscribe?.()
       for (const { mesh, rest, restX, restY } of blades) {
         mesh.position.x = restX
@@ -136,13 +171,51 @@ function LensModel({ url, aperture, transition }: LensProps) {
         mesh.rotation.z = rest
       }
     }
-  }, [model, aperture, invalidate, transition])
+  }, [model, aperture, invalidate, transition, staticSnapshot, isLowPowerGpu, gl, motionDpr, restDpr])
+
+  useEffect(() => {
+    if (!staticSnapshot || !onSnapshot) return
+    let cancelled = false
+    let raf2 = 0
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        if (cancelled) return
+        gl.render(scene, camera)
+        let dataUrl = gl.domElement.toDataURL('image/webp', 0.98)
+        if (!dataUrl.startsWith('data:image/webp')) {
+          dataUrl = gl.domElement.toDataURL('image/png')
+        }
+        if (dataUrl.startsWith('data:image/') && dataUrl.length > 2048) {
+          onSnapshot(dataUrl)
+        }
+      })
+    })
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(raf1)
+      cancelAnimationFrame(raf2)
+    }
+  }, [staticSnapshot, onSnapshot, gl, scene, camera, model, aperture])
+
   return <primitive object={model} dispose={null} />
 }
 
 const lensDpr: [number, number] = isWebKit ? [1, 1.5] : aboutLens.pixelRatio
 
-export default function LensScene({ url, aperture, transition }: LensProps) {
+export default function LensScene({ url, aperture, transition, staticSnapshot }: LensProps) {
+  const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null)
+
+  if (staticSnapshot && snapshotUrl) {
+    return (
+      <img
+        src={snapshotUrl}
+        alt=""
+        className="about__lens-canvas"
+        style={{ width: '100%', height: '100%', display: 'block', objectFit: 'contain', pointerEvents: 'none' }}
+      />
+    )
+  }
+
   return <Canvas
     className="about__lens-canvas"
     onCreated={({ gl }) => {
@@ -156,10 +229,18 @@ export default function LensScene({ url, aperture, transition }: LensProps) {
     camera={aboutLens.camera}
     dpr={lensDpr}
     scene={{ environmentIntensity: 0.35 }}
-    gl={{ alpha: true, antialias: true, powerPreference: 'high-performance' }}
+    gl={{ alpha: true, antialias: true, powerPreference: 'default' }}
     fallback={<div className="about__lens-fallback" data-lens-state="fallback" />}
   >
     <StudioLighting />
-    <Suspense fallback={null}><LensModel url={url} aperture={aperture} transition={transition} /></Suspense>
+    <Suspense fallback={null}>
+      <LensModel
+        url={url}
+        aperture={aperture}
+        transition={transition}
+        staticSnapshot={staticSnapshot}
+        onSnapshot={staticSnapshot ? setSnapshotUrl : undefined}
+      />
+    </Suspense>
   </Canvas>
 }

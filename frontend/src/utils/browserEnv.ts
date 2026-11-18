@@ -34,3 +34,18 @@ export function initBrowserEnv(): void {
     dataset.device = 'ipad'
   }
 }
+
+const IGPU_PATTERN = /intel|uhd|iris|hd graphics|integrated|radeon\(tm\) graphics|vega|mali|adreno|apple gpu|swiftshader|llvmpipe/i
+
+export function isIntegratedOrLowPowerGpu(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
+  if (isWebKit || isIPad) return true
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info')
+    const renderer = ext
+      ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '')
+      : String(gl.getParameter(gl.RENDERER) || '')
+    return IGPU_PATTERN.test(renderer)
+  } catch {
+    return false
+  }
+}

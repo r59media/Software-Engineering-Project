@@ -63,7 +63,7 @@ export function AboutLens() {
     <div className="about__motion" data-about-motion="lens-transition">
       <LensBoundary key={url} onFailure={transition?.fail}>
         <Suspense fallback={<LensFallback />}>
-          {ready ? <LensScene url={url} aperture={aboutLens.aperture} transition={transition} /> : <LensFallback />}
+          {ready ? <LensScene url={url} aperture={aboutLens.aperture} transition={transition} staticSnapshot /> : <LensFallback />}
         </Suspense>
       </LensBoundary>
     </div>
