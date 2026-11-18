@@ -65,7 +65,7 @@ const ADMIN_CALENDAR_BOOKING_SELECT = `SELECT b.id, b.client_name, b.client_emai
         COALESCE(NULLIF(b.event_location, ''), b.location) AS location,
         b.notes, b.attendees, b.status,
         ss.date, ss.start_time, ss.end_time,
-        s.name AS service_name, s.title AS service_title
+        s.name AS service_name
  FROM Bookings b
  INNER JOIN Schedule_Slots ss ON b.slot_id = ss.id
  LEFT JOIN Services s ON b.service_id = s.id`
@@ -79,7 +79,7 @@ function mapRowToCalendarBooking(row: any, timeZone: string) {
     client_name: row.client_name,
     client_email: row.client_email,
     customer_phone: row.customer_phone,
-    package_name: row.service_title || row.service_name,
+    package_name: row.service_name,
     service_name: row.service_name,
     status: row.status,
     notes: row.notes,

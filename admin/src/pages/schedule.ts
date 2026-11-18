@@ -1857,7 +1857,9 @@
       const isNotConfigured = reasons.includes('not_configured');
       const otherReasons = reasons.filter((r) => r !== 'not_configured');
 
-      if (syncRes && (failedCount > 0 || otherReasons.length > 0)) {
+      if (syncErr) {
+        toast(`Google Calendar sync failed: ${syncErr?.message || 'Server error.'}`, { type: 'error' });
+      } else if (syncRes && (failedCount > 0 || otherReasons.length > 0)) {
         const displayReasons = otherReasons.length > 0 ? otherReasons : reasons;
         toast(`Google Calendar sync issue: ${displayReasons.join(', ') || 'Sync failed.'}`, { type: 'error' });
       } else if (syncRes && syncedCount > 0 && failedCount === 0) {
