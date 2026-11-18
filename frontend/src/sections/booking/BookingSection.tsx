@@ -70,6 +70,8 @@ function BookingFlow({
   onRetry,
   inquiryHref = '#contact',
   onProceedToDeposit,
+  confirmedBooking = null,
+  onResetBooking,
 }: BookingSectionProps) {
   const [{ step, movement }, setStage] = useState<{ step: BookingStep; movement: StepMotion }>({ step: 'services', movement: { direction: -1, panelsOnly: false } })
   const setStep = (next: BookingStep) => setStage(previous => {
@@ -186,6 +188,181 @@ function BookingFlow({
           />
         </div>
       </section></BookingStage>
+    )
+  }
+
+  if (confirmedBooking && selectedService && dateTime && customerInfo) {
+    const formattedDate = new Intl.DateTimeFormat('en-US', {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+      timeZone: 'UTC',
+    }).format(new Date(`${dateTime.date}T12:00:00Z`))
+    const formatCurrency = (cents: number) =>
+      new Intl.NumberFormat('en-US', { style: 'currency', currency: selectedService.currency || 'USD' }).format(cents / 100)
+
+    const handleBookAnother = () => {
+      setStep('services')
+      setDateTime(null)
+      setSelectedServiceId(null)
+      setSelectedFeeIds([])
+      setAttendees(1)
+      onResetBooking?.()
+      document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+    }
+
+    return (
+      <BookingStage movement={movement} stage="confirmed">
+        <section id="booking" className="booking" aria-labelledby="booking-title">
+          <div className="booking__inner">
+            <div className="booking-review">
+              <header className="booking-review__header">
+                <div className="booking__title-group">
+                  <p className="booking__eyebrow">
+                    <span aria-hidden="true" />
+                    Confirmed
+                  </p>
+                  <h2 id="booking-title">
+                    BOOKING CONFIRMED{confirmedBooking.bookingId ? ` #${confirmedBooking.bookingId}` : ''}
+                  </h2>
+                </div>
+                <p className="booking-review__subtitle">Your deposit has been received and your session is reserved.</p>
+              </header>
+
+              <div className="booking-review__ticket-layout">
+                <article className="booking-review__ticket" aria-label="Confirmed booking summary">
+                  <header className="booking-review__ticket-heading">
+                    <h3>CONFIRMED <em>SESSION</em></h3>
+                    <img className="booking-review__logo" src={`${import.meta.env.BASE_URL}r59Media_logo.svg`} alt="R59 Media" width="121" height="75" />
+                  </header>
+
+                  <div className="booking-review__columns">
+                    <section className="booking-review__block booking-review__service">
+                      <div className="booking-review__block-heading">
+                        <h4>{selectedService.name}</h4>
+                      </div>
+                      <p className="booking-review__detail-line">{attendees} {attendees === 1 ? 'person' : 'people'}</p>
+                      {confirmedBooking.eventLocation && (
+                        <p className="booking-review__detail-line" style={{ marginTop: '6px' }}>
+                          Location: {confirmedBooking.eventLocation}
+                        </p>
+                      )}
+                    </section>
+
+                    <section className="booking-review__block booking-review__date">
+                      <div className="booking-review__block-heading">
+                        <h4>DATE &amp; TIME</h4>
+                      </div>
+                      <p className="booking-review__detail-line">{formattedDate}</p>
+                      <p className="booking-review__detail-line" style={{ marginTop: '6px' }}>
+                        {dateTime.timeSlot}{dateTime.timezone ? ` (${dateTime.timezone})` : ''}
+                      </p>
+                    </section>
+
+                    <section className="booking-review__block booking-review__contact-block">
+                      <div className="booking-review__block-heading">
+                        <h4>CONTACT DETAILS</h4>
+                      </div>
+                      <dl className="booking-review__contact">
+                        <div>
+                          <dt>Name</dt>
+                          <dd>{customerInfo.firstName} {customerInfo.lastName}</dd>
+                        </div>
+                        <div>
+                          <dt>Email</dt>
+                          <dd>{customerInfo.email}</dd>
+                        </div>
+                        {customerInfo.phone && (
+                          <div>
+                            <dt>Phone</dt>
+                            <dd>{customerInfo.phone}</dd>
+                          </div>
+                        )}
+                      </dl>
+                    </section>
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: '24px',
+                      padding: '16px 20px',
+                      borderRadius: '8px',
+                      background: 'var(--color-brand-black)',
+                      color: 'var(--color-brand-white)',
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                      gap: '12px 24px',
+                    }}
+                  >
+                    <div>
+                      <span style={{ display: 'block', fontSize: '12px', opacity: 0.8 }}>Session Total</span>
+                      <strong style={{ fontSize: '20px' }}>{formatCurrency(confirmedBooking.totalCents)}</strong>
+                    </div>
+                    <div>
+                      <span style={{ display: 'block', fontSize: '12px', opacity: 0.8 }}>Deposit Paid</span>
+                      <strong style={{ fontSize: '20px' }}>{formatCurrency(confirmedBooking.depositPaidCents)}</strong>
+                    </div>
+                    <div>
+                      <span style={{ display: 'block', fontSize: '12px', opacity: 0.8 }}>Remaining Balance Due</span>
+                      <strong style={{ fontSize: '20px' }}>{formatCurrency(confirmedBooking.balanceDueCents)}</strong>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: '20px',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      alignItems: 'center',
+                      gap: '12px',
+                    }}
+                  >
+                    {confirmedBooking.googleCalendarUrl && (
+                      <a
+                        href={confirmedBooking.googleCalendarUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="booking-review__edit"
+                        style={{ textAlign: 'left' }}
+                      >
+                        Add to Google Calendar
+                      </a>
+                    )}
+                    {confirmedBooking.icsUrl && (
+                      <a
+                        href={confirmedBooking.icsUrl}
+                        download
+                        className="booking-review__edit"
+                        style={{ textAlign: 'left' }}
+                      >
+                        Download .ics
+                      </a>
+                    )}
+                    {confirmedBooking.rescheduleUrl && (
+                      <a
+                        href={confirmedBooking.rescheduleUrl}
+                        className="booking-review__edit"
+                        style={{ textAlign: 'left' }}
+                      >
+                        Reschedule / Manage Booking
+                      </a>
+                    )}
+                    <button
+                      type="button"
+                      className="booking-review__button"
+                      style={{ marginLeft: 'auto' }}
+                      onClick={handleBookAnother}
+                    >
+                      Book another session
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </div>
+          </div>
+        </section>
+      </BookingStage>
     )
   }
 

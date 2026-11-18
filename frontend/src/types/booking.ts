@@ -105,6 +105,17 @@ export interface SquareConfig {
   environment: 'sandbox' | 'production'
 }
 
+export interface ConfirmedBookingSummary {
+  bookingId?: number
+  totalCents: number
+  depositPaidCents: number
+  balanceDueCents: number
+  eventLocation?: string
+  rescheduleUrl?: string
+  icsUrl?: string
+  googleCalendarUrl?: string
+}
+
 export interface BookingSectionProps {
   onProceedToDeposit?: (draft: BookingReviewDraft) => void | Promise<void>
   services?: readonly BookingService[]
@@ -113,6 +124,8 @@ export interface BookingSectionProps {
   status?: 'ready' | 'loading' | 'error'
   onRetry?: () => void
   inquiryHref?: string
+  confirmedBooking?: ConfirmedBookingSummary | null
+  onResetBooking?: () => void
 }
 
 export type DynamicFeeTrigger =

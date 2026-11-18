@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { BookingReviewDraft, BookingService, SquareConfig } from '../../types/booking'
+import type { BookingReviewDraft, BookingService, ConfirmedBookingSummary, SquareConfig } from '../../types/booking'
 import { computeSessionPricing, submitCheckout, fetchPricing, validateCoupon, type PricingData } from '../../api/client'
 import { fallbackBookingDepositPercent } from '../../config/booking'
 
@@ -65,7 +65,7 @@ interface DepositCheckoutModalProps {
   pricing?: PricingData | null
   selectedFeeIds?: string[]
   onClose: () => void
-  onSuccess?: (bookingId?: number) => void
+  onSuccess?: (summary: ConfirmedBookingSummary) => void
   squareConfig?: SquareConfig | null
   appId?: string
   locationId?: string
@@ -364,16 +364,28 @@ export function DepositCheckoutModal({
           cardRef.current = null
         }
         const bookingId = res.booking_id || res.data?.booking_id || res.id
+        const rescheduleUrl = res.reschedule_url || res.data?.reschedule_url
+        const icsUrl = res.ics_url || res.data?.ics_url
+        const googleCalendarUrl = res.google_calendar_url || res.data?.google_calendar_url
         setConfirmedResult({
           bookingId,
           paymentId: res.payment_id || res.data?.payment_id,
           orderId: res.order_id || res.data?.order_id,
           rescheduleToken: res.reschedule_token || res.data?.reschedule_token,
-          rescheduleUrl: res.reschedule_url || res.data?.reschedule_url,
-          icsUrl: res.ics_url || res.data?.ics_url,
-          googleCalendarUrl: res.google_calendar_url || res.data?.google_calendar_url,
+          rescheduleUrl,
+          icsUrl,
+          googleCalendarUrl,
         })
-        onSuccess?.(bookingId)
+        onSuccess?.({
+          bookingId,
+          totalCents: Math.round(estimatedTotalDollars * 100),
+          depositPaidCents: Math.round(estimatedDepositDollars * 100),
+          balanceDueCents: Math.round(estimatedRemainingDollars * 100),
+          eventLocation: resolvedEventLocation,
+          rescheduleUrl,
+          icsUrl,
+          googleCalendarUrl,
+        })
       } else {
         setError(res.message || 'Payment processing failed. Please verify your payment details.')
       }

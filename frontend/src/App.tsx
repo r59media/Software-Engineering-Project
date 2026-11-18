@@ -8,7 +8,7 @@ import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
-import type { BookingReviewDraft, BookingService } from './types/booking'
+import type { BookingReviewDraft, BookingService, ConfirmedBookingSummary } from './types/booking'
 import type { ContactInquiry } from './types/contact'
 import { DepositCheckoutModal } from './sections/booking/DepositCheckoutModal'
 import { RescheduleModal } from './sections/booking/RescheduleModal'
@@ -26,6 +26,7 @@ function App() {
   const [pricing, setPricing] = useState<PricingData | null>(null)
   const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
   const [depositDraft, setDepositDraft] = useState<BookingReviewDraft | null>(null)
+  const [confirmedBooking, setConfirmedBooking] = useState<ConfirmedBookingSummary | null>(null)
   const [rescheduleParams, setRescheduleParams] = useState<{ bookingId: string; token: string } | null>(() => {
     const params = new URLSearchParams(window.location.search)
     const bookingId = (params.get('booking') || params.get('bookingId') || params.get('reschedule') || '').trim()
@@ -276,7 +277,12 @@ function App() {
           status={bookingStatus}
           onRetry={loadBookingServices}
           inquiryHref="#contact"
-          onProceedToDeposit={draft => setDepositDraft(draft)}
+          confirmedBooking={confirmedBooking}
+          onResetBooking={() => setConfirmedBooking(null)}
+          onProceedToDeposit={draft => {
+            setConfirmedBooking(null)
+            setDepositDraft(draft)
+          }}
         />
       </Suspense>
       <Suspense fallback={null}>
@@ -294,6 +300,7 @@ function App() {
         pricing={pricing}
         squareConfig={pricing?.squareConfig ?? null}
         onClose={() => setDepositDraft(null)}
+        onSuccess={summary => setConfirmedBooking(summary)}
       />
     )}
   </div>
