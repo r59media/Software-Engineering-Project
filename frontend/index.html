@@ -10,6 +10,13 @@
     <!-- Critical Web Font Preloads (Inter 400 body & Jost 700 headings) -->
     <link rel="preload" href="/src/assets/fonts/jost-700.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/src/assets/fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin />
+
+    <!-- Start Hero & profile API fetches in parallel with JS/CSS -->
+    <link rel="preload" href="/api/portfolio?section=hero" as="fetch" crossorigin />
+    <link rel="preload" href="/api/profile" as="fetch" crossorigin />
+
+    <!-- Prevent white flash before external CSS finishes loading on slow/cold visits -->
+    <style>html,body{background:#111;color:#f0f0f0;margin:0}</style>
   </head>
   <body>
     <div id="root"></div>
