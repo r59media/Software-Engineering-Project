@@ -34,6 +34,7 @@ import {
 import {
   BillingError,
   cancelOpenInvoice,
+  getStudioTimeZone,
   loadBookingTotals,
   OPEN_INVOICE_EXISTS_SQL,
   PAYMENTS_SELECT_SQL,
@@ -45,6 +46,7 @@ import {
   toPayment
 } from '../lib/squareBilling'
 import { signCalendarFeedToken } from './reschedule'
+import { syncBookingToGoogleCalendarApi } from '../lib/googleCalendar'
 import {
   BOOKING_PAYMENTS_TABLE_SQL,
   BOOKING_PAYMENTS_INDEX_SQL,
@@ -56,6 +58,59 @@ import { signMediaKey } from '../utils/signedUrl'
 
 function isValidId(id: string | undefined): boolean {
   return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
+}
+
+const ADMIN_CALENDAR_BOOKING_SELECT = `SELECT b.id, b.client_name, b.client_email, b.customer_phone,
+        COALESCE(NULLIF(b.event_location, ''), b.location) AS location,
+        b.notes, b.attendees, b.status,
+        ss.date, ss.start_time, ss.end_time,
+        s.name AS service_name, s.title AS service_title
+ FROM Bookings b
+ INNER JOIN Schedule_Slots ss ON b.slot_id = ss.id
+ LEFT JOIN Services s ON b.service_id = s.id`
+
+function mapRowToCalendarBooking(row: any, timeZone: string) {
+  return {
+    id: row.id,
+    date: row.date,
+    start_time: row.start_time,
+    end_time: row.end_time,
+    client_name: row.client_name,
+    client_email: row.client_email,
+    customer_phone: row.customer_phone,
+    package_name: row.service_title || row.service_name,
+    service_name: row.service_name,
+    status: row.status,
+    notes: row.notes,
+    location: row.location,
+    attendees: row.attendees,
+    timeZone
+  }
+}
+
+function scheduleGoogleCalendarSync(
+  c: Context<{ Bindings: Bindings }>,
+  bookingId: number | string,
+  action: 'upsert' | 'delete'
+) {
+  const task = (async () => {
+    if (action === 'delete') {
+      await syncBookingToGoogleCalendarApi(c.env, { id: bookingId, date: '', start_time: '' }, 'delete')
+      return
+    }
+    const row = await c.env.DB.prepare(`${ADMIN_CALENDAR_BOOKING_SELECT} WHERE b.id = ?`).bind(bookingId).first<any>()
+    if (!row || !row.date || !row.start_time) return
+    const timeZone = await getStudioTimeZone(c.env.DB)
+    await syncBookingToGoogleCalendarApi(c.env, mapRowToCalendarBooking(row, timeZone), 'upsert')
+  })().catch((err) => {
+    console.warn('Non-blocking admin calendar sync error:', err)
+  })
+
+  try {
+    c.executionCtx?.waitUntil(task)
+  } catch {
+    // Ignore when executionCtx is unavailable (e.g. unit tests)
+  }
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -1076,6 +1131,10 @@ adminRouter.post('/bookings', async (c) => {
       throw insertErr
     }
 
+    if (bookingResult.meta.last_row_id) {
+      scheduleGoogleCalendarSync(c, bookingResult.meta.last_row_id, 'upsert')
+    }
+
     return c.json({
       success: true,
       status: 'success',
@@ -1321,6 +1380,8 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ?').bind(existing.slot_id).run()
     }
 
+    scheduleGoogleCalendarSync(c, id, 'upsert')
+
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
     return billingErrorResponse(c, e, 'Could not update booking.')
@@ -1357,6 +1418,8 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
     if (booking.slot_id) {
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(booking.slot_id).run()
     }
+
+    scheduleGoogleCalendarSync(c, id, 'delete')
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
@@ -1399,6 +1462,8 @@ adminRouter.delete('/bookings/:id', async (c) => {
     if (!results[2]?.meta?.changes) {
       return c.json(INVOICE_OPEN_RESPONSE, 409)
     }
+
+    scheduleGoogleCalendarSync(c, id, 'delete')
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
@@ -1788,6 +1853,52 @@ adminRouter.get('/calendar-feed', async (c) => {
     })
   } catch (e: any) {
     return billingErrorResponse(c, e, 'Could not generate calendar feed URL.')
+  }
+})
+
+// POST: Backfill sync all active non-cancelled bookings to Google Calendar
+adminRouter.post('/calendar-sync', async (c) => {
+  noStore(c)
+  try {
+    const timeZone = await getStudioTimeZone(c.env.DB)
+    const { results: bookingRows } = await c.env.DB.prepare(
+      `${ADMIN_CALENDAR_BOOKING_SELECT}
+       WHERE LOWER(COALESCE(b.status, '')) != 'cancelled'
+       ORDER BY ss.date ASC, ss.start_time ASC`
+    ).all<any>()
+
+    const rows = bookingRows || []
+    let syncedCount = 0
+    let failedCount = 0
+    const reasonsSet = new Set<string>()
+
+    for (const row of rows) {
+      const res = await syncBookingToGoogleCalendarApi(c.env, mapRowToCalendarBooking(row, timeZone), 'upsert')
+      if (res.synced) {
+        syncedCount++
+      } else {
+        failedCount++
+        if (res.reason) reasonsSet.add(res.reason)
+      }
+    }
+
+    const total = rows.length
+    const reasons = Array.from(reasonsSet)
+    return c.json({
+      status: 'success',
+      total,
+      syncedCount,
+      failedCount,
+      reasons,
+      data: {
+        total,
+        syncedCount,
+        failedCount,
+        reasons
+      }
+    })
+  } catch (e: any) {
+    return billingErrorResponse(c, e, 'Could not sync bookings to Google Calendar.')
   }
 })
 

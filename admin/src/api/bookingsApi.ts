@@ -127,6 +127,13 @@
      */
     async fetchCalendarFeedConfig() {
       return client().get('/admin/calendar-feed');
+    },
+
+    /**
+     * Trigger real-time Google Calendar backfill sync: POST /admin/calendar-sync
+     */
+    async syncAllToGoogleCalendar() {
+      return client().post('/admin/calendar-sync', {});
     }
   };
 

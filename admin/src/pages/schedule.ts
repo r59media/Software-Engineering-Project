@@ -1812,6 +1812,15 @@
       btn.textContent = 'Syncing…';
     }
     try {
+      let syncRes = null;
+      let syncErr = null;
+      try {
+        syncRes = await window.R59.bookingsApi.syncAllToGoogleCalendar();
+      } catch (err) {
+        if (err?.status === 401) throw err;
+        syncErr = err;
+      }
+
       const cfg = await window.R59.bookingsApi.fetchCalendarFeedConfig();
       const feedUrl = String(cfg?.icsFeedUrl || cfg?.feedUrl || cfg?.icsUrl || cfg?.url || '').trim();
       const subscribeUrl = String(
@@ -1829,18 +1838,38 @@
         }
       }
 
-      if (subscribeUrl) {
-        window.open(subscribeUrl, '_blank', 'noopener,noreferrer');
-      }
+      const syncedCount = Number(syncRes?.syncedCount || 0);
+      const failedCount = Number(syncRes?.failedCount || 0);
+      const reasons = Array.isArray(syncRes?.reasons) ? syncRes.reasons.map(String).filter(Boolean) : [];
+      const targetCalendarEmail = String(syncRes?.targetCalendarEmail || cfg?.targetCalendarEmail || 'r59mediatesting@gmail.com').trim();
+      const isNotConfigured = reasons.includes('not_configured');
+      const otherReasons = reasons.filter((r) => r !== 'not_configured');
 
-      if (copied && subscribeUrl) {
-        toast('Live .ics feed URL copied. Subscribe in Google Calendar for r59mediatesting@gmail.com in the opened tab.', { type: 'success' });
-      } else if (copied) {
-        toast('Live .ics feed URL copied. In Google Calendar (r59mediatesting@gmail.com), choose Other calendars -> From URL.', { type: 'success' });
-      } else if (subscribeUrl) {
-        toast('Opened Google Calendar subscription for r59mediatesting@gmail.com.', { type: 'success' });
+      if (syncRes && (failedCount > 0 || otherReasons.length > 0)) {
+        const displayReasons = otherReasons.length > 0 ? otherReasons : reasons;
+        toast(`Google Calendar sync issue: ${displayReasons.join(', ') || 'Sync failed.'}`, { type: 'error' });
+      } else if (syncRes && syncedCount > 0 && failedCount === 0) {
+        const icsNote = copied ? ' Live .ics URL also copied.' : '';
+        toast(`Synced ${syncedCount} booking(s) to Google Calendar (${targetCalendarEmail}).${icsNote}`, { type: 'success' });
+      } else if (syncRes && !isNotConfigured) {
+        const icsNote = copied ? ' Live .ics URL also copied.' : '';
+        toast(`Google Calendar is up to date (${targetCalendarEmail}).${icsNote}`, { type: 'success' });
       } else {
-        toast('Calendar feed configuration did not return a feed URL.', { type: 'error' });
+        if (subscribeUrl) {
+          window.open(subscribeUrl, '_blank', 'noopener,noreferrer');
+        }
+
+        if (copied && subscribeUrl) {
+          toast(`Live .ics feed URL copied. Subscribe in Google Calendar for ${targetCalendarEmail} in the opened tab.`, { type: 'success' });
+        } else if (copied) {
+          toast(`Live .ics feed URL copied. In Google Calendar (${targetCalendarEmail}), choose Other calendars -> From URL.`, { type: 'success' });
+        } else if (subscribeUrl) {
+          toast(`Opened Google Calendar subscription for ${targetCalendarEmail}.`, { type: 'success' });
+        } else if (syncErr) {
+          toast(`Couldn't sync Google Calendar. ${syncErr.message}`, { type: 'error' });
+        } else {
+          toast('Calendar feed configuration did not return a feed URL.', { type: 'error' });
+        }
       }
     } catch (err) {
       if (err.status !== 401) toast(`Couldn't sync Google Calendar. ${err.message}`, { type: 'error' });

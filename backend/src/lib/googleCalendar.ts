@@ -221,11 +221,15 @@ export function buildGoogleCalendarTemplateUrl(
   return `https://calendar.google.com/calendar/render?${params.toString()}`
 }
 
-async function fetchGoogleCalendarAccessToken(env: Bindings): Promise<string | null> {
+async function fetchGoogleCalendarAccessToken(
+  env: Bindings
+): Promise<{ token: string } | { token: null; reason: string }> {
   const refreshToken = (env.GOOGLE_CALENDAR_REFRESH_TOKEN || '').trim()
   const clientId = (env.GOOGLE_CLIENT_ID || '').trim()
   const clientSecret = (env.GOOGLE_CLIENT_SECRET || '').trim()
-  if (!refreshToken || !clientId || !clientSecret) return null
+  if (!refreshToken || !clientId || !clientSecret) {
+    return { token: null, reason: 'not_configured' }
+  }
 
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -237,9 +241,14 @@ async function fetchGoogleCalendarAccessToken(env: Bindings): Promise<string | n
       grant_type: 'refresh_token'
     })
   })
-  if (!res.ok) return null
+  if (!res.ok) {
+    return { token: null, reason: `oauth_${res.status}` }
+  }
   const json = (await res.json()) as { access_token?: string }
-  return json.access_token || null
+  if (!json.access_token) {
+    return { token: null, reason: 'oauth_missing_token' }
+  }
+  return { token: json.access_token }
 }
 
 /**
@@ -252,10 +261,11 @@ export async function syncBookingToGoogleCalendarApi(
   action: 'upsert' | 'delete' = 'upsert'
 ): Promise<{ synced: boolean; reason?: string }> {
   try {
-    const accessToken = await fetchGoogleCalendarAccessToken(env)
-    if (!accessToken) {
-      return { synced: false, reason: 'not_configured' }
+    const auth = await fetchGoogleCalendarAccessToken(env)
+    if (auth.token === null) {
+      return { synced: false, reason: auth.reason }
     }
+    const accessToken = auth.token
 
     const calendarId = (env.GOOGLE_CALENDAR_ID || 'r59mediatesting@gmail.com').trim()
     // Google Calendar event IDs must use lowercase base32hex characters [a-v0-9]
