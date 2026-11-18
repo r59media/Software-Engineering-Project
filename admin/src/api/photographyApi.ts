@@ -48,6 +48,112 @@
     }
   }
 
+  async function getImageWidth(file) {
+    if (typeof file?.width === 'number' && file.width > 0) {
+      return file.width;
+    }
+    if (typeof createImageBitmap === 'function') {
+      const bitmap = await createImageBitmap(file);
+      const width = bitmap.width;
+      if (typeof bitmap.close === 'function') bitmap.close();
+      return width;
+    }
+    return await new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const w = img.naturalWidth || img.width || 0;
+        URL.revokeObjectURL(url);
+        resolve(w);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Failed to decode image dimensions'));
+      };
+      img.src = url;
+    });
+  }
+
+  async function putMediaBytes(endpoint, file, fallbackPath) {
+    const contentType = file.type || 'image/webp';
+    const headers = {
+      'Content-Type': contentType,
+      'X-Requested-With': 'XMLHttpRequest'
+    };
+    const api = client();
+    if (api?.request) {
+      await api.request(endpoint, {
+        method: 'PUT',
+        headers,
+        body: file
+      });
+      return;
+    }
+
+    const authToken = api?.getAuthToken?.();
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+
+    let putRes;
+    try {
+      putRes = await fetch(resolveApiUrl(fallbackPath || endpoint), {
+        method: 'PUT',
+        headers,
+        credentials: 'omit',
+        body: file
+      });
+    } catch (cause) {
+      const netErr = new Error("Can't reach the server. Check your connection and try again.");
+      netErr.isNetworkError = true;
+      netErr.originalError = cause;
+      throw netErr;
+    }
+
+    if (!putRes.ok) {
+      const message = await readErrorMessage(putRes);
+      if (putRes.status === 401) {
+        window.dispatchEvent(new CustomEvent('r59:unauthorized', {
+          detail: { message: message || 'Session expired. Please sign in again.' }
+        }));
+      }
+      const httpErr = new Error(message || `Upload failed (${putRes.status} ${putRes.statusText})`);
+      httpErr.status = putRes.status;
+      httpErr.isHttpError = true;
+      throw httpErr;
+    }
+  }
+
+  async function uploadImageVariants(key, sourceFile) {
+    const converter = window.R59?.webpConverter;
+    if (!converter || typeof converter.convertToWebP !== 'function') {
+      return { uploaded: 0, skipped: 2 };
+    }
+
+    const originalWidth = await getImageWidth(sourceFile);
+    let uploaded = 0;
+    let skipped = 0;
+
+    for (const targetWidth of [1280, 640]) {
+      if (!(originalWidth > targetWidth)) {
+        skipped++;
+        continue;
+      }
+      const variantRes = await converter.convertToWebP(sourceFile, {
+        maxDimension: targetWidth,
+        quality: 0.92,
+        method: 6,
+        use_sharp_yuv: 1
+      });
+      const variantFile = variantRes.file;
+      const endpoint = `/admin/media/${key}?variant=${targetWidth}`;
+      await putMediaBytes(endpoint, variantFile, `/api${endpoint}`);
+      uploaded++;
+    }
+
+    return { uploaded, skipped };
+  }
+
   const photographyApi = {
     resolveApiUrl,
 
@@ -95,51 +201,12 @@
         throw new Error('The server did not return an upload location.');
       }
 
-      const headers = {
-        'Content-Type': contentType,
-        'X-Requested-With': 'XMLHttpRequest'
-      };
-      const api = client();
-      if (api?.request) {
-        await api.request(target.uploadUrl, {
-          method: 'PUT',
-          headers,
-          body: file
-        });
-        return { key, url: target.publicUrl || mediaUrlForKey(key) };
-      }
+      await putMediaBytes(target.uploadUrl, file);
 
-      const authToken = api?.getAuthToken?.();
-      if (authToken) {
-        headers['Authorization'] = `Bearer ${authToken}`;
-      }
-
-      let putRes;
       try {
-        putRes = await fetch(resolveApiUrl(target.uploadUrl), {
-          method: 'PUT',
-          headers,
-          credentials: 'omit',
-          body: file
-        });
-      } catch (cause) {
-        const netErr = new Error("Can't reach the server. Check your connection and try again.");
-        netErr.isNetworkError = true;
-        netErr.originalError = cause;
-        throw netErr;
-      }
-
-      if (!putRes.ok) {
-        const message = await readErrorMessage(putRes);
-        if (putRes.status === 401) {
-          window.dispatchEvent(new CustomEvent('r59:unauthorized', {
-            detail: { message: message || 'Session expired. Please sign in again.' }
-          }));
-        }
-        const httpErr = new Error(message || `Upload failed (${putRes.status} ${putRes.statusText})`);
-        httpErr.status = putRes.status; // lets callers stop a multi-file upload on 401
-        httpErr.isHttpError = true;
-        throw httpErr;
+        await uploadImageVariants(key, file);
+      } catch (variantErr) {
+        console.warn(`[Photography API] Failed to generate/upload variants for ${key}:`, variantErr);
       }
 
       return { key, url: target.publicUrl || mediaUrlForKey(key) };
@@ -339,6 +406,91 @@
       }
 
       return { total, optimized, failed, results };
+    },
+
+    /**
+     * Backfill missing 640px and 1280px WebP variants for all active portfolio images.
+     * Fetches each original from /api/media/:key using an admin media-token,
+     * generates variants where width > target at quality 92, and uploads via PUT /admin/media/:key?variant=...
+     *
+     * @param {(progress: { current: number; total: number; item: any; status: string }) => void} [onProgress]
+     * @returns {Promise<{ total: number; generated: number; skipped: number; failed: number; results: any[] }>}
+     */
+    async generateMissingImageVariants(onProgress) {
+      const converter = window.R59?.webpConverter;
+      if (!converter || typeof converter.convertToWebP !== 'function') {
+        throw new Error('WebP Converter engine is not available.');
+      }
+
+      const allItems = await this.getGalleryImages();
+      const items = (allItems || []).filter(it => {
+        if (!it) return false;
+        const v = it.is_active;
+        const isActive = !(v === 0 || v === false || v === '0');
+        if (!isActive) return false;
+        const rawKey = String(it.media_key || it.key || '').replace(/^\/+/, '').replace(/^api\/media\//, '');
+        return Boolean(rawKey) && !rawKey.startsWith('assets/');
+      });
+
+      const total = items.length;
+      const results = [];
+      let generated = 0;
+      let skipped = 0;
+      let failed = 0;
+
+      const emitProgress = (current, status, item) => {
+        if (typeof onProgress !== 'function') return;
+        if (onProgress.length > 1) {
+          onProgress(current, total, status, item);
+        } else {
+          onProgress({ current, total, status, item });
+        }
+      };
+
+      let index = 0;
+      for (const item of items) {
+        index++;
+        const rawKey = item.media_key || item.key || '';
+        const fileKey = String(rawKey).replace(/^\/+/, '').replace(/^api\/media\//, '');
+        const filename = fileKey.split('/').pop() || `image-${item.id || index}.webp`;
+        emitProgress(index, `Sizes ${index}/${total}: ${item.title || filename}...`, item);
+
+        try {
+          let signedUrl = '';
+          try {
+            const tokenRes = await client().post('/admin/media-token', { file_key: fileKey });
+            signedUrl = tokenRes?.url || '';
+          } catch {
+            signedUrl = '';
+          }
+
+          const streamUrl = resolveApiUrl(signedUrl || `/api/media/${fileKey}`);
+          const res = await fetch(streamUrl, { credentials: 'omit' });
+          if (!res.ok) {
+            throw new Error(`Failed to fetch media: HTTP ${res.status} ${res.statusText}`);
+          }
+
+          const blob = await res.blob();
+          const sourceFile = blob instanceof File
+            ? blob
+            : new File([blob], filename, { type: blob.type || 'image/webp' });
+
+          const variantRes = await uploadImageVariants(fileKey, sourceFile);
+          if (variantRes.uploaded > 0) {
+            generated += variantRes.uploaded;
+          } else {
+            skipped++;
+          }
+          results.push({ item, success: true, ...variantRes });
+        } catch (err) {
+          console.warn(`[Image Variants] Failed for image ${item.id} (${fileKey}):`, err);
+          failed++;
+          results.push({ item, success: false, error: err });
+        }
+      }
+
+      emitProgress(total, `Finished: ${generated} variants generated, ${skipped} skipped, ${failed} failed.`, null);
+      return { total, generated, skipped, failed, results };
     }
   };
 

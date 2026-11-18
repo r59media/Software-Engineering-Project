@@ -14,7 +14,18 @@ import { squareWebhookRouter } from './routes/squareWebhook'
 import { pricingRouter, couponsRouter } from './routes/pricing'
 import { rescheduleRoutes } from './routes/reschedule'
 import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret, getMediaSigningSecret, getSessionsValidAfter, timingSafeEqual } from './middleware/auth'
-import { verifyMediaSignature, parseRangeHeader } from './utils/signedUrl'
+import { signMediaKey, verifyMediaSignature, parseRangeHeader, parseMediaVariantWidth } from './utils/signedUrl'
+import {
+  buildEdgeCacheKey,
+  bumpPublicContentVersion,
+  getExecutionCtx,
+  getPublicContentVersion,
+  MEDIA_CACHE_CONTROL,
+  PUBLIC_READ_CACHE_CONTROL,
+  scheduleEdgeCachePut,
+  shouldBypassPublicEdgeCache,
+  tryEdgeCacheMatch
+} from './lib/edgeCache'
 
 export { replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady }
 
@@ -176,10 +187,11 @@ async function evaluateMediaAuthorization(c: Context<{ Bindings: Bindings }>, fi
 
   const exp = c.req.query('exp')
   const sig = c.req.query('sig')
+  const width = parseMediaVariantWidth(c.req.query('w'))
   if (exp && sig) {
     const key = fileKey || pathname.replace(/^\/api\/media\//, '').replace(/^\/+/, '')
     const secret = await getMediaSigningSecret(c.env)
-    const valid = secret ? await verifyMediaSignature(key, Number(exp), sig, secret) : false
+    const valid = secret ? await verifyMediaSignature(key, Number(exp), sig, secret, width) : false
     if (valid) return true
   }
 
@@ -277,8 +289,9 @@ app.use('*', async (c, next) => {
       const sigParam = url.searchParams.get('sig')
       if (expParam || sigParam) {
         const fileKey = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
+        const width = parseMediaVariantWidth(url.searchParams.get('w'))
         const secret = await getMediaSigningSecret(c.env)
-        const isValid = secret && expParam && sigParam ? await verifyMediaSignature(fileKey, Number(expParam), sigParam, secret) : false
+        const isValid = secret && expParam && sigParam ? await verifyMediaSignature(fileKey, Number(expParam), sigParam, secret, width) : false
         if (!isValid) {
           return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
         }
@@ -303,14 +316,11 @@ app.use('*', async (c, next) => {
       return c.text('Forbidden', 403)
     }
 
-    // For images: enforce authorized in-memory fetch carrying 'X-R59-Client: media-viewer'
-    // OR authenticated admin session (allows Admin dashboard to display, preview, and replace photos)
-    // OR active public portfolio asset
-    if (isProtectedImage) {
-      const fileKey = url.pathname.startsWith('/api/media/')
-        ? decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
-        : undefined
-      const isAuthorizedClient = await isAuthorizedMediaRequest(c, fileKey)
+    // For non-API protected images (e.g. /assets/*.webp): enforce authorized in-memory fetch
+    // carrying 'X-R59-Client: media-viewer', authenticated admin session, or active public portfolio asset.
+    // /api/media/* checks edge cache first inside mediaGetHandler before running D1 authorization.
+    if (isProtectedImage && !url.pathname.startsWith('/api/media/')) {
+      const isAuthorizedClient = await isAuthorizedMediaRequest(c)
       if (!isAuthorizedClient) {
         return c.redirect('/', 302)
       }
@@ -516,6 +526,32 @@ export const EMPTY_PROFILE = {
 
 // Public studio profile endpoint
 app.get('/api/profile', async (c) => {
+  const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
+  const cacheControl = bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL
+  let cacheKeyUrl: string | null = null
+
+  if (!bypassEdgeCache) {
+    const version = await getPublicContentVersion(c.env.DB)
+    cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
+    const cached = await tryEdgeCacheMatch(cacheKeyUrl)
+    if (cached) {
+      return new Response(cached.body, {
+        status: cached.status,
+        statusText: cached.statusText,
+        headers: cached.headers
+      })
+    }
+  }
+
+  const respondProfile = (payload: Record<string, unknown>, cacheable = true) => {
+    c.header('Cache-Control', cacheControl)
+    const res = c.json(payload)
+    if (cacheable && !bypassEdgeCache && cacheKeyUrl) {
+      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
+    }
+    return res
+  }
+
   try {
     let row: { setting_value: string } | null = null
     if (c.env.DB) {
@@ -528,8 +564,7 @@ app.get('/api/profile', async (c) => {
 
     // Defaults only when the profile setting has never been saved
     if (!row || row.setting_value === null || row.setting_value === undefined) {
-      c.header('Cache-Control', 'no-store')
-      return c.json({
+      return respondProfile({
         ...DEFAULT_PROFILE,
         status: 'success',
         profile: DEFAULT_PROFILE,
@@ -541,8 +576,7 @@ app.get('/api/profile', async (c) => {
     try {
       parsed = JSON.parse(row.setting_value)
     } catch {
-      c.header('Cache-Control', 'no-store')
-      return c.json({
+      return respondProfile({
         ...DEFAULT_PROFILE,
         status: 'success',
         profile: DEFAULT_PROFILE,
@@ -551,8 +585,7 @@ app.get('/api/profile', async (c) => {
     }
 
     if (!parsed || typeof parsed !== 'object') {
-      c.header('Cache-Control', 'no-store')
-      return c.json({
+      return respondProfile({
         ...DEFAULT_PROFILE,
         status: 'success',
         profile: DEFAULT_PROFILE,
@@ -592,21 +625,19 @@ app.get('/api/profile', async (c) => {
       social
     }
 
-    c.header('Cache-Control', 'no-store')
-    return c.json({
+    return respondProfile({
       ...profile,
       status: 'success',
       profile,
       data: profile
     })
   } catch {
-    c.header('Cache-Control', 'no-store')
-    return c.json({
+    return respondProfile({
       ...DEFAULT_PROFILE,
       status: 'success',
       profile: DEFAULT_PROFILE,
       data: DEFAULT_PROFILE
-    })
+    }, false)
   }
 })
 
@@ -629,12 +660,57 @@ app.route('/api/square/webhook', squareWebhookRouter)
 const MEDIA_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic']
 const MAX_MEDIA_BYTES = 50 * 1024 * 1024
 
+// Public short-lived signed media token for active portfolio/service media
+app.post('/api/media-token', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => null)
+    const rawKey = typeof body?.file_key === 'string' ? body.file_key.trim() : ''
+    const fileKey = rawKey.replace(/^\/api\/media\//, '').replace(/^\/+/, '')
+    if (!fileKey || fileKey.includes('..')) {
+      return c.json({
+        error: { code: 'BAD_REQUEST', message: 'Invalid or missing file_key', details: [] }
+      }, 400)
+    }
+
+    if (!(await isActivePublicMediaKey(c.env.DB, fileKey))) {
+      return c.json({
+        error: { code: 'NOT_FOUND', message: 'Media not found', details: [] }
+      }, 404)
+    }
+
+    const secret = await getMediaSigningSecret(c.env)
+    if (!secret) {
+      return c.json({
+        error: { code: 'INTERNAL_SERVER_ERROR', message: 'Media signing secret is not configured.', details: [] }
+      }, 500)
+    }
+
+    const width = parseMediaVariantWidth(body?.w)
+    const { exp, sig } = await signMediaKey(fileKey, secret, 30, width)
+
+    return c.json({
+      url: `/api/media/${fileKey}?exp=${exp}&sig=${sig}${width ? `&w=${width}` : ''}`
+    }, 200)
+  } catch {
+    return c.json({
+      error: { code: 'INTERNAL_SERVER_ERROR', message: 'Failed to generate signed media token', details: [] }
+    }, 500)
+  }
+})
+
 app.put('/api/media/*', adminAuth, async (c) => {
   const url = new URL(c.req.url)
   const key = decodeURIComponent(url.pathname.replace(/^\/api\/media\//, '')).replace(/^\/+/, '')
   if (!key || key.includes('..')) {
     return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid media key', details: [] } }, 400)
   }
+
+  const rawVariant = url.searchParams.get('variant')
+  const variant = parseMediaVariantWidth(rawVariant)
+  if (rawVariant !== null && rawVariant !== '' && !variant) {
+    return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid variant width. Must be 640 or 1280.', details: [] } }, 400)
+  }
+  const storageKey = variant ? `${key}__w${variant}` : key
 
   const contentType = (c.req.header('Content-Type') || 'image/webp').split(';')[0].trim().toLowerCase()
   if (!MEDIA_CONTENT_TYPES.includes(contentType)) {
@@ -650,8 +726,9 @@ app.put('/api/media/*', adminAuth, async (c) => {
   }
 
   try {
-    await replaceMediaStorageChunks(c.env.DB, key, arrayBuffer, contentType)
-    return c.json({ success: true, fileKey: key, key }, 200)
+    await replaceMediaStorageChunks(c.env.DB, storageKey, arrayBuffer, contentType)
+    await bumpPublicContentVersion(c.env.DB)
+    return c.json({ success: true, fileKey: storageKey, key: storageKey, baseKey: key, variant: variant ?? null }, 200)
   } catch (err: any) {
     return c.json({
       error: {
@@ -726,10 +803,12 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
 
   const exp = c.req.query('exp')
   const sig = c.req.query('sig')
-  const secret = await getMediaSigningSecret(c.env)
+  const width = parseMediaVariantWidth(c.req.query('w'))
+  const hasSignedParams = Boolean(exp || sig)
 
-  if (exp || sig) {
-    const isValid = secret && exp && sig ? await verifyMediaSignature(fileKey, Number(exp), sig, secret) : false
+  if (hasSignedParams) {
+    const secret = await getMediaSigningSecret(c.env)
+    const isValid = secret && exp && sig ? await verifyMediaSignature(fileKey, Number(exp), sig, secret, width) : false
     if (!isValid) {
       return c.json({ status: 'error', code: 'UNAUTHORIZED', message: 'Invalid or expired media signature' }, 401)
     }
@@ -742,82 +821,97 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
     if (fetchSite === 'cross-site') {
       return c.text('Forbidden', 403)
     }
-
-    const isAuthorizedClient = await isAuthorizedMediaRequest(c, fileKey)
-    if (!isAuthorizedClient) {
-      return c.redirect('/', 302)
-    }
   }
 
   const rangeHeader = c.req.header('Range')
   const ifNoneMatch = c.req.header('If-None-Match')
-  const cacheReq = new Request(new URL(`/api/media/${encodeURIComponent(fileKey)}`, url.origin).toString())
+  const version = await getPublicContentVersion(c.env.DB)
+  const cacheKeyUrl = buildEdgeCacheKey(c.req.url, version, { stripAuthParams: true })
 
-  // Check Cloudflare Worker Edge Cache only after authorization succeeds
-  let edgeCache: Cache | undefined
-  try {
-    edgeCache = (caches as unknown as { default?: Cache })?.default
-    if (edgeCache) {
-      const cachedRes = await edgeCache.match(cacheReq)
-      if (cachedRes) {
-        const cachedEtag = cachedRes.headers.get('ETag') || ''
-        if (cachedEtag && matchesIfNoneMatch(ifNoneMatch, cachedEtag)) {
-          return new Response(null, {
-            status: 304,
-            headers: buildMediaSecurityHeaders(c, { ETag: cachedEtag })
-          })
-        }
+  // Check Cloudflare Worker Edge Cache BEFORE querying D1 Portfolio_Images / Services / Media_Storage
+  const cachedRes = await tryEdgeCacheMatch(cacheKeyUrl)
+  if (cachedRes) {
+    const cachedEtag = cachedRes.headers.get('ETag') || ''
+    if (cachedEtag && matchesIfNoneMatch(ifNoneMatch, cachedEtag)) {
+      return new Response(null, {
+        status: 304,
+        headers: buildMediaSecurityHeaders(c, { ETag: cachedEtag })
+      })
+    }
 
-        if (rangeHeader) {
-          const cachedBuf = new Uint8Array(await cachedRes.arrayBuffer())
-          const parsedRange = parseRangeHeader(rangeHeader, cachedBuf.byteLength)
-          if (parsedRange === 'unsatisfiable') {
-            return new Response(null, {
-              status: 416,
-              headers: {
-                'Content-Range': `bytes */${cachedBuf.byteLength}`,
-                'Accept-Ranges': 'bytes'
-              }
-            })
+    if (rangeHeader) {
+      const cachedBuf = new Uint8Array(await cachedRes.arrayBuffer())
+      const parsedRange = parseRangeHeader(rangeHeader, cachedBuf.byteLength)
+      if (parsedRange === 'unsatisfiable') {
+        return new Response(null, {
+          status: 416,
+          headers: {
+            'Content-Range': `bytes */${cachedBuf.byteLength}`,
+            'Accept-Ranges': 'bytes'
           }
-          if (parsedRange) {
-            const { start, end } = parsedRange
-            const slice = cachedBuf.subarray(start, end + 1)
-            return new Response(slice, {
-              status: 206,
-              headers: buildMediaSecurityHeaders(c, {
-                'Content-Type': cachedRes.headers.get('Content-Type') || 'image/webp',
-                'Content-Range': `bytes ${start}-${end}/${cachedBuf.byteLength}`,
-                'Content-Length': String(slice.byteLength),
-                'Accept-Ranges': 'bytes',
-                ...(cachedEtag ? { ETag: cachedEtag } : {})
-              })
-            })
-          }
-        }
-
-        return new Response(cachedRes.body, {
-          status: 200,
+        })
+      }
+      if (parsedRange) {
+        const { start, end } = parsedRange
+        const slice = cachedBuf.subarray(start, end + 1)
+        return new Response(slice, {
+          status: 206,
           headers: buildMediaSecurityHeaders(c, {
             'Content-Type': cachedRes.headers.get('Content-Type') || 'image/webp',
-            ...(cachedRes.headers.get('Content-Length')
-              ? { 'Content-Length': cachedRes.headers.get('Content-Length')! }
-              : {}),
+            'Content-Range': `bytes ${start}-${end}/${cachedBuf.byteLength}`,
+            'Content-Length': String(slice.byteLength),
             'Accept-Ranges': 'bytes',
             ...(cachedEtag ? { ETag: cachedEtag } : {})
           })
         })
       }
     }
-  } catch {
-    // caches may be undefined in Node/Vitest environments
+
+    return new Response(cachedRes.body, {
+      status: 200,
+      headers: buildMediaSecurityHeaders(c, {
+        'Cache-Control': MEDIA_CACHE_CONTROL,
+        'Content-Type': cachedRes.headers.get('Content-Type') || 'image/webp',
+        ...(cachedRes.headers.get('Content-Length')
+          ? { 'Content-Length': cachedRes.headers.get('Content-Length')! }
+          : {}),
+        'Accept-Ranges': 'bytes',
+        ...(cachedEtag ? { ETag: cachedEtag } : {})
+      })
+    })
+  }
+
+  // On cache miss, run D1 authorization for unsigned requests
+  if (!hasSignedParams) {
+    const isAuthorizedClient = await isAuthorizedMediaRequest(c, fileKey)
+    if (!isAuthorizedClient) {
+      return c.redirect('/', 302)
+    }
   }
 
   try {
-    // Query chunk metadata first without transferring BLOB data
-    const metaRows = await c.env.DB.prepare(
-      'SELECT chunk_index, length(data) AS chunk_size, content_type, created_at FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
-    ).bind(fileKey).all<{ chunk_index: number; chunk_size: number; content_type: string; created_at: string | null }>()
+    // Query chunk metadata first without transferring BLOB data; check variant first and fall back to original
+    type ChunkMetaRow = { chunk_index: number; chunk_size: number; content_type: string; created_at: string | null }
+    let resolvedStorageKey = fileKey
+    let metaRows: { results?: ChunkMetaRow[] } | null = null
+
+    if (width) {
+      const variantKey = `${fileKey}__w${width}`
+      const variantMeta = await c.env.DB.prepare(
+        'SELECT chunk_index, length(data) AS chunk_size, content_type, created_at FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
+      ).bind(variantKey).all<ChunkMetaRow>()
+      if (variantMeta?.results && variantMeta.results.length > 0) {
+        resolvedStorageKey = variantKey
+        metaRows = variantMeta
+      }
+    }
+
+    if (!metaRows) {
+      metaRows = await c.env.DB.prepare(
+        'SELECT chunk_index, length(data) AS chunk_size, content_type, created_at FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
+      ).bind(fileKey).all<ChunkMetaRow>()
+      resolvedStorageKey = fileKey
+    }
 
     if (metaRows?.results && metaRows.results.length > 0) {
       let runningOffset = 0
@@ -840,7 +934,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
 
       const contentType = metaRows.results[0].content_type || 'image/webp'
       const createdAt = metaRows.results[0].created_at ?? ''
-      const etag = `"media-${encodeURIComponent(fileKey)}-${totalLength}-${createdAt}"`
+      const etag = `"media-${encodeURIComponent(resolvedStorageKey)}-${totalLength}-${createdAt}"`
 
       if (matchesIfNoneMatch(ifNoneMatch, etag)) {
         return new Response(null, {
@@ -873,7 +967,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
 
           const rangeRows = await c.env.DB.prepare(
             'SELECT chunk_index, data FROM Media_Storage WHERE file_key = ? AND chunk_index BETWEEN ? AND ? ORDER BY chunk_index ASC'
-          ).bind(fileKey, minChunkIndex, maxChunkIndex).all<{ chunk_index: number; data: unknown }>()
+          ).bind(resolvedStorageKey, minChunkIndex, maxChunkIndex).all<{ chunk_index: number; data: unknown }>()
 
           if (!rangeRows?.results || rangeRows.results.length === 0) {
             return c.notFound()
@@ -896,7 +990,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
 
       const dataRows = await c.env.DB.prepare(
         'SELECT chunk_index, data FROM Media_Storage WHERE file_key = ? ORDER BY chunk_index ASC'
-      ).bind(fileKey).all<{ chunk_index: number; data: unknown }>()
+      ).bind(resolvedStorageKey).all<{ chunk_index: number; data: unknown }>()
 
       if (!dataRows?.results || dataRows.results.length === 0) {
         return c.notFound()
@@ -906,6 +1000,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
       const res200 = new Response(combined, {
         status: 200,
         headers: buildMediaSecurityHeaders(c, {
+          'Cache-Control': MEDIA_CACHE_CONTROL,
           'Content-Type': contentType,
           'Content-Length': String(totalLength),
           'Accept-Ranges': 'bytes',
@@ -913,18 +1008,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
         })
       })
 
-      if (edgeCache) {
-        try {
-          const putPromise = edgeCache.put(cacheReq, res200.clone())
-          try {
-            c.executionCtx.waitUntil(putPromise)
-          } catch {
-            // No ExecutionContext in Node/test environments
-          }
-        } catch {
-          // Ignore Edge Cache write errors
-        }
-      }
+      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res200)
 
       return res200
     }

@@ -10,8 +10,8 @@ import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
 import type { BookingReviewDraft, BookingService, ConfirmedBookingSummary } from './types/booking'
 import type { ContactInquiry } from './types/contact'
-import { DepositCheckoutModal } from './sections/booking/DepositCheckoutModal'
-import { RescheduleModal } from './sections/booking/RescheduleModal'
+const DepositCheckoutModal = lazy(() => import('./sections/booking/DepositCheckoutModal').then(m => ({ default: m.DepositCheckoutModal })))
+const RescheduleModal = lazy(() => import('./sections/booking/RescheduleModal').then(m => ({ default: m.RescheduleModal })))
 
 const AboutToRecent = lazy(() => import('./sections/transition/AboutToRecent').then(m => ({ default: m.AboutToRecent })))
 const ContactSection = lazy(() => import('./sections/contact/ContactSection').then(m => ({ default: m.ContactSection })))
@@ -220,11 +220,13 @@ function App() {
       <a className="skip-link" href="#reschedule-content">Skip to content</a>
       <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
       <main id="reschedule-content" style={{ minHeight: '75vh', padding: '7rem 1.5rem 4rem', display: 'grid', placeItems: 'center', background: 'var(--color-brand-black, #0c0c0c)' }}>
-        <RescheduleModal
-          bookingId={rescheduleParams?.bookingId}
-          token={rescheduleParams?.token}
-          onClose={handleCloseReschedule}
-        />
+        <Suspense fallback={null}>
+          <RescheduleModal
+            bookingId={rescheduleParams?.bookingId}
+            token={rescheduleParams?.token}
+            onClose={handleCloseReschedule}
+          />
+        </Suspense>
       </main>
       <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
     </div>
@@ -265,7 +267,7 @@ function App() {
       <div className="site-intro">
         <Hero slides={slides} destinations={heroDestinations} />
       </div>
-      <Suspense fallback={<div className="about-transition-placeholder" style={{ minHeight: '100vh' }} />}>
+      <Suspense fallback={<div className="about-transition-placeholder" />}>
         <AboutToRecent />
       </Suspense>
       <PortfolioGallery />
@@ -294,14 +296,16 @@ function App() {
     </main>
     <SiteFooter />
     {depositDraft && (
-      <DepositCheckoutModal
-        draft={depositDraft}
-        service={bookingServices.find(s => s.id === depositDraft.serviceId) || null}
-        pricing={pricing}
-        squareConfig={pricing?.squareConfig ?? null}
-        onClose={() => setDepositDraft(null)}
-        onSuccess={summary => setConfirmedBooking(summary)}
-      />
+      <Suspense fallback={null}>
+        <DepositCheckoutModal
+          draft={depositDraft}
+          service={bookingServices.find(s => s.id === depositDraft.serviceId) || null}
+          pricing={pricing}
+          squareConfig={pricing?.squareConfig ?? null}
+          onClose={() => setDepositDraft(null)}
+          onSuccess={summary => setConfirmedBooking(summary)}
+        />
+      </Suspense>
     )}
   </div>
 }

@@ -2,6 +2,16 @@ import { Hono } from 'hono'
 import type { Bindings } from '../index'
 import { adminAuth, hasForbiddenPaymentFields } from '../middleware/auth'
 import defaultPortfolioSeed from '../defaultPortfolioSeed.json'
+import {
+  buildEdgeCacheKey,
+  bumpPublicContentVersion,
+  getExecutionCtx,
+  getPublicContentVersion,
+  PUBLIC_READ_CACHE_CONTROL,
+  scheduleEdgeCachePut,
+  shouldBypassPublicEdgeCache,
+  tryEdgeCacheMatch
+} from '../lib/edgeCache'
 
 // Which part of the public site a photo belongs to (one per admin "Photos" tab, plus hero)
 export const PORTFOLIO_SECTIONS = ['recent', 'gallery', 'about', 'hero'] as const
@@ -198,7 +208,11 @@ async function mediaExists(db: D1Database, key: string): Promise<boolean> {
 
 async function deleteStoredMedia(db: D1Database, key: string | null | undefined): Promise<void> {
   if (!key || isExternalUrl(key) || key.startsWith('/assets/')) return
-  await db.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(key).run().catch(() => {})
+  await db.prepare('DELETE FROM Media_Storage WHERE file_key IN (?, ?, ?)').bind(
+    key,
+    `${key}__w640`,
+    `${key}__w1280`
+  ).run().catch(() => {})
 }
 
 function validationError(message: string, field: string) {
@@ -239,6 +253,32 @@ export const portfolioRouter = new Hono<{ Bindings: Bindings }>()
 
 // GET: Public studio profile information
 portfolioRouter.get('/profile', async (c) => {
+  const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
+  const cacheControl = bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL
+  let cacheKeyUrl: string | null = null
+
+  if (!bypassEdgeCache) {
+    const version = await getPublicContentVersion(c.env.DB)
+    cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
+    const cached = await tryEdgeCacheMatch(cacheKeyUrl)
+    if (cached) {
+      return new Response(cached.body, {
+        status: cached.status,
+        statusText: cached.statusText,
+        headers: cached.headers
+      })
+    }
+  }
+
+  const respondProfile = (payload: Record<string, unknown>, cacheable = true) => {
+    c.header('Cache-Control', cacheControl)
+    const res = c.json(payload)
+    if (cacheable && !bypassEdgeCache && cacheKeyUrl) {
+      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
+    }
+    return res
+  }
+
   try {
     let parsed: any = null
     if (c.env.DB) {
@@ -260,8 +300,7 @@ portfolioRouter.get('/profile', async (c) => {
     const email = text(parsed?.email)
 
     if (!bio || !email) {
-      c.header('Cache-Control', 'no-store')
-      return c.json({
+      return respondProfile({
         status: 'success',
         profile: DEFAULT_PROFILE,
         data: DEFAULT_PROFILE
@@ -280,15 +319,13 @@ portfolioRouter.get('/profile', async (c) => {
       social: Array.isArray(parsed?.social) && parsed.social.length > 0 ? parsed.social : DEFAULT_PROFILE.social
     }
 
-    c.header('Cache-Control', 'no-store')
-    return c.json({
+    return respondProfile({
       status: 'success',
       profile,
       data: profile
     })
   } catch {
-    c.header('Cache-Control', 'no-store')
-    return c.json({ status: 'success', profile: DEFAULT_PROFILE, data: DEFAULT_PROFILE })
+    return respondProfile({ status: 'success', profile: DEFAULT_PROFILE, data: DEFAULT_PROFILE }, false)
   }
 })
 
@@ -372,12 +409,31 @@ export function portfolioListQuery(req: { query: (name: string) => string | unde
 // GET: Public gallery, optionally narrowed to one site section and/or category
 portfolioRouter.get('/', async (c) => {
   try {
+    const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
+    let cacheKeyUrl: string | null = null
+
+    if (!bypassEdgeCache) {
+      const version = await getPublicContentVersion(c.env.DB)
+      cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
+      const cached = await tryEdgeCacheMatch(cacheKeyUrl)
+      if (cached) {
+        return new Response(cached.body, {
+          status: cached.status,
+          statusText: cached.statusText,
+          headers: cached.headers
+        })
+      }
+    }
+
     const result = await listPortfolio(c.env.DB, portfolioListQuery(c.req))
     if (!result.ok) return c.json(result.body, result.status)
 
-    // Admin edits must show up on the next page load, so never let browsers or CDNs cache this list
-    c.header('Cache-Control', 'no-store')
-    return c.json(result.body)
+    c.header('Cache-Control', bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL)
+    const res = c.json(result.body)
+    if (!bypassEdgeCache && cacheKeyUrl) {
+      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
+    }
+    return res
   } catch (e: any) {
     return c.json({
       error: {
@@ -447,6 +503,8 @@ portfolioRouter.post('/', adminAuth, async (c) => {
       is_active: 1
     })
 
+    await bumpPublicContentVersion(c.env.DB)
+
     return c.json({ success: true, status: 'success', id: record.id, url: record.url, public_url: record.url, data: record })
   } catch (e: any) {
     if (String(e?.message || e).includes('UNIQUE')) {
@@ -495,6 +553,8 @@ portfolioRouter.put('/order', adminAuth, async (c) => {
     if (statements.length > 0) {
       await c.env.DB.batch(statements)
     }
+
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
@@ -576,6 +636,8 @@ portfolioRouter.put('/:id', adminAuth, async (c) => {
       await deleteStoredMedia(c.env.DB, existing.media_key)
     }
 
+    await bumpPublicContentVersion(c.env.DB)
+
     return c.json({
       success: true,
       status: 'success',
@@ -622,6 +684,7 @@ portfolioRouter.delete('/:id', adminAuth, async (c) => {
 
     await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
     await deleteStoredMedia(c.env.DB, existing.media_key)
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success', data: { id: Number(id), deleted: true } })
   } catch (e: any) {

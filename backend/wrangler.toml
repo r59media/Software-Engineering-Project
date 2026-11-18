@@ -23,7 +23,7 @@ SQUARE_ENVIRONMENT = "sandbox"
 directory = "./public"
 binding = "ASSETS"
 html_handling = "auto-trailing-slash"
-run_worker_first = true
+run_worker_first = [ "/", "/index.html", "/reschedule", "/reschedule/*", "/faq", "/faq/*", "/api/*", "/admin/*", "/assets/*.webp", "/models/*" ]
 
 [[d1_databases]]
 binding = "DB"

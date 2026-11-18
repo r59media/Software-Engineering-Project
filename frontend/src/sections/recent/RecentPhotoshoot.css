@@ -11,12 +11,12 @@
 .photo-shield { position: absolute; inset: 0; z-index: 2; pointer-events: auto; background: transparent; user-select: none; -webkit-user-drag: none; }
 .photo-shield-container img { pointer-events: none; user-select: none; -webkit-user-drag: none; }
 .recent__controls { display: flex; align-items: center; justify-content: center; min-height: 44px; position: relative; z-index: 10; margin-top: min(1.2rem, 1.8svh); }
-.recent__controls-track { display: flex; align-items: center; justify-content: center; position: relative; filter: url(#recent-gooey); -webkit-filter: url(#recent-gooey); transform: translate3d(0, 0, 0); -webkit-transform: translate3d(0, 0, 0); isolation: isolate; padding: 4px; }
+.recent__controls-track { display: flex; align-items: center; justify-content: center; position: relative; transform: translate3d(0, 0, 0); -webkit-transform: translate3d(0, 0, 0); isolation: isolate; padding: 4px; }
 .recent__controls button,
 .recent__control-btn { display: grid; place-items: center; width: 44px; height: 44px; min-width: 44px; min-height: 44px; border: 0; padding: 0; color: var(--color-brand-black); background: transparent; cursor: pointer; touch-action: manipulation; -webkit-tap-highlight-color: transparent; outline: none; }
 .recent__control-btn:focus-visible { outline: 2px solid var(--color-brand-black); outline-offset: 2px; border-radius: 9999px; }
 .recent__dot { display: block; width: 14px; height: 14px; border-radius: 100px; background: currentColor; will-change: transform; }
-.recent__dot--current { width: 28px; }
+.recent__dot--current { width: 28px; filter: url(#recent-gooey); -webkit-filter: url(#recent-gooey); }
 .recent__heading { position: relative; margin: min(1.5cqw, 2svh) auto 0; font-family: var(--font-title); font-size: min(var(--text-recent-title), 9.5svh); line-height: .9; text-align: center; }
 .recent__heading span, .recent__heading strong { display: block; }
 .recent__heading span { font-style: italic; font-weight: var(--font-weight-medium); }
@@ -46,4 +46,10 @@
   .photo-viewer .photo-viewer__next { right: 0; width: 64px; height: 112px; top: calc(50% - 56px); }
   .photo-viewer__previous img { transform: scale(.65); pointer-events: none; }
   .photo-viewer__next img { transform: rotate(180deg) scale(.65); pointer-events: none; }
+}
+@media (min-width: 768px) and (max-width: 1024px) {
+  .recent__slot { width: min(34cqw, 28svh, 16rem); height: min(51cqw, 42svh, 24rem); }
+  .recent__slot[data-recent-slot="-2"], .recent__slot[data-recent-slot="2"] { display: none; }
+  .recent__slot[data-recent-slot="-1"] { left: 18% !important; }
+  .recent__slot[data-recent-slot="1"] { left: 82% !important; }
 }

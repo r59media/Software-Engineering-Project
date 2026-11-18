@@ -111,6 +111,41 @@
   .about__decorations [data-about-part="bottom-right-camera"] { width: 36%; }
 }
 
+html[data-engine="webkit"] .about__portrait-pose {
+  filter: none;
+  will-change: transform;
+}
+
+html[data-engine="webkit"] .about__portrait-pose::before {
+  content: '';
+  position: absolute;
+  inset: 5% 6.8% 5.5% 6.8%;
+  z-index: -1;
+  pointer-events: none;
+  box-shadow: 0 4px 6px rgba(17, 17, 17, 0.12),
+              0 14px 24px rgba(17, 17, 17, 0.22),
+              4px 20px 32px rgba(17, 17, 17, 0.12);
+}
+
+@media (min-width: 768px) and (max-width: 1000px) {
+  .about__content {
+    padding: 0 clamp(2rem, 6vw, 4.5rem) 3.5rem;
+    padding-bottom: calc(3.5rem + max(0px, 100lvh - 100svh));
+  }
+  .about__biography { max-width: 44rem; }
+  .about__lens { width: clamp(8rem, 17vw, 10.5rem); margin: 2.5rem auto 0; }
+}
+
+@media (min-width: 1001px) and (max-width: 1180px) {
+  .about__layout { grid-template-columns: 46% 50%; gap: 4%; }
+  .about__content {
+    padding-top: clamp(5rem, 9cqw, 8rem);
+    padding-right: clamp(1.5rem, 3vw, 2.5rem);
+    padding-bottom: 4rem;
+  }
+  .about__lens { width: clamp(7.5rem, 12cqw, 10rem); margin: 2.25rem 0 0 3.5cqw; }
+}
+
 .about__lens-canvas { pointer-events: none; }
 .about__lens-fallback { width: 92%; height: 92%; margin: 4%; border-radius: 50%; background: radial-gradient(circle, #202629 0 48%, #111719 49% 54%, #343c40 55% 65%, #191f22 66%); }
 
@@ -144,6 +179,10 @@
             drop-shadow(0 22px 36px rgba(17, 17, 17, 0.28))
             drop-shadow(6px 30px 48px rgba(17, 17, 17, 0.16));
     transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.3s ease;
+  }
+
+  html[data-engine="webkit"] .about__portrait:hover .about__portrait-pose {
+    filter: none;
   }
 }
 

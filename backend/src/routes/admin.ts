@@ -18,6 +18,7 @@ import {
   clearLoginAttempts
 } from '../middleware/auth'
 import { DEFAULT_PROFILE, ensurePortfolioDefaults, listPortfolio, portfolioListQuery } from './portfolio'
+import { bumpPublicContentVersion } from '../lib/edgeCache'
 import { isEmailConfigured, sendEmail } from '../email'
 import {
   addDaysISO,
@@ -55,7 +56,7 @@ import {
   ensurePhotoPermissionsColumns,
   replaceMediaStorageChunks
 } from '../lib/billingSchema'
-import { signMediaKey } from '../utils/signedUrl'
+import { signMediaKey, parseMediaVariantWidth } from '../utils/signedUrl'
 
 function isValidId(id: string | undefined): boolean {
   return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
@@ -483,10 +484,11 @@ adminRouter.post('/media-token', async (c) => {
         }
       }, 500)
     }
-    const { exp, sig } = await signMediaKey(fileKey, secret, 30)
+    const width = parseMediaVariantWidth(body?.w)
+    const { exp, sig } = await signMediaKey(fileKey, secret, 30, width)
 
     return c.json({
-      url: `/api/media/${fileKey}?exp=${exp}&sig=${sig}`
+      url: `/api/media/${fileKey}?exp=${exp}&sig=${sig}${width ? `&w=${width}` : ''}`
     }, 200)
   } catch (err: any) {
     return c.json({
@@ -2118,6 +2120,7 @@ async function handleUpdatePricing(c: Context<{ Bindings: Bindings }>) {
     }
 
     await c.env.DB.batch(statements)
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success', pricing: cleanPricing, data: cleanPricing })
   } catch (e: any) {
@@ -2450,6 +2453,8 @@ adminRouter.put('/packages/:id', async (c) => {
       id
     ).run()
 
+    await bumpPublicContentVersion(c.env.DB)
+
     return c.json({
       success: true,
       status: 'success',
@@ -2496,6 +2501,7 @@ adminRouter.delete('/packages/:id', async (c) => {
 
     if (bookingCheck) {
       await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
+      await bumpPublicContentVersion(c.env.DB)
       return c.json({
         success: true,
         status: 'success',
@@ -2506,6 +2512,7 @@ adminRouter.delete('/packages/:id', async (c) => {
     }
 
     await c.env.DB.prepare('DELETE FROM Services WHERE id = ?').bind(id).run()
+    await bumpPublicContentVersion(c.env.DB)
     return c.json({ success: true, status: 'success', data: { id: Number(id), deleted: true } })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete service.', details: [] } }, 500)
@@ -2591,10 +2598,14 @@ adminRouter.put('/portfolio/:id', async (c) => {
       ).bind(media_key, section, title, category, alt_text, is_active, is_featured, display_order, id)
     ]
 
-    // If replacing image file with a new key, delete old chunks from Media_Storage atomically
+    // If replacing image file with a new key, delete old chunks and variants from Media_Storage atomically
     if (rawMediaKey && existing.media_key && rawMediaKey !== existing.media_key && !existing.media_key.startsWith('/assets/')) {
       updateStatements.push(
-        c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(existing.media_key)
+        c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key IN (?, ?, ?)').bind(
+          existing.media_key,
+          `${existing.media_key}__w640`,
+          `${existing.media_key}__w1280`
+        )
       )
     }
 
@@ -2603,6 +2614,8 @@ adminRouter.put('/portfolio/:id', async (c) => {
     } else {
       await c.env.DB.batch(updateStatements)
     }
+
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({
       success: true,
@@ -2628,6 +2641,13 @@ adminRouter.put('/media/*', async (c) => {
     return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid media key', details: [] } }, 400)
   }
 
+  const rawVariant = url.searchParams.get('variant')
+  const variant = parseMediaVariantWidth(rawVariant)
+  if (rawVariant !== null && rawVariant !== '' && !variant) {
+    return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid variant width. Must be 640 or 1280.', details: [] } }, 400)
+  }
+  const storageKey = variant ? `${key}__w${variant}` : key
+
   const contentType = (c.req.header('Content-Type') || 'image/webp').split(';')[0].trim().toLowerCase()
   const arrayBuffer = await c.req.arrayBuffer()
   if (!arrayBuffer || arrayBuffer.byteLength === 0) {
@@ -2638,8 +2658,9 @@ adminRouter.put('/media/*', async (c) => {
   }
 
   try {
-    await replaceMediaStorageChunks(c.env.DB, key, arrayBuffer, contentType)
-    return c.json({ success: true, fileKey: key, key }, 200)
+    await replaceMediaStorageChunks(c.env.DB, storageKey, arrayBuffer, contentType)
+    await bumpPublicContentVersion(c.env.DB)
+    return c.json({ success: true, fileKey: storageKey, key: storageKey, baseKey: key, variant: variant ?? null }, 200)
   } catch (err: any) {
     return c.json({
       error: {
@@ -2669,8 +2690,14 @@ adminRouter.delete('/portfolio/:id', async (c) => {
     await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
 
     if (existing.media_key && !existing.media_key.startsWith('/assets/')) {
-      await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key = ?').bind(existing.media_key).run().catch(() => {})
+      await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key IN (?, ?, ?)').bind(
+        existing.media_key,
+        `${existing.media_key}__w640`,
+        `${existing.media_key}__w1280`
+      ).run().catch(() => {})
     }
+
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success' })
   } catch (e: any) {
@@ -2758,6 +2785,8 @@ adminRouter.put('/profile', async (c) => {
     await c.env.DB.prepare(
       "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('profile', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
     ).bind(val).run()
+
+    await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success', profile: cleanProfile, data: cleanProfile })
   } catch (e: any) {

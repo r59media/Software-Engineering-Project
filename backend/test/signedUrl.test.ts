@@ -740,3 +740,123 @@ test('Static /assets/* and /models/* allow same-origin subresource requests and 
     assert.equal(resCrossReferer.status, 302, `${path} must block cross-origin Referer when Sec-Fetch-Site is absent`)
   }
 })
+
+test('HMAC-signed ?w=640|1280 media variants: signature validation, tampered w rejection, seamless fallback, PUT variant, and delete cleanup', async () => {
+  const { sqlite, env } = setupTestEnv()
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS Services (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      image_url TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
+  `)
+
+  const secret = env.MEDIA_SIGNING_SECRET!
+  const fileKey = 'variant-photo.webp'
+
+  // 1. Unit-level width signature checks
+  const signed640 = await signMediaKey(fileKey, secret, 30, 640)
+  assert.equal(await verifyMediaSignature(fileKey, signed640.exp, signed640.sig, secret, 640), true)
+  assert.equal(await verifyMediaSignature(fileKey, signed640.exp, signed640.sig, secret, 1280), false, 'Tampered width 1280 must fail')
+  assert.equal(await verifyMediaSignature(fileKey, signed640.exp, signed640.sig, secret), false, 'Stripped width must fail')
+
+  const signedOrig = await signMediaKey(fileKey, secret, 30)
+  assert.equal(await verifyMediaSignature(fileKey, signedOrig.exp, signedOrig.sig, secret), true)
+  assert.equal(await verifyMediaSignature(fileKey, signedOrig.exp, signedOrig.sig, secret, 640), false, 'Adding width to original signature must fail')
+
+  // Seed original and w640 variant (no w1280 variant -> tests seamless fallback)
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)').run(
+    fileKey, 0, 'image/webp', Buffer.from('ORIGINAL-BYTES')
+  )
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data) VALUES (?, ?, ?, ?)').run(
+    `${fileKey}__w640`, 0, 'image/webp', Buffer.from('W640-BYTES')
+  )
+  sqlite.prepare('INSERT INTO Portfolio_Images (media_key, is_active) VALUES (?, ?)').run(fileKey, 1)
+  const insertedRow = sqlite.prepare('SELECT id FROM Portfolio_Images WHERE media_key = ?').get(fileKey) as { id: number }
+
+  const realApp = loadRealBackendApp()
+  const adminToken = await createSessionToken(env.SESSION_SECRET!, env.ADMIN_EMAIL!)
+
+  // 2. POST /api/media-token with w=640
+  const pubTokenRes = await realApp.fetch(
+    new Request('http://localhost/api/media-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file_key: fileKey, w: 640 })
+    }),
+    env
+  )
+  assert.equal(pubTokenRes.status, 200)
+  const pubTokenJson = await pubTokenRes.json() as { url: string }
+  assert.ok(pubTokenJson.url.includes('&w=640'), 'Public media-token must append &w=640')
+
+  // 3. GET with valid ?w=640 serves variant bytes
+  const res640 = await realApp.fetch(new Request(`http://localhost${pubTokenJson.url}`), env)
+  assert.equal(res640.status, 200)
+  assert.equal(await res640.text(), 'W640-BYTES')
+
+  // 4. Tampered ?w=1280 using the 640 signature is rejected with 401
+  const tamperedUrl = pubTokenJson.url.replace('&w=640', '&w=1280')
+  const resTampered = await realApp.fetch(new Request(`http://localhost${tamperedUrl}`), env)
+  assert.equal(resTampered.status, 401)
+
+  // 5. POST /api/admin/media-token with w=1280 -> seamless fallback to original when __w1280 doesn't exist
+  const adminTokenRes1280 = await realApp.fetch(
+    new Request('http://localhost/api/admin/media-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ file_key: fileKey, w: 1280 })
+    }),
+    env
+  )
+  assert.equal(adminTokenRes1280.status, 200)
+  const adminJson1280 = await adminTokenRes1280.json() as { url: string }
+  assert.ok(adminJson1280.url.includes('&w=1280'))
+
+  const resFallback = await realApp.fetch(new Request(`http://localhost${adminJson1280.url}`), env)
+  assert.equal(resFallback.status, 200)
+  assert.equal(await resFallback.text(), 'ORIGINAL-BYTES', 'Missing w1280 variant must fall back seamlessly to original')
+
+  // 6. POST /api/admin/media-token ignores invalid w=999
+  const adminTokenInvalidW = await realApp.fetch(
+    new Request('http://localhost/api/admin/media-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${adminToken}` },
+      body: JSON.stringify({ file_key: fileKey, w: 999 })
+    }),
+    env
+  )
+  assert.equal(adminTokenInvalidW.status, 200)
+  const adminJsonInvalidW = await adminTokenInvalidW.json() as { url: string }
+  assert.ok(!adminJsonInvalidW.url.includes('&w='), 'Invalid width must be ignored and treated as original')
+
+  // 7. PUT /api/admin/media/<key>?variant=1280 stores __w1280 and bumps public_cache_version
+  const putVariantRes = await realApp.fetch(
+    new Request(`http://localhost/api/admin/media/${fileKey}?variant=1280`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/webp', Authorization: `Bearer ${adminToken}` },
+      body: Buffer.from('W1280-UPLOADED')
+    }),
+    env
+  )
+  assert.equal(putVariantRes.status, 200)
+  const stored1280 = sqlite.prepare('SELECT data FROM Media_Storage WHERE file_key = ?').get(`${fileKey}__w1280`) as { data: Uint8Array } | undefined
+  assert.ok(stored1280, 'PUT ?variant=1280 must store chunks under __w1280')
+  assert.equal(Buffer.from(stored1280!.data).toString(), 'W1280-UPLOADED')
+
+  // 8. DELETE /api/admin/portfolio/:id removes original + __w640 + __w1280
+  const delRes = await realApp.fetch(
+    new Request(`http://localhost/api/admin/portfolio/${insertedRow.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    }),
+    env
+  )
+  assert.equal(delRes.status, 200)
+  const remaining = sqlite.prepare('SELECT file_key FROM Media_Storage WHERE file_key IN (?, ?, ?)').all(
+    fileKey,
+    `${fileKey}__w640`,
+    `${fileKey}__w1280`
+  )
+  assert.equal(remaining.length, 0, 'Deleting portfolio photo must also delete __w640 and __w1280 variants')
+})

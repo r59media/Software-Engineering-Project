@@ -4,6 +4,7 @@ import { RecentPhotoshoot } from '../recent/RecentPhotoshoot'
 import { LensTransitionContext } from './LensTransitionContext'
 import { TransitionLens } from './TransitionLens'
 import { aboutLens } from '../../config/aboutLens'
+import { isIPad } from '../../utils/browserEnv'
 import './AboutToRecent.css'
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value))
@@ -23,8 +24,15 @@ export function AboutToRecent() {
   const [failed, setFailed] = useState(false)
   const [reduced, setReduced] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
   const listeners = useRef(new Set<(value: number) => void>())
+  const pauseListeners = useRef(new Set<(paused: boolean) => void>())
+  const pausedRef = useRef(false)
   const controller = useMemo(() => ({
     subscribe: () => () => {},
+    subscribePaused(listener: (paused: boolean) => void) {
+      pauseListeners.current.add(listener)
+      listener(pausedRef.current)
+      return () => { pauseListeners.current.delete(listener) }
+    },
     ready: () => setLoaded(true),
     fail: () => setFailed(true),
   }), [])
@@ -48,12 +56,17 @@ export function AboutToRecent() {
   }, [])
 
   useEffect(() => {
-    const section = root.current?.querySelector<HTMLElement>('#recent-photoshoot')
-    if (!section) return
-    // Keep all gallery content scrollable on short/landscape viewports.
-    const measure = () => setFits(section.offsetHeight <= getViewportHeight(root.current) + 1)
+    const about = root.current?.querySelector<HTMLElement>('#about')
+    const recent = root.current?.querySelector<HTMLElement>('#recent-photoshoot')
+    if (!about || !recent) return
+    // Keep all gallery and about content scrollable on short/landscape viewports.
+    const measure = () => {
+      const vh = getViewportHeight(root.current)
+      setFits(about.offsetHeight <= vh + 1 && recent.offsetHeight <= vh + 1)
+    }
     const observer = new ResizeObserver(measure)
-    observer.observe(section)
+    observer.observe(about)
+    observer.observe(recent)
     window.addEventListener('resize', measure)
     window.visualViewport?.addEventListener('resize', measure)
     measure()
@@ -153,6 +166,11 @@ export function AboutToRecent() {
       recent.inert = aperture <= 0
       about.inert = progress >= 1
       host.dataset.progress = progress.toFixed(3)
+      const nextPaused = progress > 0 && progress < 1
+      if (pausedRef.current !== nextPaused) {
+        pausedRef.current = nextPaused
+        pauseListeners.current.forEach(listener => listener(nextPaused))
+      }
       subscribers.forEach(listener => listener(aperture))
     }
     const syncViewportHeight = () => {
@@ -220,9 +238,10 @@ export function AboutToRecent() {
       applyProgress(displayedProgress)
     }
     const onResize = () => {
-      // On mobile viewports (<= 1000px), scrolling dynamically hides/shows the address bar.
+      // On mobile viewports (<= 1000px) and iPad (<= 1180px), scrolling dynamically hides/shows the address bar.
       // Sync viewport height in-place without resetting scroll distance or jumping the pin.
-      if (host.clientWidth <= 1000 && Math.abs(host.clientWidth - width) < 2) {
+      const isTouchViewport = host.clientWidth <= 1000 || (isIPad && host.clientWidth <= 1180)
+      if (isTouchViewport && Math.abs(host.clientWidth - width) < 2) {
         if (syncViewportHeight()) {
           targetProgress = calculateTarget()
           displayedProgress = targetProgress
@@ -270,6 +289,7 @@ export function AboutToRecent() {
     recent.addEventListener('focusin', focusRecent)
     measure()
     navigate()
+    const pauseListenersSnapshot = pauseListeners.current
     return () => {
       cancelAnimationFrame(frame)
       resize.disconnect()
@@ -284,6 +304,10 @@ export function AboutToRecent() {
       recent.style.clipPath = ''; recent.style.visibility = ''; lens.style.visibility = ''; overlay.style.cssText = ''
       delete host.dataset.progress
       recent.inert = false; about.inert = false
+      if (pausedRef.current) {
+        pausedRef.current = false
+        pauseListenersSnapshot.forEach(listener => listener(false))
+      }
       subscribers.forEach(listener => listener(0))
     }
   }, [enabled, listeners])

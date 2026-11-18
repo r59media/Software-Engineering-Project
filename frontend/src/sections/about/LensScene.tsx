@@ -1,27 +1,32 @@
 import { Suspense, useLayoutEffect, useMemo } from 'react'
 import { Canvas, useLoader, useThree } from '@react-three/fiber'
-import { LinearFilter, LinearMipmapLinearFilter, Mesh, PMREMGenerator } from 'three'
+import { LinearFilter, LinearMipmapLinearFilter, Mesh, PMREMGenerator, type Texture } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import type { LensTransitionController } from '../transition/LensTransitionContext'
 import { aboutLens } from '../../config/aboutLens'
+import { isWebKit } from '../../utils/browserEnv'
+
+let cachedEnvironmentTexture: Texture | null = null
 
 function StudioLighting() {
   const { gl, scene, invalidate } = useThree()
   useLayoutEffect(() => {
     let cleanup: (() => void) | undefined
     try {
-      const generator = new PMREMGenerator(gl)
-      const room = new RoomEnvironment()
-      const environment = generator.fromScene(room, 0.04)
+      if (!cachedEnvironmentTexture) {
+        const generator = new PMREMGenerator(gl)
+        const room = new RoomEnvironment()
+        const environment = generator.fromScene(room, 0.04)
+        cachedEnvironmentTexture = environment.texture
+        room.dispose()
+        generator.dispose()
+      }
       const previous = scene.environment
-      // Three.js owns this mutable scene; restore its environment on cleanup.
-      // eslint-disable-next-line react-hooks/immutability
-      scene.environment = environment.texture
+      Reflect.set(scene, 'environment', cachedEnvironmentTexture)
       invalidate()
-      room.dispose()
-      generator.dispose()
-      cleanup = () => { scene.environment = previous; environment.dispose() }
+      cleanup = () => { Reflect.set(scene, 'environment', previous) }
     } catch {
       // Brave Shields strict fingerprinting can block float textures;
       // fallback to ambient/directional lights without crashing the scene.
@@ -35,9 +40,10 @@ function StudioLighting() {
   </>
 }
 
-type LensProps = { url: string; aperture: number; transition?: LensTransitionController | null }
+type LensProps = { url: string; aperture: number; transition?: LensTransitionController | null; paused?: boolean }
 
 function configureLensLoader(loader: GLTFLoader) {
+  loader.setMeshoptDecoder(MeshoptDecoder)
   loader.setRequestHeader({ 'X-R59-Client': 'media-viewer' })
   loader.register(parser => ({
     name: 'R59LensMetadata',
@@ -110,7 +116,9 @@ function LensModel({ url, aperture, transition }: LensProps) {
   return <primitive object={model} dispose={null} />
 }
 
-export default function LensScene({ url, aperture, transition }: LensProps) {
+const lensDpr: [number, number] = isWebKit ? [1, 1.5] : aboutLens.pixelRatio
+
+export default function LensScene({ url, aperture, transition, paused = false }: LensProps) {
   return <Canvas
     className="about__lens-canvas"
     onCreated={({ gl }) => {
@@ -119,10 +127,10 @@ export default function LensScene({ url, aperture, transition }: LensProps) {
         transition?.fail()
       }, { once: true })
     }}
-    frameloop="demand"
+    frameloop={paused ? 'never' : 'always'}
     resize={{ offsetSize: true }}
     camera={aboutLens.camera}
-    dpr={aboutLens.pixelRatio}
+    dpr={lensDpr}
     scene={{ environmentIntensity: 0.35 }}
     gl={{ alpha: true, antialias: true, powerPreference: 'high-performance' }}
     fallback={<div className="about__lens-fallback" data-lens-state="fallback" />}

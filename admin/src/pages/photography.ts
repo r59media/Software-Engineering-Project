@@ -524,6 +524,11 @@
       btnReopt.hidden = !(currentTab === 'gallery' && status === 'loaded');
     }
 
+    const btnGenSizes = $('#btnGenerateImageSizes');
+    if (btnGenSizes) {
+      btnGenSizes.hidden = !(status === 'loaded' && canEditImages());
+    }
+
     const fileAdd = $('#fileAdd');
     if (fileAdd) fileAdd.multiple = currentTab !== 'about';
   }
@@ -1192,6 +1197,37 @@
         toast(`Re-optimization failed: ${err.message}`, { type: 'error' });
       } finally {
         reoptimizing = false;
+        if (btn) btn.disabled = false;
+        if (span) span.textContent = originalText;
+      }
+    });
+
+    let generatingSizes = false;
+    $('#btnGenerateImageSizes')?.addEventListener('click', async () => {
+      if (generatingSizes || reoptimizing || uploading || !canEditImages()) return;
+      const btn = $('#btnGenerateImageSizes');
+      const span = btn?.querySelector('span');
+      const originalText = span ? span.textContent : 'Generate sizes';
+
+      generatingSizes = true;
+      if (btn) btn.disabled = true;
+
+      try {
+        toast('Generating missing image sizes...', { type: 'info' });
+        const res = await api().generateMissingImageVariants(progress => {
+          if (span && progress && progress.status) {
+            span.textContent = progress.status;
+          }
+        });
+        toast(
+          `Image sizes complete: ${res.generated} generated, ${res.skipped} skipped${res.failed ? `, ${res.failed} failed` : ''}.`,
+          { type: res.failed ? 'info' : 'success' }
+        );
+      } catch (err) {
+        console.error('Image size generation failed:', err);
+        toast(`Image size generation failed: ${err.message}`, { type: 'error' });
+      } finally {
+        generatingSizes = false;
         if (btn) btn.disabled = false;
         if (span) span.textContent = originalText;
       }

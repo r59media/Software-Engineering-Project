@@ -9,6 +9,15 @@ import {
   normalizeFeeRules
 } from '../lib/billingMath'
 import { getTrustedClientIp } from '../middleware/auth'
+import {
+  buildEdgeCacheKey,
+  getExecutionCtx,
+  getPublicContentVersion,
+  PUBLIC_READ_CACHE_CONTROL,
+  scheduleEdgeCachePut,
+  shouldBypassPublicEdgeCache,
+  tryEdgeCacheMatch
+} from '../lib/edgeCache'
 
 export const pricingRouter = new Hono<{ Bindings: Bindings }>()
 export const couponsRouter = new Hono<{ Bindings: Bindings }>()
@@ -50,6 +59,22 @@ function getSquareConfig(env: Bindings) {
 
 // GET /api/pricing (public)
 pricingRouter.get('/', async (c) => {
+  const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
+  let cacheKeyUrl: string | null = null
+
+  if (!bypassEdgeCache) {
+    const version = await getPublicContentVersion(c.env.DB)
+    cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
+    const cached = await tryEdgeCacheMatch(cacheKeyUrl)
+    if (cached) {
+      return new Response(cached.body, {
+        status: cached.status,
+        statusText: cached.statusText,
+        headers: cached.headers
+      })
+    }
+  }
+
   try {
     const row = await c.env.DB.prepare(
       "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
@@ -78,8 +103,8 @@ pricingRouter.get('/', async (c) => {
       } catch {}
     }
 
-    c.header('Cache-Control', 'no-store')
-    return c.json({
+    c.header('Cache-Control', bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL)
+    const res = c.json({
       depositPercent,
       baseFee,
       perPerson,
@@ -88,6 +113,10 @@ pricingRouter.get('/', async (c) => {
       currency: 'USD',
       squareConfig: getSquareConfig(c.env)
     })
+    if (!bypassEdgeCache && cacheKeyUrl) {
+      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
+    }
+    return res
   } catch {
     c.header('Cache-Control', 'no-store')
     return c.json({

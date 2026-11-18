@@ -2,11 +2,16 @@ import { Suspense, useMemo, useRef } from 'react'
 import { Canvas, useFrame, useLoader } from '@react-three/fiber'
 import { Group, MathUtils } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import type { MutableRefObject } from 'react'
+
+function configureCardLoader(loader: GLTFLoader) {
+  loader.setMeshoptDecoder(MeshoptDecoder)
+}
 
 export type CardMotion = { x: number; y: number }
 function Model({ target, automatic, reduced, ready }: { target: MutableRefObject<CardMotion>; automatic: boolean; reduced: boolean; ready: () => void }) {
-  const gltf = useLoader(GLTFLoader, '/models/r59-memory-card.glb')
+  const gltf = useLoader(GLTFLoader, '/models/r59-memory-card.glb', configureCardLoader)
   const model = useMemo(() => gltf.scene.clone(true), [gltf.scene])
   const group = useRef<Group>(null)
   const announced = useRef(false)

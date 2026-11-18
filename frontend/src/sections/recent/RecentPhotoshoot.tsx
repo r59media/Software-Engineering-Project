@@ -6,6 +6,7 @@ import { preloadProtectedImage } from '../../components/ProtectedCanvasImage'
 import { PhotoImage } from './PhotoImage'
 import { PhotoViewer } from './PhotoViewer'
 import { useRecentPhotos } from './useRecentPhotos'
+import { isIPad } from '../../utils/browserEnv'
 import './RecentPhotoshoot.css'
 
 interface RecentPhotoshootProps {
@@ -92,10 +93,15 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
   const [activePhotoId, setActivePhotoId] = useState(initialPhotoId)
   const [viewerOpen, setViewerOpen] = useState(false)
   const items = useMemo(() => photos.filter((photo, index) => photo.imageUrl.trim() && photos.findIndex(item => item.id === photo.id) === index), [photos])
+  const sectionRef = useRef<HTMLElement>(null)
   const [direction, setDirection] = useState<-1 | 1>(1)
   const [stepCount, setStepCount] = useState(0)
   const [centerHovered, setCenterHovered] = useState(false)
   const [hidden, setHidden] = useState(() => document.hidden)
+  const [inView, setInView] = useState(true)
+  const [noHover, setNoHover] = useState(() =>
+    isIPad || (typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches),
+  )
   const activeIndex = Math.max(0, items.findIndex(photo => photo.id === activePhotoId))
   const activePhoto = items[activeIndex]
 
@@ -152,12 +158,31 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
   }, [])
 
   useEffect(() => {
-    if (items.length < 2 || centerHovered || hidden || viewerOpen) return
+    const el = sectionRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      ([entry]) => setInView(entry.isIntersecting),
+      { threshold: 0 },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
+  useEffect(() => {
+    if (isIPad || typeof window === 'undefined') return
+    const mql = window.matchMedia('(hover: none)')
+    const onChange = (e: MediaQueryListEvent) => setNoHover(e.matches)
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [])
+
+  useEffect(() => {
+    if (items.length < 2 || centerHovered || hidden || viewerOpen || !inView) return
     const interval = window.setInterval(() => {
       step(1)
     }, 1800)
     return () => window.clearInterval(interval)
-  }, [items.length, centerHovered, hidden, viewerOpen, step])
+  }, [items.length, centerHovered, hidden, viewerOpen, inView, step])
 
   const touchStartX = useRef<number | null>(null)
   const touchStartY = useRef<number | null>(null)
@@ -193,7 +218,9 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
 
   const transition = { duration: 0.25, ease: CAROUSEL_EASING }
 
-  return <section id="recent-photoshoot" className="recent" aria-labelledby="recent-heading"
+  const disableHoverPause = isMobile || isIPad || noHover
+
+  return <section ref={sectionRef} id="recent-photoshoot" className="recent" aria-labelledby="recent-heading"
     data-active-photo-id={activePhoto?.id} data-viewer-open={viewerOpen && !!activePhoto}>
     <div className="recent__glow" aria-hidden="true" />
     <div className="recent__composition" data-recent-part="composition">
@@ -232,8 +259,8 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
                 className="recent__photo"
                 aria-label={offset === 0 ? `Open photo: ${photo.alt}` : `View photo: ${photo.alt}`}
                 tabIndex={offset === 0 ? 0 : -1}
-                onMouseEnter={offset === 0 && !isMobile ? () => setCenterHovered(true) : undefined}
-                onMouseLeave={offset === 0 && !isMobile ? () => setCenterHovered(false) : undefined}
+                onMouseEnter={offset === 0 && !disableHoverPause ? () => setCenterHovered(true) : undefined}
+                onMouseLeave={offset === 0 && !disableHoverPause ? () => setCenterHovered(false) : undefined}
                 onClick={() => {
                   if (offset === 0) {
                     setActivePhotoId(photo.id)

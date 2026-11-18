@@ -1,6 +1,47 @@
 import { useEffect, useState } from 'react'
-import { fetchAboutData, type PublicProfileData } from '../../api/client'
+import { fetchAboutData, type AboutData, type PublicProfileData } from '../../api/client'
 import { aboutContent, aboutImages } from '../../config/about'
+
+const ABOUT_CACHE_TTL_MS = 60_000
+let cachedAboutData: AboutData | null = null
+let cachedAboutTimestamp = 0
+let inFlightAboutPromise: Promise<AboutData> | null = null
+
+function invalidateAboutCache(): void {
+  cachedAboutData = null
+  cachedAboutTimestamp = 0
+  inFlightAboutPromise = null
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('portfolio-updated', invalidateAboutCache)
+}
+
+function getSharedAboutData(forceRefresh = false): Promise<AboutData> {
+  if (!forceRefresh && cachedAboutData && Date.now() - cachedAboutTimestamp < ABOUT_CACHE_TTL_MS) {
+    return Promise.resolve(cachedAboutData)
+  }
+  if (!forceRefresh && inFlightAboutPromise) {
+    return inFlightAboutPromise
+  }
+
+  const request = fetchAboutData()
+    .then(data => {
+      if (!data.portraitError && !data.profileError) {
+        cachedAboutData = data
+        cachedAboutTimestamp = Date.now()
+      }
+      return data
+    })
+    .finally(() => {
+      if (inFlightAboutPromise === request) {
+        inFlightAboutPromise = null
+      }
+    })
+
+  inFlightAboutPromise = request
+  return request
+}
 
 export interface AboutPortraitData {
   src: string
@@ -31,16 +72,12 @@ export function useAboutData(): UseAboutDataResult {
   const [error, setError] = useState(false)
 
   useEffect(() => {
-    let controller: AbortController | null = null
+    let active = true
 
-    const load = () => {
-      controller?.abort()
-      const current = new AbortController()
-      controller = current
-
-      void fetchAboutData(current.signal)
+    const load = (forceRefresh = false) => {
+      void getSharedAboutData(forceRefresh)
         .then(data => {
-          if (current.signal.aborted) return
+          if (!active) return
 
           if (data.portraitError) {
             setPortrait(FALLBACK_PORTRAIT)
@@ -65,7 +102,7 @@ export function useAboutData(): UseAboutDataResult {
           setLoading(false)
         })
         .catch(() => {
-          if (!current.signal.aborted) {
+          if (active) {
             setPortrait(FALLBACK_PORTRAIT)
             setParagraphs(FALLBACK_PARAGRAPHS)
             setProfile(null)
@@ -76,16 +113,23 @@ export function useAboutData(): UseAboutDataResult {
     }
 
     const onRevalidate = () => {
-      if (document.visibilityState === 'visible') load()
+      if (document.visibilityState === 'visible') load(false)
     }
 
-    load()
+    const onPortfolioUpdated = () => {
+      invalidateAboutCache()
+      load(true)
+    }
+
+    load(false)
     window.addEventListener('focus', onRevalidate)
     document.addEventListener('visibilitychange', onRevalidate)
+    window.addEventListener('portfolio-updated', onPortfolioUpdated)
     return () => {
-      controller?.abort()
+      active = false
       window.removeEventListener('focus', onRevalidate)
       document.removeEventListener('visibilitychange', onRevalidate)
+      window.removeEventListener('portfolio-updated', onPortfolioUpdated)
     }
   }, [])
 

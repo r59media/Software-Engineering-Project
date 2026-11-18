@@ -32,13 +32,29 @@ export function timingSafeEqual(a: string, b: string): boolean {
   return mismatch === 0
 }
 
+export type MediaVariantWidth = 640 | 1280
+
+/**
+ * Parses an optional media variant width (640 or 1280); returns undefined for any other value.
+ */
+export function parseMediaVariantWidth(raw: unknown): MediaVariantWidth | undefined {
+  if (raw === 640 || raw === '640') return 640
+  if (raw === 1280 || raw === '1280') return 1280
+  return undefined
+}
+
+function buildMediaSignatureMessage(fileKey: string, exp: number, width?: MediaVariantWidth): string {
+  return width ? `${fileKey}:${exp}:w${width}` : `${fileKey}:${exp}`
+}
+
 /**
  * Generates an HMAC-SHA256 signature and expiration timestamp for a media file key.
  */
 export async function signMediaKey(
   fileKey: string,
   secret: string,
-  ttlSeconds: number = 30
+  ttlSeconds: number = 30,
+  width?: MediaVariantWidth
 ): Promise<{ exp: number; sig: string }> {
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds
   const encoder = new TextEncoder()
@@ -49,7 +65,7 @@ export async function signMediaKey(
     false,
     ['sign']
   )
-  const data = encoder.encode(`${fileKey}:${exp}`)
+  const data = encoder.encode(buildMediaSignatureMessage(fileKey, exp, width))
   const signatureBytes = await crypto.subtle.sign('HMAC', key, data)
   const sig = toBase64Url(new Uint8Array(signatureBytes))
   return { exp, sig }
@@ -62,7 +78,8 @@ export async function verifyMediaSignature(
   fileKey: string,
   exp: number,
   sig: string,
-  secret: string
+  secret: string,
+  width?: MediaVariantWidth
 ): Promise<boolean> {
   try {
     if (!fileKey || !sig || !secret || typeof exp !== 'number' || isNaN(exp)) {
@@ -82,7 +99,7 @@ export async function verifyMediaSignature(
       false,
       ['sign']
     )
-    const data = encoder.encode(`${fileKey}:${exp}`)
+    const data = encoder.encode(buildMediaSignatureMessage(fileKey, exp, width))
     const signatureBytes = await crypto.subtle.sign('HMAC', key, data)
     const expectedSig = toBase64Url(new Uint8Array(signatureBytes))
 

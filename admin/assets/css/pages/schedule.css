@@ -121,7 +121,7 @@ button.day__n:hover{background:color-mix(in srgb,var(--ink) 10%,transparent)}
   .frames.sched > .sched__avail{grid-column:1;grid-row:1}
   .frames.sched > .sched__blocked{grid-column:1;grid-row:2}
   .frames.sched > .sched__bookings{grid-column:2;grid-row:1 / span 2}
-  .sched__bookings .bk-list{max-height:72rem;overflow:auto;overscroll-behavior:contain;padding-right:var(--s1)}
+  .sched__bookings .bk-list{max-height:72rem;overflow:auto;overscroll-behavior:auto;padding-right:var(--s1)}
 }
 
 /* ================= Booking availability ================= */

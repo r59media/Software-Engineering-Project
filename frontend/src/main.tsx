@@ -10,7 +10,10 @@ if (typeof window !== 'undefined') {
 
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { initBrowserEnv } from './utils/browserEnv'
 import App from './App.tsx'
+
+initBrowserEnv()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
