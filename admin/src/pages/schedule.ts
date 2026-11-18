@@ -253,17 +253,17 @@
     const name = b.customer || 'Unknown Client';
     const pkg = b.package || st().NO_PACKAGE;
     const time = bookingTimeText(b);
-    const aria = `${time}, ${name}, ${pkg}, ${b.status || 'Pending'}`;
+    const aria = `${time}, ${name}, ${pkg}${b.location ? `, ${b.location}` : ''}, ${b.status || 'Pending'}`;
     if (detailed) {
       const consentIcon = (b.photo_permission_portfolio || b.photo_permission_social || b.photoPermissionPortfolio || b.photoPermissionSocial) ? ' 📸' : '';
       return `<button type="button" class="cal-ev cal-ev--block${key === 'cancelled' ? ' is-cancelled' : ''}" ${attr} aria-label="${esc(aria)}">
           <span class="cal-ev__time num">${esc(time)}</span>
           <strong class="cal-ev__name">${esc(name)}${consentIcon}</strong>
-          <span class="cal-ev__pkg">${esc(pkg)}</span>
+          <span class="cal-ev__pkg">${esc(pkg)}${b.location ? ` · ${esc(b.location)}` : ''}</span>
           ${statusTagHTML(b)}
         </button>`;
     }
-    return `<button type="button" class="cal-ev${key === 'cancelled' ? ' is-cancelled' : ''}" ${attr} aria-label="${esc(aria)}" title="${esc(name)} (${esc(pkg)})"><span class="cal-ev__pip" aria-hidden="true"></span><span class="cal-ev__t"><span class="num">${esc(from24(startOf(b)) || time)}</span> ${esc(name)}</span></button>`;
+    return `<button type="button" class="cal-ev${key === 'cancelled' ? ' is-cancelled' : ''}" ${attr} aria-label="${esc(aria)}" title="${esc(name)} (${esc(pkg)})${b.location ? ` · ${esc(b.location)}` : ''}"><span class="cal-ev__pip" aria-hidden="true"></span><span class="cal-ev__t"><span class="num">${esc(from24(startOf(b)) || time)}</span> ${esc(name)}</span></button>`;
   }
 
   /**
@@ -420,7 +420,7 @@
       <div class="tl-booking${statusKey(b) === 'cancelled' ? ' is-cancelled' : ''}">
         <div class="tl-booking__main">
           <p class="tl-booking__title"><strong>${esc(b.customer || 'Unknown Client')}</strong>${consentIcon} — ${esc(b.package || st().NO_PACKAGE)}</p>
-          <p class="sub num">${esc(bookingTimeText(b))} · Total ${esc(fmtCents(m.totalCents))} · Paid ${esc(fmtCents(m.paidCents))} · ${esc(dueOf(b).text)}</p>
+          <p class="sub num">${esc(bookingTimeText(b))}${b.location ? ` · ${esc(b.location)}` : ''} · Total ${esc(fmtCents(m.totalCents))} · Paid ${esc(fmtCents(m.paidCents))} · ${esc(dueOf(b).text)}</p>
         </div>
         ${statusTagHTML(b)}
       </div>`;

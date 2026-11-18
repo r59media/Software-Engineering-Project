@@ -687,7 +687,13 @@ export async function sendBalanceInvoice(
             requestType: 'BALANCE',
             dueDate,
             automaticPaymentSource: 'NONE',
-            tippingEnabled: false
+            tippingEnabled: false,
+            reminders: [
+              {
+                relativeScheduledDays: 0,
+                message: 'Final reminder: today is the last day of your grace period to pay your remaining session balance.'
+              }
+            ]
           }
         ],
         deliveryMethod: 'EMAIL',

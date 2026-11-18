@@ -735,6 +735,7 @@ checkoutRouter.post('/', async (c) => {
         service_name: service.name,
         status: 'confirmed',
         notes,
+        location: eventLocation,
         attendees,
         timeZone
       }
@@ -751,6 +752,7 @@ checkoutRouter.post('/', async (c) => {
           date: slot.date,
           startTime: slot.start_time,
           endTime: slot.end_time,
+          location: eventLocation,
           depositCents,
           totalCents: finalPriceCents,
           balanceCents,

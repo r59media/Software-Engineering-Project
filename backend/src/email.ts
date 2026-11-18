@@ -38,6 +38,7 @@ export type BookingConfirmationEmailDetails = {
   date: string
   startTime: string
   endTime?: string | null
+  location?: string
   depositCents: number
   totalCents: number
   balanceCents: number
@@ -98,6 +99,7 @@ export async function sendBookingConfirmationEmail(
     `Package: ${details.packageName}`,
     `Date: ${details.date}`,
     `Time: ${timeWindow}`,
+    details.location ? `Location: ${details.location}` : '',
     `Total Price: ${totalStr}`,
     `Deposit Paid: ${depositStr}`,
     `Remaining Balance: ${balanceStr}`,
@@ -124,6 +126,7 @@ export async function sendBookingConfirmationEmail(
     `Package: ${details.packageName}`,
     `Date: ${details.date}`,
     `Time: ${timeWindow}`,
+    details.location ? `Location: ${details.location}` : '',
     `Total: ${totalStr} | Deposit Paid: ${depositStr} | Balance Due: ${balanceStr}`,
     details.rescheduleUrl ? `Client Reschedule Link: ${details.rescheduleUrl}` : ''
   ].filter(Boolean)

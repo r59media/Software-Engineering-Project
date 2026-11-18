@@ -80,6 +80,7 @@ function buildBookingDescription(booking: CalendarBookingInput, rescheduleUrl?: 
   const lines = [
     `Booking #${booking.id}`,
     `Package: ${pkg}`,
+    booking.location ? `Location: ${booking.location}` : '',
     booking.client_name ? `Client: ${booking.client_name}` : '',
     booking.client_email ? `Email: ${booking.client_email}` : '',
     booking.customer_phone ? `Phone: ${booking.customer_phone}` : '',
