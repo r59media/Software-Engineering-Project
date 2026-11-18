@@ -29,7 +29,7 @@ export function AboutLens() {
     media.addEventListener('change', update)
     const observer = new IntersectionObserver(([entry]) => {
       if (entry.isIntersecting) { setReady(true); observer.disconnect() }
-    }, { rootMargin: '900px' })
+    }, { rootMargin: '1800px' })
     if (host.current) observer.observe(host.current)
     return () => { media.removeEventListener('change', update); observer.disconnect() }
   }, [])

@@ -8,6 +8,12 @@ const PUBLIC_HEADERS = `/assets/*.js
 
 /assets/*.woff2
   Cache-Control: public, max-age=31536000, immutable
+
+/assets/*.glb
+  Cache-Control: public, max-age=31536000, immutable
+
+/models/*.glb
+  Cache-Control: public, max-age=31536000, immutable
 `;
 
 if (fs.existsSync('../frontend/dist')) {

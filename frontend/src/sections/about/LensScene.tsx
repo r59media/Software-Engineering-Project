@@ -88,16 +88,41 @@ function LensModel({ url, aperture, transition }: LensProps) {
   }, [model, gl])
 
   useLayoutEffect(() => {
-    const blades: { mesh: Mesh; rest: number; travel: number }[] = []
+    const blades: {
+      mesh: Mesh
+      rest: number
+      travel: number
+      restX: number
+      restY: number
+      hx: number
+      hy: number
+    }[] = []
     model.traverse(object => {
       if (!(object instanceof Mesh) || !object.name.startsWith('IrisBlade_')) return
       const rest = typeof object.userData.irisRestAngle === 'number' ? object.userData.irisRestAngle : object.rotation.z
       const travel = typeof object.userData.irisTravelAngle === 'number' ? object.userData.irisTravelAngle : aboutLens.iris.travelAngle
-      blades.push({ mesh: object, rest, travel })
+      const restX = object.position.x
+      const restY = object.position.y
+      const rawHinge = Array.isArray(object.userData.irisHinge) ? object.userData.irisHinge : null
+      const hx = rawHinge && typeof rawHinge[0] === 'number' ? rawHinge[0] : restX
+      const hy = rawHinge && typeof rawHinge[1] === 'number' ? rawHinge[1] : restY
+      blades.push({ mesh: object, rest, travel, restX, restY, hx, hy })
     })
+    let lastOpening = -1
     const update = (value: number) => {
       const opening = Math.min(1, Math.max(0, value))
-      for (const { mesh, rest, travel } of blades) mesh.rotation.z = rest + opening * travel
+      if (Math.abs(opening - lastOpening) < 0.0004) return
+      lastOpening = opening
+      for (const { mesh, rest, travel, restX, restY, hx, hy } of blades) {
+        const delta = opening * travel
+        const cos = Math.cos(delta)
+        const sin = Math.sin(delta)
+        const dx = restX - hx
+        const dy = restY - hy
+        mesh.position.x = hx + dx * cos - dy * sin
+        mesh.position.y = hy + dx * sin + dy * cos
+        mesh.rotation.z = rest + delta
+      }
       invalidate()
     }
     update(aperture)
@@ -105,7 +130,11 @@ function LensModel({ url, aperture, transition }: LensProps) {
     const unsubscribe = transition?.subscribe(update)
     return () => {
       unsubscribe?.()
-      for (const { mesh, rest } of blades) mesh.rotation.z = rest
+      for (const { mesh, rest, restX, restY } of blades) {
+        mesh.position.x = restX
+        mesh.position.y = restY
+        mesh.rotation.z = rest
+      }
     }
   }, [model, aperture, invalidate, transition])
   return <primitive object={model} dispose={null} />
