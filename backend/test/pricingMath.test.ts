@@ -43,8 +43,9 @@ test('pricing math: coupon flooring at 0 and deposit', () => {
 })
 
 test('weekly availability: isSlotInWeeklyAvailability with and without active rules', () => {
-  // Empty rules / unconfigured -> keep current behavior (returns true)
+  // Empty rules / unconfigured -> open by default (returns true)
   assert.equal(isSlotInWeeklyAvailability({ date: '2026-11-16', start_time: '10:00', end_time: '11:00' }, []), true)
+  // Configured rules where all days are marked unavailable -> closed (returns false)
   assert.equal(
     isSlotInWeeklyAvailability(
       { date: '2026-11-16', start_time: '10:00', end_time: '11:00' },
@@ -53,7 +54,7 @@ test('weekly availability: isSlotInWeeklyAvailability with and without active ru
         { day: 'Tuesday', available: false, timeframes: [] }
       ]
     ),
-    true
+    false
   )
 
   // Configured weekly availability: Monday 09:00 - 17:00

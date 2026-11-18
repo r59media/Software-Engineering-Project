@@ -1,6 +1,6 @@
 import { Suspense, useLayoutEffect, useMemo } from 'react'
 import { Canvas, useLoader, useThree } from '@react-three/fiber'
-import { LinearFilter, LinearMipmapLinearFilter, Mesh, PMREMGenerator, type Texture } from 'three'
+import { LinearFilter, LinearMipmapLinearFilter, Mesh, PMREMGenerator } from 'three'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
@@ -8,25 +8,20 @@ import type { LensTransitionController } from '../transition/LensTransitionConte
 import { aboutLens } from '../../config/aboutLens'
 import { isWebKit } from '../../utils/browserEnv'
 
-let cachedEnvironmentTexture: Texture | null = null
-
 function StudioLighting() {
   const { gl, scene, invalidate } = useThree()
   useLayoutEffect(() => {
     let cleanup: (() => void) | undefined
     try {
-      if (!cachedEnvironmentTexture) {
-        const generator = new PMREMGenerator(gl)
-        const room = new RoomEnvironment()
-        const environment = generator.fromScene(room, 0.04)
-        cachedEnvironmentTexture = environment.texture
-        room.dispose()
-        generator.dispose()
-      }
+      const generator = new PMREMGenerator(gl)
+      const room = new RoomEnvironment()
+      const environment = generator.fromScene(room, 0.04)
+      room.dispose()
+      generator.dispose()
       const previous = scene.environment
-      Reflect.set(scene, 'environment', cachedEnvironmentTexture)
+      Reflect.set(scene, 'environment', environment.texture)
       invalidate()
-      cleanup = () => { Reflect.set(scene, 'environment', previous) }
+      cleanup = () => { Reflect.set(scene, 'environment', previous); environment.dispose() }
     } catch {
       // Brave Shields strict fingerprinting can block float textures;
       // fallback to ambient/directional lights without crashing the scene.
@@ -40,7 +35,7 @@ function StudioLighting() {
   </>
 }
 
-type LensProps = { url: string; aperture: number; transition?: LensTransitionController | null; paused?: boolean }
+type LensProps = { url: string; aperture: number; transition?: LensTransitionController | null }
 
 function configureLensLoader(loader: GLTFLoader) {
   loader.setMeshoptDecoder(MeshoptDecoder)
@@ -118,7 +113,7 @@ function LensModel({ url, aperture, transition }: LensProps) {
 
 const lensDpr: [number, number] = isWebKit ? [1, 1.5] : aboutLens.pixelRatio
 
-export default function LensScene({ url, aperture, transition, paused = false }: LensProps) {
+export default function LensScene({ url, aperture, transition }: LensProps) {
   return <Canvas
     className="about__lens-canvas"
     onCreated={({ gl }) => {
@@ -127,7 +122,7 @@ export default function LensScene({ url, aperture, transition, paused = false }:
         transition?.fail()
       }, { once: true })
     }}
-    frameloop={paused ? 'never' : 'always'}
+    frameloop="demand"
     resize={{ offsetSize: true }}
     camera={aboutLens.camera}
     dpr={lensDpr}
