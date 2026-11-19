@@ -9,6 +9,7 @@ import {
 import { TransitionLens } from './TransitionLens'
 import { aboutLens } from '../../config/aboutLens'
 import { isIPad } from '../../utils/browserEnv'
+import { getGpuProfile } from '../../utils/gpuProfile'
 import './AboutToRecent.css'
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value))
@@ -20,10 +21,11 @@ const getViewportHeight = (host?: HTMLElement | null) => {
 }
 
 export function AboutToRecent() {
+  const gpu = useMemo(() => getGpuProfile(), [])
   const root = useRef<HTMLDivElement>(null)
   const [mobile, setMobile] = useState(() => matchMedia(aboutLens.mobileQuery).matches)
   const [readyUrl, setReadyUrl] = useState('')
-  const url = mobile ? aboutLens.mobileUrl : aboutLens.desktopUrl
+  const url = mobile || gpu.lens.modelVariant === 'mobile' ? aboutLens.mobileUrl : aboutLens.desktopUrl
   const [loaded, setLoaded] = useState(false)
   const [fits, setFits] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -47,8 +49,8 @@ export function AboutToRecent() {
     ready: () => setReadyUrl(url),
     fail: () => setFailed(true),
   }), [url])
-  const canReserve = !failed && !reduced && fits
-  const canAnimate = loaded && canReserve
+  const canReserve = !failed && !reduced && fits && !gpu.lens.disableScrollTransition
+  const canAnimate = loaded && canReserve && !gpu.lens.disableScrollTransition
   const enabled = canAnimate && readyUrl === url
 
   useEffect(() => {

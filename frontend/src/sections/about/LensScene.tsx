@@ -25,11 +25,12 @@ import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js'
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
 import type { LensTransitionController } from '../transition/LensTransitionContext'
 import { aboutLens } from '../../config/aboutLens'
-import { isIntegratedOrLowPowerGpu, isWebKit } from '../../utils/browserEnv'
+import { createFrameTimeGovernor, getGpuProfile, type GpuRenderProfile } from '../../utils/gpuProfile'
 
-function StudioLighting() {
+function StudioLighting({ usePmrem = true }: { usePmrem?: boolean }) {
   const { gl, scene, invalidate } = useThree()
   useLayoutEffect(() => {
+    if (!usePmrem) return
     let cleanup: (() => void) | undefined
     try {
       const generator = new PMREMGenerator(gl)
@@ -46,11 +47,11 @@ function StudioLighting() {
       // fallback to ambient/directional lights without crashing the scene.
     }
     return () => { cleanup?.() }
-  }, [gl, scene, invalidate])
+  }, [gl, scene, invalidate, usePmrem])
   return <>
-    <ambientLight intensity={0.2} />
-    <directionalLight position={[-1, 2, 3]} intensity={1} />
-    <directionalLight position={[2, -1, 2]} intensity={0.3} />
+    <ambientLight intensity={usePmrem ? 0.2 : 0.45} />
+    <directionalLight position={[-1, 2, 3]} intensity={usePmrem ? 1 : 1.35} />
+    <directionalLight position={[2, -1, 2]} intensity={usePmrem ? 0.3 : 0.45} />
   </>
 }
 
@@ -63,6 +64,7 @@ type LensSceneProps = {
 }
 
 type LensModelProps = LensSceneProps & {
+  gpu: GpuRenderProfile
   onSnapshot?: (dataUrl: string) => void
   onSnapshotStart?: () => void
 }
@@ -197,18 +199,11 @@ function restoreMeshesForDirectRender(state: BakeState) {
   }
 }
 
-function fallbackBezelPassToDirect(
-  state: BakeState,
-  gl: { getContext: () => WebGLRenderingContext | WebGL2RenderingContext },
-  setDpr: (dpr: number) => void,
-) {
+function fallbackBezelPassToDirect(state: BakeState) {
   state.fboSupported = false
   state.bezelRT?.dispose()
   state.bezelRT = null
   restoreMeshesForDirectRender(state)
-  if (isIntegratedOrLowPowerGpu(gl.getContext())) {
-    setDpr(Math.min(window.devicePixelRatio || 1, 1.25))
-  }
 }
 
 function bakeStaticBezelTarget(
@@ -221,16 +216,18 @@ function bakeStaticBezelTarget(
   h: number,
   key: string,
   clearColorScratch: Color,
-  setDpr: (dpr: number) => void,
+  fboSamples: number,
+  onBakeDuration?: (ms: number) => void,
 ): boolean {
   const composite = state.composite
   if (!composite || !gl.capabilities.isWebGL2 || state.bezelMeshes.length === 0) {
-    fallbackBezelPassToDirect(state, gl, setDpr)
+    fallbackBezelPassToDirect(state)
     return false
   }
 
+  const bakeStart = performance.now()
   const rawGl = gl.getContext() as WebGL2RenderingContext
-  const samples = Math.max(0, Math.min(4, gl.capabilities.maxSamples || 0))
+  const samples = Math.max(0, Math.min(fboSamples, gl.capabilities.maxSamples || 0))
   const hasFloatColorBuffer =
     gl.extensions.has('EXT_color_buffer_float') || gl.extensions.has('EXT_color_buffer_half_float')
 
@@ -300,7 +297,7 @@ function bakeStaticBezelTarget(
     }
     if (!hdrRt) {
       restoreGlState()
-      fallbackBezelPassToDirect(state, gl, setDpr)
+      fallbackBezelPassToDirect(state)
       return false
     }
 
@@ -321,7 +318,7 @@ function bakeStaticBezelTarget(
         hdrRt.dispose()
         hdrRt = null
         restoreGlState()
-        fallbackBezelPassToDirect(state, gl, setDpr)
+        fallbackBezelPassToDirect(state)
         return false
       }
       state.bezelRT = bezelSrgbRt
@@ -390,17 +387,18 @@ function bakeStaticBezelTarget(
 
     composite.material.uniforms.tBezel.value = bezelSrgbRt.texture
     state.bakedKey = key
+    onBakeDuration?.(performance.now() - bakeStart)
     return true
   } catch {
     hdrRt?.dispose()
     bakeMaterial?.dispose()
     restoreGlState()
-    fallbackBezelPassToDirect(state, gl, setDpr)
+    fallbackBezelPassToDirect(state)
     return false
   }
 }
 
-function BezelBakePass({ model }: { model: Object3D }) {
+function BezelBakePass({ model, gpu }: { model: Object3D; gpu: GpuRenderProfile }) {
   const { gl, invalidate, setDpr } = useThree()
   const drawingSizeRef = useRef(new Vector2())
   const clearColorRef = useRef(new Color())
@@ -413,6 +411,12 @@ function BezelBakePass({ model }: { model: Object3D }) {
     bezelMeshes: [],
     composite: null,
   })
+
+  const governor = useMemo(
+    () => createFrameTimeGovernor(gpu, Math.min(window.devicePixelRatio || 1, gpu.lens.maxDpr), nextDpr => setDpr(nextDpr)),
+    [gpu, setDpr],
+  )
+  useEffect(() => () => governor.dispose(), [governor])
 
   useLayoutEffect(() => {
     const { irisBlades, bezelMeshes } = collectLensMeshes(model)
@@ -456,6 +460,8 @@ function BezelBakePass({ model }: { model: Object3D }) {
   }, [gl, model, invalidate])
 
   useFrame(({ gl: frameGl, scene: frameScene, camera: frameCamera, size }) => {
+    const frameStart = performance.now()
+    let didBake = false
     const state = bakeStateRef.current
     const composite = state.composite
     if (state.fboSupported && composite && state.bezelMeshes.length > 0) {
@@ -466,6 +472,7 @@ function BezelBakePass({ model }: { model: Object3D }) {
 
       const currentKey = `${w}x${h}@${frameScene.environment?.uuid ?? 'none'}`
       if (state.bakedKey !== currentKey) {
+        didBake = true
         bakeStaticBezelTarget(
           state,
           frameGl,
@@ -476,7 +483,8 @@ function BezelBakePass({ model }: { model: Object3D }) {
           h,
           currentKey,
           clearColorRef.current,
-          setDpr,
+          gpu.lens.fboSamples,
+          ms => governor.recordBakeDuration(ms),
         )
       }
 
@@ -505,10 +513,12 @@ function BezelBakePass({ model }: { model: Object3D }) {
         frameGl.render(composite.scene, composite.camera)
         frameGl.setClearColor(prevClearColor, prevClearAlpha)
         Reflect.set(frameGl, 'autoClear', prevAutoClear)
+        if (!didBake) governor.recordFrameTime(performance.now() - frameStart)
         return
       }
     }
     frameGl.render(frameScene, frameCamera)
+    if (!didBake) governor.recordFrameTime(performance.now() - frameStart)
   }, 1)
 
   return null
@@ -541,6 +551,7 @@ function LensModel({
   transition,
   staticSnapshot,
   bakeStaticBezel = false,
+  gpu,
   onSnapshot,
   onSnapshotStart,
 }: LensModelProps) {
@@ -652,11 +663,9 @@ function LensModel({
 
   return <>
     <primitive object={model} dispose={null} />
-    {bakeStaticBezel && <BezelBakePass model={model} />}
+    {bakeStaticBezel && <BezelBakePass model={model} gpu={gpu} />}
   </>
 }
-
-const lensDpr: [number, number] = isWebKit ? [1, 1.5] : aboutLens.pixelRatio
 
 export default function LensScene({
   url,
@@ -665,6 +674,7 @@ export default function LensScene({
   staticSnapshot,
   bakeStaticBezel = false,
 }: LensSceneProps) {
+  const gpu = useMemo(() => getGpuProfile(), [])
   const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null)
   const intentionalUnmountRef = useRef(false)
   const readyCalledRef = useRef(false)
@@ -736,10 +746,7 @@ export default function LensScene({
 
   return <Canvas
     className="about__lens-canvas"
-    onCreated={({ gl, setDpr }) => {
-      if (!staticSnapshot && isIntegratedOrLowPowerGpu(gl.getContext())) {
-        setDpr(Math.min(window.devicePixelRatio || 1, 1.25))
-      }
+    onCreated={({ gl }) => {
       gl.domElement.addEventListener('webglcontextlost', event => {
         event.preventDefault()
         if (!intentionalUnmountRef.current) {
@@ -750,12 +757,20 @@ export default function LensScene({
     frameloop="demand"
     resize={{ offsetSize: true }}
     camera={aboutLens.camera}
-    dpr={lensDpr}
+    dpr={[1, staticSnapshot ? Math.min(gpu.lens.maxDpr + 0.25, 2) : gpu.lens.maxDpr]}
     scene={{ environmentIntensity: 0.35 }}
-    gl={{ alpha: true, antialias: true, preserveDrawingBuffer: false, powerPreference: 'default' }}
+    gl={{
+      alpha: true,
+      antialias: staticSnapshot ? gpu.lens.snapshotAntialias : gpu.lens.liveAntialias,
+      stencil: false,
+      depth: true,
+      preserveDrawingBuffer: false,
+      precision: gpu.lens.precision,
+      powerPreference: gpu.lens.powerPreference,
+    }}
     fallback={<div className="about__lens-fallback" data-lens-state="fallback" />}
   >
-    <StudioLighting />
+    <StudioLighting usePmrem={gpu.lens.usePmrem} />
     <Suspense fallback={null}>
       <LensModel
         url={url}
@@ -763,6 +778,7 @@ export default function LensScene({
         transition={transition}
         staticSnapshot={staticSnapshot}
         bakeStaticBezel={bakeStaticBezel}
+        gpu={gpu}
         onSnapshot={staticSnapshot ? handleSnapshot : undefined}
         onSnapshotStart={staticSnapshot ? handleSnapshotStart : undefined}
       />
