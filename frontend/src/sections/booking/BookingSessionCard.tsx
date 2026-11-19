@@ -28,6 +28,7 @@ export function BookingSessionCard({
     }).format(minor / 100)
 
   const formattedPrice = totalMinor !== null ? formatCurrency(totalMinor) : 'Custom'
+  const depositFormatted = breakdown.depositMinor !== null ? formatCurrency(breakdown.depositMinor) : null
 
   const durationText =
     service.durationMinutes === null
@@ -111,7 +112,10 @@ export function BookingSessionCard({
             <div className="booking-session-card__price-block">
               <motion.div layout="position" layoutId={shared ? 'booking-ticket-price' : undefined} transition={transition} className="booking-session-card__price-amount">{formattedPrice}</motion.div>
               <div className="booking-session-card__price-note">
-                {breakdown.depositPercent}% deposit to reserve
+                <span className="booking-session-card__deposit-badge">{breakdown.depositPercent}% DEPOSIT</span>
+                <span className="booking-session-card__deposit-due">
+                  {depositFormatted ? `${depositFormatted} due today` : 'Due to reserve'}
+                </span>
               </div>
             </div>
           </div>

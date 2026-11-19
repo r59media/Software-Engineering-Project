@@ -44,6 +44,12 @@ export function BookingSummary({
   const formatCurrency = (minor: number) =>
     new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(minor / 100)
   const price = breakdown.subtotalMinor === null ? 'Custom pricing' : formatCurrency(breakdown.subtotalMinor)
+  const depositPrice = breakdown.depositMinor !== null
+    ? formatCurrency(breakdown.depositMinor)
+    : null
+  const balancePrice = breakdown.subtotalMinor !== null && breakdown.depositMinor !== null
+    ? formatCurrency(breakdown.subtotalMinor - breakdown.depositMinor)
+    : null
   const optionalAddOns = (pricing?.feeRules ?? []).filter(
     rule => rule.active !== false && String(rule.trigger).toLowerCase() === 'client_selectable'
   )
@@ -175,7 +181,21 @@ export function BookingSummary({
         </div>
       )}
       <footer className="booking-review__footer">
-        <div className="booking-review__price"><span>SESSION TOTAL</span><strong>{price}</strong><div><b>{breakdown.depositPercent}% deposit to reserve</b><p>Review your final total and payment details at the deposit step.</p></div></div>
+        <div className="booking-review__price">
+          <span className="booking-review__total-label">SESSION TOTAL</span>
+          <strong>{price}</strong>
+          <div className="booking-review__deposit-block">
+            <div className="booking-review__deposit-badge-row">
+              <span className="booking-review__deposit-badge">{breakdown.depositPercent}% DEPOSIT</span>
+              {depositPrice && <span className="booking-review__deposit-due">Due today: <b>{depositPrice}</b></span>}
+            </div>
+            <p className="booking-review__deposit-note">
+              {balancePrice
+                ? `Remaining balance (${balancePrice}) paid on session date.`
+                : 'Review your final total and payment details at the deposit step.'}
+            </p>
+          </div>
+        </div>
       </footer>
     </article>
     <button className="booking-review__button" disabled={busy || !onProceedToDeposit} onClick={() => void proceed()}>{busy ? 'Continuing…' : 'Continue to deposit →'}</button>
