@@ -39,11 +39,18 @@
   width: 640px;
   height: 640px;
   z-index: 3;
-  visibility: hidden;
+  opacity: 0;
+  contain: layout style paint;
   pointer-events: none;
   transform-origin: top left;
 }
-.lens-transition[data-enabled="true"] .lens-transition__lens { will-change: transform; }
+.lens-transition[data-enabled="true"][data-transition-warm="true"] .lens-transition__lens {
+  will-change: transform, opacity;
+}
+html:not([data-engine="webkit"]) .lens-transition[data-enabled="true"][data-transition-warm="true"] .lens-transition__recent {
+  will-change: clip-path;
+  contain: layout style paint;
+}
 @media (prefers-reduced-motion: reduce) {
   .lens-transition__lens { display: none; will-change: auto; }
 }

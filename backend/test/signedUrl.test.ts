@@ -860,3 +860,217 @@ test('HMAC-signed ?w=640|1280 media variants: signature validation, tampered w r
   )
   assert.equal(remaining.length, 0, 'Deleting portfolio photo must also delete __w640 and __w1280 variants')
 })
+
+test('Static /assets/* overwrites upstream Cache-Control with immutable, omits Vary: Origin without Origin, preserves hotlink rules, and uses PoP edge cache after auth', async () => {
+  const { env } = setupTestEnv()
+  const edgeStore = new Map<string, Response>()
+  let assetFetchCalls = 0
+
+  const assetEnv: Bindings = {
+    ...env,
+    ASSETS: {
+      fetch: async (req: Request) => {
+        assetFetchCalls += 1
+        const pathname = new URL(req.url).pathname
+        const isGlb = pathname.endsWith('.glb')
+        return new Response(`ASSET:${pathname}`, {
+          status: 200,
+          headers: {
+            'Content-Type': isGlb ? 'model/gltf-binary' : 'image/webp',
+            'Cache-Control': 'max-age=0',
+            Vary: 'Origin',
+            ETag: '"asset-v1"'
+          }
+        })
+      }
+    } as any
+  }
+
+  const originalCachesDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'caches')
+  Object.defineProperty(globalThis, 'caches', {
+    configurable: true,
+    writable: true,
+    value: {
+      default: {
+        match: async (req: Request) => {
+          const hit = edgeStore.get(req.url)
+          return hit ? hit.clone() : undefined
+        },
+        put: async (req: Request, res: Response) => {
+          edgeStore.set(req.url, res.clone())
+        }
+      }
+    }
+  })
+
+  try {
+    const realApp = loadRealBackendApp()
+
+    // 1. Authorized /assets/test-hash.webp overwrites upstream max-age=0 with immutable and strips Vary: Origin
+    const res1 = await realApp.fetch(
+      new Request('http://localhost/assets/test-hash.webp?v=1', {
+        headers: {
+          'Sec-Fetch-Site': 'same-origin',
+          'Sec-Fetch-Dest': 'image'
+        }
+      }),
+      assetEnv
+    )
+    assert.equal(res1.status, 200)
+    assert.equal(res1.headers.get('Cache-Control'), 'public, max-age=31536000, immutable')
+    assert.equal(res1.headers.get('Vary'), null, 'Static asset without Origin must not emit Vary: Origin')
+    assert.equal(res1.headers.get('Cross-Origin-Resource-Policy'), 'cross-origin')
+    assert.equal(res1.headers.get('Content-Disposition'), 'inline')
+    assert.equal(res1.headers.get('X-Content-Type-Options'), 'nosniff')
+    assert.equal(await res1.text(), 'ASSET:/assets/test-hash.webp')
+    assert.equal(assetFetchCalls, 1)
+
+    // 2. Hotlink rules MUST still block even when /assets/test-hash.webp is warm in PoP edge cache
+    const resDoc = await realApp.fetch(
+      new Request('http://localhost/assets/test-hash.webp', {
+        headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Dest': 'document' }
+      }),
+      assetEnv
+    )
+    assert.equal(resDoc.status, 302)
+
+    const resCross = await realApp.fetch(
+      new Request('http://localhost/assets/test-hash.webp', {
+        headers: { 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Dest': 'image' }
+      }),
+      assetEnv
+    )
+    assert.equal(resCross.status, 403)
+
+    const resNoAuth = await realApp.fetch(
+      new Request('http://localhost/assets/test-hash.webp'),
+      assetEnv
+    )
+    assert.equal(resNoAuth.status, 302)
+
+    // 3. Subsequent authorized request with different query string hits normalized PoP edge cache
+    const res2 = await realApp.fetch(
+      new Request('http://localhost/assets/test-hash.webp?v=2', {
+        headers: {
+          'Sec-Fetch-Site': 'same-origin',
+          'Sec-Fetch-Dest': 'image'
+        }
+      }),
+      assetEnv
+    )
+    assert.equal(res2.status, 200)
+    assert.equal(res2.headers.get('Cache-Control'), 'public, max-age=31536000, immutable')
+    assert.equal(res2.headers.get('Vary'), null)
+    assert.equal(await res2.text(), 'ASSET:/assets/test-hash.webp')
+    assert.equal(assetFetchCalls, 1, 'Normalized edge cache key must serve warm cache hit without calling ASSETS.fetch again')
+
+    // 4. Conditional If-None-Match on warm PoP edge cache returns 304 with security headers
+    const res304 = await realApp.fetch(
+      new Request('http://localhost/assets/test-hash.webp', {
+        headers: {
+          'Sec-Fetch-Site': 'same-origin',
+          'Sec-Fetch-Dest': 'image',
+          'If-None-Match': '"asset-v1"'
+        }
+      }),
+      assetEnv
+    )
+    assert.equal(res304.status, 304)
+    assert.equal(res304.headers.get('X-Content-Type-Options'), 'nosniff')
+    assert.equal(res304.headers.get('Vary'), null)
+
+    // 5. Unhashed /models/*.glb sets 7-day SWR Cache-Control and omits Vary: Origin
+    const resGlb = await realApp.fetch(
+      new Request('http://localhost/models/r59-memory-card.glb', {
+        headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Dest': 'empty' }
+      }),
+      assetEnv
+    )
+    assert.equal(resGlb.status, 200)
+    assert.equal(resGlb.headers.get('Cache-Control'), 'public, max-age=604800, stale-while-revalidate=86400')
+    assert.equal(resGlb.headers.get('Vary'), null)
+
+    // 6. CORS and Vary: Origin continue to work identically on /api/* and /admin/*
+    const resApiNoOrigin = await realApp.fetch(new Request('http://localhost/api/health'), assetEnv)
+    assert.equal(resApiNoOrigin.status, 200)
+    assert.equal(resApiNoOrigin.headers.get('Vary'), 'Origin')
+
+    const resApiCors = await realApp.fetch(
+      new Request('http://localhost/api/health', {
+        headers: { Origin: 'http://localhost:5173' }
+      }),
+      assetEnv
+    )
+    assert.equal(resApiCors.status, 200)
+    assert.equal(resApiCors.headers.get('Access-Control-Allow-Origin'), 'http://localhost:5173')
+    assert.equal(resApiCors.headers.get('Vary'), 'Origin')
+
+    const resAdminNoOrigin = await realApp.fetch(new Request('http://localhost/admin'), assetEnv)
+    assert.equal(resAdminNoOrigin.status, 301)
+    assert.equal(resAdminNoOrigin.headers.get('Vary'), 'Origin')
+  } finally {
+    if (originalCachesDescriptor) {
+      Object.defineProperty(globalThis, 'caches', originalCachesDescriptor)
+    } else {
+      delete (globalThis as any).caches
+    }
+  }
+})
+
+test('HTML responses on / set bfcache-safe Cache-Control and emit up to 3 Link rel=preload Early Hints without Vary: Origin', async () => {
+  const { env } = setupTestEnv()
+  const mockHtml = `<!doctype html>
+<html lang="en">
+  <head>
+    <link rel="preload" href="/assets/ClP0DXXT.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/assets/CM4MMJ-t.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/assets/extra-font.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="modulepreload" crossorigin href="/assets/XKyaHtl9.js">
+    <link rel="stylesheet" crossorigin href="/assets/BPn1yCOv.css">
+  </head>
+  <body><div id="root"></div></body>
+</html>`
+
+  const htmlEnv: Bindings = {
+    ...env,
+    ASSETS: {
+      fetch: async () =>
+        new Response(mockHtml, {
+          status: 200,
+          headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            ETag: '"index-html-v1"'
+          }
+        })
+    } as any
+  }
+
+  const realApp = loadRealBackendApp()
+
+  const resRoot = await realApp.fetch(new Request('http://localhost/'), htmlEnv)
+  assert.equal(resRoot.status, 200)
+  assert.equal(resRoot.headers.get('Cache-Control'), 'public, max-age=0, must-revalidate')
+  assert.equal(resRoot.headers.get('Vary'), null, 'HTML response without Origin must not carry Vary: Origin')
+
+  const linkHeader = resRoot.headers.get('Link') || ''
+  assert.ok(linkHeader.includes('</assets/BPn1yCOv.css>; rel=preload; as=style'), 'Link must preload primary stylesheet')
+  assert.ok(
+    linkHeader.includes('</assets/ClP0DXXT.woff2>; rel=preload; as=font; type=font/woff2; crossorigin'),
+    'Link must preload first critical woff2 font'
+  )
+  assert.ok(
+    linkHeader.includes('</assets/CM4MMJ-t.woff2>; rel=preload; as=font; type=font/woff2; crossorigin'),
+    'Link must preload second critical woff2 font'
+  )
+  assert.ok(!linkHeader.includes('extra-font.woff2'), 'Link hints must be capped at 3 total')
+  assert.ok(!linkHeader.includes('XKyaHtl9.js'), 'Link hints must not preload modulepreload scripts')
+  assert.ok(!linkHeader.includes('fetchpriority'), 'Font Link hints must not include fetchpriority')
+  assert.equal(await resRoot.text(), mockHtml, 'HTML body must remain untouched')
+
+  // SPA route with cached ETag also emits the same Early Hints and bfcache-safe Cache-Control
+  const resFaq = await realApp.fetch(new Request('http://localhost/faq'), htmlEnv)
+  assert.equal(resFaq.status, 200)
+  assert.equal(resFaq.headers.get('Cache-Control'), 'public, max-age=0, must-revalidate')
+  assert.equal(resFaq.headers.get('Link'), linkHeader)
+  assert.equal(await resFaq.text(), mockHtml)
+})

@@ -81,7 +81,7 @@
 
 .contact-section__camera {
   width: clamp(285px, 37cqw, 550px);
-  aspect-ratio: 1500 / 1700;
+  aspect-ratio: 1100 / 1247;
   left: max(-34px, calc((100cqw - 1440px) / 2 - 46px));
   top: clamp(265px, 22cqw, 316px);
   transform: rotate(0deg);
@@ -90,7 +90,7 @@
 
 .contact-section__lens {
   width: clamp(190px, 21cqw, 305px);
-  aspect-ratio: 1040 / 1686;
+  aspect-ratio: 640 / 1038;
   left: calc((100cqw + min(1440px, 100cqw)) / 2 - clamp(260px, 28cqw, 405px));
   top: -14%;
   transform: rotate(-103deg);
@@ -99,7 +99,7 @@
 
 .contact-section__seal {
   width: clamp(150px, 15cqw, 216px);
-  aspect-ratio: 1030 / 1034;
+  aspect-ratio: 700 / 703;
   left: calc(100cqw - clamp(110px, 10.7cqw, 154px));
   top: calc(100% - clamp(100px, 9.4cqw, 136px));
   transform: rotate(20deg);

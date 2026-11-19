@@ -26,16 +26,16 @@ export const aboutImages = {
   redCard: { id: 'red-card', imageUrl: redCard, alt: '', width: 717, height: 1121 },
   portrait: { id: 'portrait', imageUrl: portrait, alt: 'Kevin D Gonzalez holding his camera at an event.', width: 1199, height: 1318 },
   portraitFrame: { id: 'portrait-frame', imageUrl: portraitFrame, alt: '', width: 1158, height: 1358 },
-  signature: { id: 'signature-seal', imageUrl: signature, alt: '', width: 1030, height: 1034 },
+  signature: { id: 'signature-seal', imageUrl: signature, alt: '', width: 700, height: 703 },
   paper: { id: 'paper-background', imageUrl: paper, alt: '', width: 1829, height: 2560 },
 } satisfies Record<string, AboutImage>
 
 export const aboutDecorations: readonly AboutImage[] = [
-  { id: 'top-lens', imageUrl: topLens, alt: '', width: 1040, height: 1686 },
-  { id: 'top-right-lens', imageUrl: rightLens, alt: '', width: 1254, height: 1254 },
-  { id: 'bottom-right-camera', imageUrl: camera, alt: '', width: 1500, height: 1700 },
-  { id: 'left-flash', imageUrl: flash, alt: '', width: 1009, height: 1559 },
-  { id: 'left-memory-card', imageUrl: leftCard, alt: '', width: 1162, height: 1160 },
-  { id: 'top-memory-card', imageUrl: topCard, alt: '', width: 1254, height: 1254 },
-  { id: 'bottom-memory-card', imageUrl: bottomCard, alt: '', width: 1104, height: 1102 },
+  { id: 'top-lens', imageUrl: topLens, alt: '', width: 640, height: 1038 },
+  { id: 'top-right-lens', imageUrl: rightLens, alt: '', width: 760, height: 760 },
+  { id: 'bottom-right-camera', imageUrl: camera, alt: '', width: 1100, height: 1247 },
+  { id: 'left-flash', imageUrl: flash, alt: '', width: 520, height: 803 },
+  { id: 'left-memory-card', imageUrl: leftCard, alt: '', width: 256, height: 256 },
+  { id: 'top-memory-card', imageUrl: topCard, alt: '', width: 256, height: 256 },
+  { id: 'bottom-memory-card', imageUrl: bottomCard, alt: '', width: 256, height: 256 },
 ]

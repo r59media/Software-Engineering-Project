@@ -2,7 +2,7 @@ import { ActionLink } from '../../components/ActionLink'
 import arrowLeft from '../../assets/legal/arrow-left.svg'
 import { legalContent } from './legalContent'
 import { footerContent } from '../../config/footer'
-import { usePublicProfile } from '../../sections/about/useAboutData'
+import { usePublicProfile } from '../../hooks/usePublicProfile'
 import './LegalPage.css'
 
 export function LegalPage({ page }: { page: 'privacy' | 'terms' }) {

@@ -3,7 +3,7 @@ import { ActionLink } from '../../components/ActionLink'
 import arrowLeft from '../../assets/legal/arrow-left.svg'
 import { faqItems } from '../../config/faq'
 import { footerContent } from '../../config/footer'
-import { usePublicProfile } from '../../sections/about/useAboutData'
+import { usePublicProfile } from '../../hooks/usePublicProfile'
 import './FaqPage.css'
 
 interface FaqAccordionProps {

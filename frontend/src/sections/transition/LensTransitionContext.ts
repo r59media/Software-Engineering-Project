@@ -1,7 +1,10 @@
 import { createContext } from 'react'
 
+export type LensApertureListener = (aperture: number, force?: boolean) => void
+
 export interface LensTransitionController {
-  subscribe: (listener: (aperture: number) => void) => () => void
+  subscribe: (listener: LensApertureListener) => () => void
+  setAperture?: (value: number, force?: boolean) => void
   ready: () => void
   fail: () => void
 }

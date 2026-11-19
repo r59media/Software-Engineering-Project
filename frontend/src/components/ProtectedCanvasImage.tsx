@@ -14,6 +14,7 @@ export interface ProtectedCanvasImageProps {
   loading?: 'lazy' | 'eager' | string
   fetchPriority?: 'high' | 'low' | 'auto'
   forceOriginal?: boolean
+  rootMargin?: string
   placeholderColor?: string
   onError?: () => void
   onLoad?: () => void
@@ -107,7 +108,11 @@ function getCachedDrawable(src: string): DrawableSource | undefined {
   return cached
 }
 
-function fetchProtectedBlob(src: string, fetchPriority?: 'high' | 'low' | 'auto'): Promise<Blob> {
+function fetchProtectedBlob(
+  src: string,
+  fetchPriority?: 'high' | 'low' | 'auto',
+  signal?: AbortSignal,
+): Promise<Blob> {
   const cached = blobCache.get(src)
   if (cached) {
     cacheBlob(src, cached)
@@ -125,8 +130,11 @@ function fetchProtectedBlob(src: string, fetchPriority?: 'high' | 'low' | 'auto'
       'X-R59-Client': 'media-viewer',
     },
   }
-  if (fetchPriority === 'high') {
-    requestInit.priority = 'high'
+  if (fetchPriority === 'high' || fetchPriority === 'low') {
+    requestInit.priority = fetchPriority
+  }
+  if (signal) {
+    requestInit.signal = signal
   }
 
   const request = fetch(src, requestInit)
@@ -171,7 +179,11 @@ async function decodeBlobToDrawable(blob: Blob): Promise<DrawableSource> {
   }
 }
 
-async function getOrDecodeDrawable(src: string, fetchPriority?: 'high' | 'low' | 'auto'): Promise<DrawableSource> {
+async function getOrDecodeDrawable(
+  src: string,
+  fetchPriority?: 'high' | 'low' | 'auto',
+  signal?: AbortSignal,
+): Promise<DrawableSource> {
   const cached = getCachedDrawable(src)
   if (cached) return cached
 
@@ -179,7 +191,12 @@ async function getOrDecodeDrawable(src: string, fetchPriority?: 'high' | 'low' |
   if (inFlight) return inFlight
 
   const decodePromise = (async () => {
-    const blob = await fetchProtectedBlob(src, fetchPriority)
+    const blob = await fetchProtectedBlob(src, fetchPriority, signal)
+    if (signal?.aborted) {
+      const abortError = new Error('Aborted')
+      abortError.name = 'AbortError'
+      throw abortError
+    }
     const rechecked = getCachedDrawable(src)
     if (rechecked) return rechecked
 
@@ -204,14 +221,92 @@ export async function preloadProtectedImage(src: string): Promise<void> {
   }
 }
 
-function drawDrawableToCanvas(canvas: HTMLCanvasElement, source: DrawableSource): boolean {
+const yieldToMain = (): Promise<void> =>
+  typeof window !== 'undefined' &&
+  'scheduler' in window &&
+  typeof (window as unknown as { scheduler?: { yield?: () => Promise<void> } }).scheduler?.yield === 'function'
+    ? (window as unknown as { scheduler: { yield: () => Promise<void> } }).scheduler.yield()
+    : new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+// eslint-disable-next-line react-refresh/only-export-components
+export async function prewarmProtectedImages(
+  urls: string[],
+  options?: { signal?: AbortSignal },
+): Promise<void> {
+  const signal = options?.signal
+  if (signal?.aborted || urls.length === 0) return
+
+  const uniqueUrls = Array.from(new Set(urls.filter(Boolean)))
+  const pendingUrls = uniqueUrls.filter((url) => {
+    if (getCachedDrawable(url)) return false
+    if (inFlightDecodes.has(url) || inFlightFetches.has(url)) return false
+    return true
+  })
+
+  if (pendingUrls.length === 0) return
+
+  const BATCH_SIZE = 2
+  for (let i = 0; i < pendingUrls.length; i += BATCH_SIZE) {
+    if (signal?.aborted) return
+
+    const batch = pendingUrls.slice(i, i + BATCH_SIZE)
+    await Promise.allSettled(
+      batch.map(async (url) => {
+        if (
+          signal?.aborted ||
+          getCachedDrawable(url) ||
+          inFlightDecodes.has(url) ||
+          (!blobCache.has(url) && inFlightFetches.has(url))
+        ) {
+          return
+        }
+        try {
+          await getOrDecodeDrawable(url, 'low', signal)
+        } catch {
+          // Ignore aborted/failed prewarm errors silently
+        }
+      }),
+    )
+
+    if (i + BATCH_SIZE < pendingUrls.length && !signal?.aborted) {
+      await yieldToMain()
+    }
+  }
+}
+
+function computeTargetDimensions(
+  canvas: HTMLCanvasElement,
+  srcW: number,
+  srcH: number,
+  propWidth?: number,
+): { targetW: number; targetH: number } {
+  const rect = canvas.getBoundingClientRect()
+  let cssWidth = rect.width > 0 ? rect.width : canvas.clientWidth
+  if (rect.width > 0 && rect.height > 0 && typeof window !== 'undefined') {
+    if (window.getComputedStyle(canvas).objectFit === 'cover') {
+      cssWidth = Math.max(cssWidth, rect.height * (srcW / srcH))
+    }
+  }
+  if (cssWidth <= 0) {
+    cssWidth = propWidth && propWidth > 0 ? propWidth : srcW
+  }
+
+  const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1
+  let targetW = Math.min(srcW, MAX_CANVAS_DIMENSION, Math.max(1, Math.ceil(cssWidth * dpr)))
+  let targetH = Math.max(1, Math.round(targetW * (srcH / srcW)))
+  if (targetH > MAX_CANVAS_DIMENSION) {
+    targetH = MAX_CANVAS_DIMENSION
+    targetW = Math.max(1, Math.round(targetH * (srcW / srcH)))
+  }
+  return { targetW, targetH }
+}
+
+function drawDrawableToCanvas(canvas: HTMLCanvasElement, source: DrawableSource, propWidth?: number): boolean {
   const { width: srcW, height: srcH } = getDrawableDimensions(source)
   if (srcW === 0 || srcH === 0) {
     return false
   }
-  const scale = Math.min(1, MAX_CANVAS_DIMENSION / Math.max(srcW, srcH))
-  const targetW = Math.max(1, Math.round(srcW * scale))
-  const targetH = Math.max(1, Math.round(srcH * scale))
+  const { targetW, targetH } = computeTargetDimensions(canvas, srcW, srcH, propWidth)
   if (canvas.width !== targetW || canvas.height !== targetH) {
     canvas.width = targetW
     canvas.height = targetH
@@ -219,7 +314,9 @@ function drawDrawableToCanvas(canvas: HTMLCanvasElement, source: DrawableSource)
   const ctx = canvas.getContext('2d')
   if (ctx) {
     ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(source, 0, 0, targetW, targetH)
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height)
     return true
   }
   return false
@@ -238,14 +335,20 @@ export function ProtectedCanvasImage({
   loading,
   fetchPriority,
   forceOriginal = false,
+  rootMargin = '600px',
   placeholderColor = 'transparent',
   onError,
   onLoad,
 }: ProtectedCanvasImageProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const widthRef = useRef(width)
   const onErrorRef = useRef(onError)
   const onLoadRef = useRef(onLoad)
+
+  useEffect(() => {
+    widthRef.current = width
+  }, [width])
 
   useEffect(() => {
     onErrorRef.current = onError
@@ -282,16 +385,18 @@ export function ProtectedCanvasImage({
       return containerRef.current?.getBoundingClientRect().width ?? 0
     }
 
-    const renderDrawable = (source: DrawableSource, cacheKey: string) => {
+    const renderDrawable = (source: DrawableSource, cacheKey: string, notifyLoad = true) => {
       if (signal.aborted || offscreenReleased) return
       const canvas = canvasRef.current
       if (!canvas) return
       try {
-        if (drawDrawableToCanvas(canvas, source)) {
+        if (drawDrawableToCanvas(canvas, source, widthRef.current)) {
           hasDrawn = true
           offscreenReleased = false
           setLoadedSrc(src)
-          onLoadRef.current?.()
+          if (notifyLoad) {
+            onLoadRef.current?.()
+          }
         }
       } catch (err) {
         if (drawableCache.get(cacheKey) === source) {
@@ -299,6 +404,17 @@ export function ProtectedCanvasImage({
           if ('close' in source && typeof source.close === 'function') {
             source.close()
           }
+        }
+        throw err
+      }
+    }
+
+    async function decodeWithRetry(targetSrc: string): Promise<DrawableSource> {
+      try {
+        return await getOrDecodeDrawable(targetSrc, fetchPriority)
+      } catch (err: unknown) {
+        if (!signal.aborted && err instanceof Error && err.name === 'AbortError') {
+          return await getOrDecodeDrawable(targetSrc, fetchPriority)
         }
         throw err
       }
@@ -313,7 +429,7 @@ export function ProtectedCanvasImage({
           renderDrawable(cachedDrawable, targetSrc)
           return
         }
-        const drawable = await getOrDecodeDrawable(targetSrc, fetchPriority)
+        const drawable = await decodeWithRetry(targetSrc)
         if (signal.aborted || offscreenReleased) return
         renderDrawable(drawable, targetSrc)
       } catch (err: unknown) {
@@ -339,7 +455,7 @@ export function ProtectedCanvasImage({
           return
         }
 
-        const drawable = await getOrDecodeDrawable(effectiveSrc, fetchPriority)
+        const drawable = await decodeWithRetry(effectiveSrc)
         if (signal.aborted || numericWidth < requestedWidth) return
 
         loadedWidth = Math.max(loadedWidth, numericWidth)
@@ -388,20 +504,50 @@ export function ProtectedCanvasImage({
 
     const canvas = canvasRef.current
     const observeTarget = containerRef.current ?? canvas
-    if (src.includes('/api/media/') && !forceOriginal && typeof ResizeObserver !== 'undefined' && observeTarget) {
+    if (typeof ResizeObserver !== 'undefined' && observeTarget) {
       resizeObserver = new ResizeObserver(() => {
-        if (!started || signal.aborted) return
-        const currentMax = Math.max(loadedWidth, requestedWidth)
-        if (currentMax === Infinity) return
+        if (!started || signal.aborted || offscreenReleased) return
+        if (src.includes('/api/media/') && !forceOriginal) {
+          const currentMax = Math.max(loadedWidth, requestedWidth)
+          if (currentMax !== Infinity) {
+            const cssWidth = measureCssWidth()
+            if (cssWidth > 0) {
+              const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+              const neededWidth = pickRequiredMediaWidth(cssWidth, dpr, forceOriginal)
+              const neededNumeric = neededWidth ?? Infinity
+              if (neededNumeric > currentMax) {
+                void loadVariant(neededWidth, true)
+                return
+              }
+            }
+          }
+        }
 
-        const cssWidth = measureCssWidth()
-        if (cssWidth <= 0) return
+        if (!hasDrawn || !canvas) return
+        const cachedDrawable = getCachedDrawable(activeEffectiveSrc)
+        if (!cachedDrawable) return
+        const { width: srcW, height: srcH } = getDrawableDimensions(cachedDrawable)
+        if (srcW === 0 || srcH === 0) return
 
-        const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
-        const neededWidth = pickRequiredMediaWidth(cssWidth, dpr, forceOriginal)
-        const neededNumeric = neededWidth ?? Infinity
-        if (neededNumeric > currentMax) {
-          void loadVariant(neededWidth, true)
+        const { targetW, targetH } = computeTargetDimensions(canvas, srcW, srcH, widthRef.current)
+        const maxTargetW = Math.min(srcW, MAX_CANVAS_DIMENSION)
+        const maxTargetH = Math.min(srcH, MAX_CANVAS_DIMENSION)
+        const grewEnough =
+          (targetW > canvas.width * 1.15 && canvas.width < maxTargetW) ||
+          (targetH > canvas.height * 1.15 && canvas.height < maxTargetH)
+
+        if (grewEnough && (targetW > canvas.width || targetH > canvas.height)) {
+          if (rafId !== null) {
+            cancelAnimationFrame(rafId)
+          }
+          rafId = requestAnimationFrame(() => {
+            rafId = null
+            if (signal.aborted || offscreenReleased) return
+            const current = getCachedDrawable(activeEffectiveSrc)
+            if (current) {
+              renderDrawable(current, activeEffectiveSrc, false)
+            }
+          })
         }
       })
       resizeObserver.observe(observeTarget)
@@ -439,7 +585,7 @@ export function ProtectedCanvasImage({
             void loadImage()
           }
         },
-        { rootMargin: '600px' },
+        { rootMargin },
       )
       observer.observe(canvas)
     }
@@ -453,7 +599,7 @@ export function ProtectedCanvasImage({
         cancelAnimationFrame(rafId)
       }
     }
-  }, [src, eager, loading, fetchPriority, forceOriginal])
+  }, [src, eager, loading, fetchPriority, forceOriginal, rootMargin])
 
   const canvasStyle: CSSProperties = objectPosition ? { objectPosition } : {}
   const containerStyle: CSSProperties = {

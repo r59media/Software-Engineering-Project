@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { About } from '../about/About'
 import { RecentPhotoshoot } from '../recent/RecentPhotoshoot'
-import { LensTransitionContext } from './LensTransitionContext'
+import {
+  LensTransitionContext,
+  type LensApertureListener,
+  type LensTransitionController,
+} from './LensTransitionContext'
 import { TransitionLens } from './TransitionLens'
 import { aboutLens } from '../../config/aboutLens'
 import { isIPad } from '../../utils/browserEnv'
@@ -23,16 +27,21 @@ export function AboutToRecent() {
   const [fits, setFits] = useState(false)
   const [failed, setFailed] = useState(false)
   const [reduced, setReduced] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
-  const listeners = useRef(new Set<(value: number) => void>())
-  const controller = useMemo(() => ({
+  const listeners = useRef(new Set<LensApertureListener>())
+  const wasLensVisibleRef = useRef(false)
+  const controller = useMemo<LensTransitionController>(() => ({
     subscribe: () => () => {},
+    setAperture: () => {},
     ready: () => setLoaded(true),
     fail: () => setFailed(true),
   }), [])
   const overlayController = useMemo(() => ({
-    subscribe(listener: (value: number) => void) {
+    subscribe(listener: LensApertureListener) {
       listeners.current.add(listener)
       return () => { listeners.current.delete(listener) }
+    },
+    setAperture(value: number, force = false) {
+      listeners.current.forEach(listener => listener(value, force))
     },
     ready: () => setReadyUrl(url),
     fail: () => setFailed(true),
@@ -40,6 +49,27 @@ export function AboutToRecent() {
   const canReserve = !failed && !reduced && fits
   const canAnimate = loaded && canReserve
   const enabled = canAnimate && readyUrl === url
+
+  useEffect(() => {
+    const host = root.current
+    if (!host || !enabled || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry) return
+        if (entry.isIntersecting) {
+          host.dataset.transitionWarm = 'true'
+        } else {
+          delete host.dataset.transitionWarm
+        }
+      },
+      { rootMargin: '450px' }
+    )
+    observer.observe(host)
+    return () => {
+      observer.disconnect()
+      delete host.dataset.transitionWarm
+    }
+  }, [enabled])
 
   useEffect(() => {
     const media = matchMedia(aboutLens.mobileQuery)
@@ -109,7 +139,6 @@ export function AboutToRecent() {
   useEffect(() => {
     const host = root.current
     if (!host || !enabled) return
-    const subscribers = listeners.current
     const stage = host.querySelector<HTMLElement>('.lens-transition__stage')!
     const about = host.querySelector<HTMLElement>('#about')!
     const lens = host.querySelector<HTMLElement>('.about__lens')!
@@ -158,11 +187,13 @@ export function AboutToRecent() {
         prevRecentVisible = recentVisible
         recent.style.visibility = recentVisible ? 'visible' : 'hidden'
       }
-      const overlayVisible = progress > 0 && progress < 1
-      if (overlayVisible !== prevOverlayVisible) {
-        prevOverlayVisible = overlayVisible
-        overlay.style.visibility = overlayVisible ? 'visible' : 'hidden'
+      const active = progress > 0 && progress < 1
+      if (active !== prevOverlayVisible) {
+        prevOverlayVisible = active
+        overlay.style.opacity = active ? '1' : '0'
       }
+      const forcePaint = active && !wasLensVisibleRef.current
+      wasLensVisibleRef.current = active
       const lensHidden = progress > 0
       if (lensHidden !== prevLensHidden) {
         prevLensHidden = lensHidden
@@ -184,7 +215,7 @@ export function AboutToRecent() {
         prevProgressState = progressState
         host.dataset.progress = progressState
       }
-      subscribers.forEach(listener => listener(aperture))
+      overlayController.setAperture(aperture, forcePaint)
     }
     const syncViewportHeight = () => {
       const nextViewport = getViewportHeight(host)
@@ -321,9 +352,10 @@ export function AboutToRecent() {
       prevRecentInert = null
       prevAboutInert = null
       prevProgressState = null
-      subscribers.forEach(listener => listener(0))
+      wasLensVisibleRef.current = false
+      overlayController.setAperture(0, false)
     }
-  }, [enabled, listeners])
+  }, [enabled, overlayController])
 
   return <LensTransitionContext.Provider value={controller}>
     <div ref={root} className="lens-transition" data-enabled={enabled} data-reserved={canReserve}>

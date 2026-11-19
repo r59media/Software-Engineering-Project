@@ -1,6 +1,24 @@
-import type { PointerEvent } from 'react'
-import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
+import { useEffect, type PointerEvent } from 'react'
+import { ProtectedCanvasImage, prewarmProtectedImages } from '../../components/ProtectedCanvasImage'
+import { aboutDecorations, aboutImages } from '../../config/about'
 import type { AboutImage } from '../../types/about'
+import { isSlowConnection } from '../../utils/browserEnv'
+
+const ABOUT_ARTWORK_URLS = Array.from(
+  new Set([
+    aboutImages.paper.imageUrl,
+    aboutImages.yellowCard.imageUrl,
+    aboutImages.redCard.imageUrl,
+    aboutImages.portraitFrame.imageUrl,
+    aboutImages.signature.imageUrl,
+    ...aboutDecorations.map((d) => d.imageUrl),
+  ]),
+)
+
+let mountedArtworkCount = 0
+let prewarmStarted = false
+let activePrewarmController: AbortController | null = null
+let cancelPrewarmTrigger: (() => void) | null = null
 
 export interface AboutArtworkProps {
   image: AboutImage
@@ -17,6 +35,63 @@ export function AboutArtwork({
   onPointerLeave,
   onPointerCancel,
 }: AboutArtworkProps) {
+  useEffect(() => {
+    mountedArtworkCount += 1
+
+    if (mountedArtworkCount === 1 && !prewarmStarted && !isSlowConnection && typeof window !== 'undefined') {
+      let idleId: number | null = null
+      let timeoutId: number | null = null
+
+      const startPrewarm = () => {
+        if (prewarmStarted) return
+        prewarmStarted = true
+        cancelPrewarmTrigger?.()
+        cancelPrewarmTrigger = null
+        const controller = new AbortController()
+        activePrewarmController = controller
+        void prewarmProtectedImages(ABOUT_ARTWORK_URLS, { signal: controller.signal })
+      }
+
+      const onScroll = () => {
+        if (window.scrollY > 32) {
+          startPrewarm()
+        }
+      }
+
+      cancelPrewarmTrigger = () => {
+        window.removeEventListener('scroll', onScroll)
+        if (idleId !== null && typeof window.cancelIdleCallback === 'function') {
+          window.cancelIdleCallback(idleId)
+          idleId = null
+        }
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId)
+          timeoutId = null
+        }
+      }
+
+      window.addEventListener('scroll', onScroll, { passive: true })
+      if (typeof window.requestIdleCallback === 'function') {
+        idleId = window.requestIdleCallback(() => startPrewarm(), { timeout: 1400 })
+      } else {
+        timeoutId = window.setTimeout(() => startPrewarm(), 900)
+      }
+    }
+
+    return () => {
+      mountedArtworkCount = Math.max(0, mountedArtworkCount - 1)
+      if (mountedArtworkCount === 0) {
+        cancelPrewarmTrigger?.()
+        cancelPrewarmTrigger = null
+        if (activePrewarmController) {
+          activePrewarmController.abort()
+          activePrewarmController = null
+          prewarmStarted = false
+        }
+      }
+    }
+  }, [])
+
   return (
     <div
       className={`about__artwork ${className}`}
@@ -34,6 +109,7 @@ export function AboutArtwork({
           containerClassName="about__art-container"
           width={image.width}
           height={image.height}
+          rootMargin="900px"
         />
       </div>
     </div>

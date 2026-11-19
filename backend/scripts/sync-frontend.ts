@@ -9,6 +9,9 @@ const PUBLIC_HEADERS = `/assets/*.js
 /assets/*.woff2
   Cache-Control: public, max-age=31536000, immutable
 
+/assets/*.webp
+  Cache-Control: public, max-age=31536000, immutable
+
 /assets/*.glb
   Cache-Control: public, max-age=31536000, immutable
 
