@@ -11,7 +11,7 @@ import revealLogo from '../../assets/footer/logo-reveal-state.svg'
 import divider from '../../assets/footer/divider.svg'
 import upArrow from '../../assets/footer/back-to-top.svg'
 import { FooterBackground } from './FooterBackground'
-import { usePublicProfile } from '../about/useAboutData'
+import { usePublicProfile } from '../../hooks/usePublicProfile'
 import './SiteFooter.css'
 
 function publicSocialUrl(href?: string) {

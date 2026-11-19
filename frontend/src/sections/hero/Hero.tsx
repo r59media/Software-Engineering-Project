@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import type { HeroDestinations, HeroSlide } from '../../types/hero'
 import { ActionLink } from '../../components/ActionLink'
 import { ProtectedCanvasImage, preloadProtectedImage } from '../../components/ProtectedCanvasImage'
-import { usePublicProfile } from '../about/useAboutData'
+import { usePublicProfile } from '../../hooks/usePublicProfile'
 import './Hero.css'
 
 export interface HeroProps {

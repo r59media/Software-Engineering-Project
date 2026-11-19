@@ -51,7 +51,7 @@
           drop-shadow(0 14px 24px rgba(17, 17, 17, 0.22))
           drop-shadow(4px 20px 32px rgba(17, 17, 17, 0.12));
   transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.35s ease;
-  will-change: transform, filter;
+  will-change: transform;
 }
 .about__portrait [data-about-part="portrait"] { position: absolute; left: 12%; top: 9%; width: 76%; height: 69%; }
 .about__portrait [data-about-part="portrait"] .about__art { height: 100%; object-fit: cover; }
@@ -70,8 +70,6 @@
 .about__decorations .about__art {
   filter: drop-shadow(8px 12px 9px var(--color-black-30));
   backface-visibility: hidden;
-  transform-style: preserve-3d;
-  will-change: transform;
 }
 .about__decorations [data-about-part="top-lens"] { width: 15%; left: 35%; top: -11cqw; }
 .about__decorations [data-about-part="top-lens"] .about__art { transform: rotate(78.1deg); }

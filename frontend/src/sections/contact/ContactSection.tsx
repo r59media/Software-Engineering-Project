@@ -125,13 +125,13 @@ export function ContactSection({ photos = contactPhotos, onSendInquiry }: Contac
   return <section id="contact" className="contact-section" data-step={step} aria-labelledby="contact-title">
     <div className="contact-section__art" aria-hidden="true">
       <div className="contact-section__camera">
-        <ProtectedCanvasImage src={camera} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={1500} height={1700} />
+        <ProtectedCanvasImage src={camera} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={1100} height={1247} />
       </div>
       <div className="contact-section__lens">
-        <ProtectedCanvasImage src={lens} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={1040} height={1686} />
+        <ProtectedCanvasImage src={lens} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={640} height={1038} />
       </div>
       <div className="contact-section__seal">
-        <ProtectedCanvasImage src={seal} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={1030} height={1034} />
+        <ProtectedCanvasImage src={seal} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={700} height={703} />
       </div>
     </div>
     <AnimatePresence>

@@ -23,6 +23,6 @@ export function TransitionLens({ url, controller }: { url: string; controller: L
   }, [url])
 
   return <TransitionBoundary key={url} fail={controller.fail}>
-    <Suspense fallback={null}><LensScene url={url} aperture={0} transition={controller} /></Suspense>
+    <Suspense fallback={null}><LensScene url={url} aperture={0} transition={controller} bakeStaticBezel /></Suspense>
   </TransitionBoundary>
 }

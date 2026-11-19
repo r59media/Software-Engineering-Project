@@ -39,11 +39,15 @@
   width: 640px;
   height: 640px;
   z-index: 3;
-  visibility: hidden;
+  opacity: 0;
+  contain: layout style paint;
   pointer-events: none;
   transform-origin: top left;
+  backface-visibility: hidden;
 }
-.lens-transition[data-enabled="true"] .lens-transition__lens { will-change: transform; }
+.lens-transition[data-enabled="true"][data-transition-warm="true"] .lens-transition__lens {
+  will-change: transform, opacity;
+}
 @media (prefers-reduced-motion: reduce) {
   .lens-transition__lens { display: none; will-change: auto; }
 }
@@ -62,3 +66,15 @@
 
 /* R3F descendants must never intercept gallery clicks or touch gestures. */
 .lens-transition__lens * { pointer-events: none !important; }
+
+.lens-transition[data-progress="active"] .about .about__art,
+.lens-transition[data-progress="active"] .about .about__portrait-pose,
+.lens-transition[data-progress="1"] .about .about__art,
+.lens-transition[data-progress="1"] .about .about__portrait-pose {
+  will-change: auto;
+}
+
+.lens-transition[data-progress="active"] .recent__dot--current {
+  filter: none;
+  -webkit-filter: none;
+}

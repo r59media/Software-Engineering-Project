@@ -77,8 +77,6 @@ app.use('*', async (c, next) => {
 
 // CORS — restrict to known frontend origins and same-origin requests (Finding 6)
 app.use('*', async (c, next) => {
-  c.header('Vary', 'Origin')
-
   const configuredOrigins = (c.env.ALLOWED_ORIGINS || '')
     .split(',')
     .map(o => o.trim())
@@ -99,6 +97,11 @@ app.use('*', async (c, next) => {
 
   const requestOrigin = c.req.header('Origin') || ''
   const currentUrl = new URL(c.req.url)
+  const isApiOrAdmin =
+    currentUrl.pathname === '/api' ||
+    currentUrl.pathname.startsWith('/api/') ||
+    currentUrl.pathname === '/admin' ||
+    currentUrl.pathname.startsWith('/admin/')
 
   // Explicitly disallow 'null' and verify origin is in allowed list or same-origin
   const isAllowed = Boolean(
@@ -108,8 +111,19 @@ app.use('*', async (c, next) => {
   )
 
   if (!isAllowed) {
+    // Only vary on Origin for API/admin routes; static GET/HEAD assets must not fragment PoP cache
+    if (isApiOrAdmin) {
+      c.header('Vary', 'Origin')
+    }
     // For non-allowed origins, proceed without reflecting Access-Control-Allow-Origin
-    return await next()
+    await next()
+    if (isApiOrAdmin && c.res) {
+      const existingVary = c.res.headers.get('Vary') || ''
+      if (!existingVary.toLowerCase().split(',').map(v => v.trim()).includes('origin')) {
+        c.header('Vary', 'Origin', { append: true })
+      }
+    }
+    return
   }
 
   const corsMiddleware = cors({
@@ -1023,6 +1037,61 @@ app.get('/api/media/:file_key', mediaGetHandler)
 app.get('/api/media/:file_key{.*}', mediaGetHandler)
 app.get('/api/media/*', mediaGetHandler)
 
+const MAX_EARLY_HINT_LINKS = 3
+let cachedEarlyHintEtag = ''
+let cachedEarlyHintLinks: string[] | null = null
+
+function stripVaryOrigin(headers: Headers): void {
+  const vary = headers.get('Vary')
+  if (!vary) return
+  const remaining = vary
+    .split(',')
+    .map(v => v.trim())
+    .filter(v => v && v.toLowerCase() !== 'origin')
+  if (remaining.length > 0) {
+    headers.set('Vary', remaining.join(', '))
+  } else {
+    headers.delete('Vary')
+  }
+}
+
+const HTML_ATTR_REGEXES = {
+  rel: /(?:^|\s)rel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+))/i,
+  href: /(?:^|\s)href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+))/i,
+  as: /(?:^|\s)as\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>\x60]+))/i
+} as const
+
+function getHtmlAttr(tag: string, attrName: keyof typeof HTML_ATTR_REGEXES): string | null {
+  const match = tag.match(HTML_ATTR_REGEXES[attrName])
+  return match ? (match[1] ?? match[2] ?? match[3] ?? null) : null
+}
+
+function extractEarlyHintLinks(html: string): string[] {
+  const styleHints: string[] = []
+  const fontHints: string[] = []
+  const seenHrefs = new Set<string>()
+  const linkTags = html.match(/<link\b[^>]*>/gi) || []
+
+  for (const tag of linkTags) {
+    const relTokens = (getHtmlAttr(tag, 'rel') || '').trim().toLowerCase().split(/\s+/).filter(Boolean)
+    const href = (getHtmlAttr(tag, 'href') || '').trim()
+    if (!href || !href.startsWith('/assets/') || /[\s<>;"'\r\n]/.test(href) || seenHrefs.has(href)) continue
+
+    if (relTokens.includes('stylesheet') && (/\.css(?:$|[?#])/i.test(href) || !href.includes('.'))) {
+      seenHrefs.add(href)
+      styleHints.push(`<${href}>; rel=preload; as=style`)
+    } else if (relTokens.includes('preload')) {
+      const asAttr = (getHtmlAttr(tag, 'as') || '').trim().toLowerCase()
+      if ((asAttr === 'font' || /\.woff2(?:$|[?#])/i.test(href)) && /\.woff2(?:$|[?#])/i.test(href)) {
+        seenHrefs.add(href)
+        fontHints.push(`<${href}>; rel=preload; as=font; type=font/woff2; crossorigin`)
+      }
+    }
+  }
+
+  return [...styleHints.slice(0, 1), ...fontHints.slice(0, 2), ...styleHints.slice(1)].slice(0, MAX_EARLY_HINT_LINKS)
+}
+
 app.get('*', async (c) => {
   const url = new URL(c.req.url)
   if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
@@ -1047,6 +1116,37 @@ app.get('*', async (c) => {
     const isAuthorizedClient = await isAuthorizedMediaRequest(c)
     if (!isAuthorizedClient) {
       return c.redirect('/', 302)
+    }
+  }
+
+  const isHashedAsset = url.pathname.startsWith('/assets/') && STATIC_EXT_REGEX.test(url.pathname)
+  const isModelAsset = (url.pathname.startsWith('/models/') || is3DModel) && STATIC_EXT_REGEX.test(url.pathname)
+  const isEdgeCacheableAsset =
+    (isHashedAsset || isModelAsset) &&
+    c.req.method === 'GET' &&
+    !c.req.header('Range')
+  const edgeCacheKeyUrl = isEdgeCacheableAsset ? `${url.origin}${url.pathname}` : null
+
+  if (edgeCacheKeyUrl) {
+    const cached = await tryEdgeCacheMatch(edgeCacheKeyUrl)
+    if (cached) {
+      const headers = new Headers(cached.headers)
+      headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
+      if (isProtectedAsset) {
+        headers.set('Cross-Origin-Resource-Policy', getCorpPolicy(c))
+        headers.set('Content-Disposition', 'inline')
+        headers.set('X-Content-Type-Options', 'nosniff')
+      }
+      stripVaryOrigin(headers)
+      const cachedEtag = headers.get('ETag') || ''
+      if (cachedEtag && matchesIfNoneMatch(c.req.header('If-None-Match'), cachedEtag)) {
+        return new Response(null, { status: 304, headers })
+      }
+      return new Response(cached.body, {
+        status: cached.status,
+        statusText: cached.statusText,
+        headers
+      })
     }
   }
 
@@ -1086,14 +1186,56 @@ app.get('*', async (c) => {
     headers.set('Content-Disposition', 'inline')
     headers.set('X-Content-Type-Options', 'nosniff')
   }
-  if (assetRes.ok && (url.pathname.startsWith('/assets/') || is3DModel) && !headers.has('Cache-Control')) {
-    headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+  stripVaryOrigin(headers)
+
+  const contentType = (headers.get('content-type') || '').toLowerCase()
+  const isHtmlResponse = contentType.includes('text/html')
+
+  if (assetRes.ok && !isHtmlResponse) {
+    if (isHashedAsset) {
+      headers.set('Cache-Control', 'public, max-age=31536000, immutable')
+    } else if (isModelAsset && !(headers.get('Cache-Control') || '').includes('immutable')) {
+      headers.set('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400')
+    }
   }
-  return new Response(assetRes.body, {
+
+  if (assetRes.ok && isHtmlResponse) {
+    headers.set('Cache-Control', 'public, max-age=0, must-revalidate')
+    const etag = headers.get('etag') || ''
+    let hints: string[]
+    if (etag && cachedEarlyHintLinks && cachedEarlyHintEtag === etag) {
+      hints = cachedEarlyHintLinks
+    } else {
+      const html = await assetRes.clone().text()
+      hints = extractEarlyHintLinks(html)
+      if (etag) {
+        cachedEarlyHintEtag = etag
+        cachedEarlyHintLinks = hints
+      }
+    }
+    for (const hint of hints) {
+      headers.append('Link', hint)
+    }
+  }
+
+  const responseToReturn = new Response(assetRes.body, {
     status: assetRes.status,
     statusText: assetRes.statusText,
     headers
   })
+
+  if (edgeCacheKeyUrl && assetRes.status === 200 && !isHtmlResponse) {
+    const cacheHeaders = new Headers(headers)
+    stripVaryOrigin(cacheHeaders)
+    const responseToCache = new Response(responseToReturn.clone().body, {
+      status: assetRes.status,
+      statusText: assetRes.statusText,
+      headers: cacheHeaders
+    })
+    scheduleEdgeCachePut(getExecutionCtx(c), edgeCacheKeyUrl, responseToCache)
+  }
+
+  return responseToReturn
 })
 
 app.notFound((c) => {
