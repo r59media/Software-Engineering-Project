@@ -43,13 +43,10 @@
   contain: layout style paint;
   pointer-events: none;
   transform-origin: top left;
+  backface-visibility: hidden;
 }
 .lens-transition[data-enabled="true"][data-transition-warm="true"] .lens-transition__lens {
   will-change: transform, opacity;
-}
-html:not([data-engine="webkit"]) .lens-transition[data-enabled="true"][data-transition-warm="true"] .lens-transition__recent {
-  will-change: clip-path;
-  contain: layout style paint;
 }
 @media (prefers-reduced-motion: reduce) {
   .lens-transition__lens { display: none; will-change: auto; }

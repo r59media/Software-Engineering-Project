@@ -12,6 +12,7 @@ import './RecentPhotoshoot.css'
 interface RecentPhotoshootProps {
   photos?: readonly PhotoshootPhoto[]
   initialPhotoId?: string
+  paused?: boolean
 }
 
 type SlotConfig = TargetAndTransition
@@ -86,7 +87,7 @@ const getOffscreenRight = (isMobile: boolean): SlotConfig => ({
 
 const CAROUSEL_EASING: [number, number, number, number] = [0.25, 1, 0.5, 1]
 
-export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = recentInitialPhotoId }: RecentPhotoshootProps) {
+export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = recentInitialPhotoId, paused = false }: RecentPhotoshootProps) {
   // Explicit photos (e.g. tests, previews) win; otherwise show what the admin panel manages
   const livePhotos = useRecentPhotos(recentPhotos)
   const photos = photosOverride ?? livePhotos
@@ -106,7 +107,7 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
   const activePhoto = items[activeIndex]
 
   useEffect(() => {
-    if (items.length === 0) return
+    if (paused || items.length === 0) return
     const indices = new Set([
       activeIndex,
       (activeIndex + 1) % items.length,
@@ -116,7 +117,7 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
       const url = items[idx]?.imageUrl
       if (url) void preloadProtectedImage(url)
     }
-  }, [items, activeIndex])
+  }, [items, activeIndex, paused])
 
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.matchMedia('(max-width: 1000px)').matches : false)
 
@@ -177,12 +178,12 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
   }, [])
 
   useEffect(() => {
-    if (items.length < 2 || centerHovered || hidden || viewerOpen || !inView) return
+    if (paused || items.length < 2 || centerHovered || hidden || viewerOpen || !inView) return
     const interval = window.setInterval(() => {
       step(1)
     }, 1800)
     return () => window.clearInterval(interval)
-  }, [items.length, centerHovered, hidden, viewerOpen, inView, step])
+  }, [paused, items.length, centerHovered, hidden, viewerOpen, inView, step])
 
   const touchStartX = useRef<number | null>(null)
   const touchStartY = useRef<number | null>(null)
@@ -221,7 +222,8 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
   const disableHoverPause = isMobile || isIPad || noHover
 
   return <section ref={sectionRef} id="recent-photoshoot" className="recent" aria-labelledby="recent-heading"
-    data-active-photo-id={activePhoto?.id} data-viewer-open={viewerOpen && !!activePhoto}>
+    data-active-photo-id={activePhoto?.id} data-viewer-open={viewerOpen && !!activePhoto}
+    data-paused={paused ? 'true' : undefined}>
     <div className="recent__glow" aria-hidden="true" />
     <div className="recent__composition" data-recent-part="composition">
       <div
@@ -286,7 +288,7 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
             style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none', opacity: 0 }}
           >
             <defs>
-              <filter id="recent-gooey" x="-20%" y="-20%" width="140%" height="140%">
+              <filter id="recent-gooey" x="-25%" y="-25%" width="150%" height="150%">
                 <feGaussianBlur in="SourceGraphic" stdDeviation="3.5" result="blur" />
                 <feColorMatrix
                   in="blur"

@@ -17,6 +17,14 @@
 .recent__control-btn:focus-visible { outline: 2px solid var(--color-brand-black); outline-offset: 2px; border-radius: 9999px; }
 .recent__dot { display: block; width: 14px; height: 14px; border-radius: 100px; background: currentColor; will-change: transform; }
 .recent__dot--current { width: 28px; filter: url(#recent-gooey); -webkit-filter: url(#recent-gooey); }
+.recent[data-paused="true"] .recent__slot,
+.recent[data-paused="true"] .recent__dot {
+  will-change: auto;
+}
+.recent[data-paused="true"] .recent__dot--current {
+  filter: none;
+  -webkit-filter: none;
+}
 .recent__heading { position: relative; margin: min(1.5cqw, 2svh) auto 0; font-family: var(--font-title); font-size: min(var(--text-recent-title), 9.5svh); line-height: .9; text-align: center; }
 .recent__heading span, .recent__heading strong { display: block; }
 .recent__heading span { font-style: italic; font-weight: var(--font-weight-medium); }

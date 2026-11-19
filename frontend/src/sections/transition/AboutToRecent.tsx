@@ -13,6 +13,7 @@ import './AboutToRecent.css'
 
 const clamp = (value: number) => Math.max(0, Math.min(1, value))
 const smooth = (value: number) => value * value * (3 - 2 * value)
+const roundHalf = (value: number) => Math.round(value * 2) / 2
 const getViewportHeight = (host?: HTMLElement | null) => {
   const probeHeight = host?.querySelector<HTMLElement>('.lens-transition__lvh-probe')?.offsetHeight || 0
   return Math.max(probeHeight, window.innerHeight || 0, Math.round(window.visualViewport?.height || 0))
@@ -29,6 +30,8 @@ export function AboutToRecent() {
   const [reduced, setReduced] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
   const listeners = useRef(new Set<LensApertureListener>())
   const wasLensVisibleRef = useRef(false)
+  const [recentRevealed, setRecentRevealed] = useState(false)
+  const recentRevealedRef = useRef(false)
   const controller = useMemo<LensTransitionController>(() => ({
     subscribe: () => () => {},
     setAperture: () => {},
@@ -164,6 +167,7 @@ export function AboutToRecent() {
     let prevRecentInert: boolean | null = null
     let prevAboutInert: boolean | null = null
     let prevProgressState: '0' | 'active' | '1' | null = null
+    let prevClipPath: string | null = null
 
     const calculateTarget = () => {
       if (document.body.style.position === 'fixed') return targetProgress
@@ -173,6 +177,11 @@ export function AboutToRecent() {
     }
 
     const applyProgress = (progress: number) => {
+      const revealed = progress >= 1
+      if (revealed !== recentRevealedRef.current) {
+        recentRevealedRef.current = revealed
+        setRecentRevealed(revealed)
+      }
       const move = smooth(clamp(progress / 0.6))
       const zoom = smooth(clamp((progress - 0.08) / 0.92))
       const aperture = smooth(clamp((progress - 0.12) / 0.5))
@@ -180,14 +189,29 @@ export function AboutToRecent() {
       const scale = 1 + zoom * (targetRadius / (size * 0.25) - 1)
       const cx = x + (width / 2 - x) * move
       const cy = y + (height - viewport / 2 - y) * move
-      overlay.style.transform = `translate3d(${cx - size * scale / 2}px, ${cy - size * scale / 2}px, 0) scale3d(${size * scale / 640}, ${size * scale / 640}, 1)`
-      recent.style.clipPath = progress >= 1 ? 'none' : `circle(${size * scale * 0.32}px at ${cx}px ${cy - height + viewport}px)`
+      const cyRecent = cy - height + viewport
+      const maxCornerDist = Math.hypot(
+        Math.max(cx, width - cx),
+        Math.max(cyRecent, viewport - cyRecent),
+      )
+      const innerApertureRadius = size * scale * 0.305
+      const lensOffscreen = progress > 0.62 && innerApertureRadius > maxCornerDist
+      if (!lensOffscreen) {
+        overlay.style.transform = `translate3d(${cx - size * scale / 2}px, ${cy - size * scale / 2}px, 0) scale3d(${size * scale / 640}, ${size * scale / 640}, 1)`
+      }
+      const nextClipPath = (revealed || lensOffscreen)
+        ? 'none'
+        : `circle(${roundHalf(size * scale * 0.32)}px at ${roundHalf(cx)}px ${roundHalf(cyRecent)}px)`
+      if (nextClipPath !== prevClipPath) {
+        prevClipPath = nextClipPath
+        recent.style.clipPath = nextClipPath
+      }
       const recentVisible = progress > 0
       if (recentVisible !== prevRecentVisible) {
         prevRecentVisible = recentVisible
         recent.style.visibility = recentVisible ? 'visible' : 'hidden'
       }
-      const active = progress > 0 && progress < 1
+      const active = progress > 0 && progress < 1 && !lensOffscreen
       if (active !== prevOverlayVisible) {
         prevOverlayVisible = active
         overlay.style.opacity = active ? '1' : '0'
@@ -205,17 +229,19 @@ export function AboutToRecent() {
         prevRecentInert = recentInert
         recent.inert = recentInert
       }
-      const aboutInert = progress >= 1
+      const aboutInert = revealed
       if (aboutInert !== prevAboutInert) {
         prevAboutInert = aboutInert
         about.inert = aboutInert
       }
-      const progressState: '0' | 'active' | '1' = progress <= 0 ? '0' : progress >= 1 ? '1' : 'active'
+      const progressState: '0' | 'active' | '1' = progress <= 0 ? '0' : revealed ? '1' : 'active'
       if (progressState !== prevProgressState) {
         prevProgressState = progressState
         host.dataset.progress = progressState
       }
-      overlayController.setAperture(aperture, forcePaint)
+      if (!lensOffscreen) {
+        overlayController.setAperture(aperture, forcePaint)
+      }
     }
     const syncViewportHeight = () => {
       const nextViewport = getViewportHeight(host)
@@ -244,13 +270,20 @@ export function AboutToRecent() {
       const dt = lastTime > 0 ? Math.min(64, Math.max(1, now - lastTime)) : 16.67
       lastTime = now
       const diff = targetProgress - displayedProgress
-      if (Math.abs(diff) < 0.0005) {
+      const absDiff = Math.abs(diff)
+      if (absDiff < 0.025) {
         displayedProgress = targetProgress
         lastTime = 0
       } else {
-        const alpha = Math.min(1, (Math.abs(diff) > 0.15 ? 0.45 : 0.28) * (dt / 16.67))
+        const factor = absDiff > 0.12 ? 0.68 : 0.50
+        const alpha = Math.min(1, factor * (dt / 16.67))
         displayedProgress += diff * alpha
-        frame = requestAnimationFrame(tick)
+        if (Math.abs(targetProgress - displayedProgress) < 0.002) {
+          displayedProgress = targetProgress
+          lastTime = 0
+        } else {
+          frame = requestAnimationFrame(tick)
+        }
       }
       applyProgress(displayedProgress)
     }
@@ -352,7 +385,12 @@ export function AboutToRecent() {
       prevRecentInert = null
       prevAboutInert = null
       prevProgressState = null
+      prevClipPath = null
       wasLensVisibleRef.current = false
+      if (recentRevealedRef.current) {
+        recentRevealedRef.current = false
+        setRecentRevealed(false)
+      }
       overlayController.setAperture(0, false)
     }
   }, [enabled, overlayController])
@@ -363,7 +401,7 @@ export function AboutToRecent() {
       <div className="lens-transition__stage">
         {enabled && <a className="lens-transition__skip" href="#recent-photoshoot">Skip lens transition</a>}
         <About />
-        <div className="lens-transition__recent"><RecentPhotoshoot /></div>
+        <div className="lens-transition__recent"><RecentPhotoshoot paused={canAnimate && !recentRevealed} /></div>
         <div className="lens-transition__lens" aria-hidden="true">
           {canAnimate && <TransitionLens url={url} controller={overlayController} />}
         </div>

@@ -1,11 +1,13 @@
 import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
 import {
+  ACESFilmicToneMapping,
   Color,
   HalfFloatType,
   LinearFilter,
   LinearMipmapLinearFilter,
   Mesh,
+  NoBlending,
   NormalBlending,
   Object3D,
   OrthographicCamera,
@@ -120,15 +122,68 @@ const BEZEL_COMPOSITE_VERTEX_SHADER = /* glsl */ `
   }
 `
 
+const BEZEL_BAKE_TONEMAP_FRAGMENT_SHADER = /* glsl */ `
+  uniform sampler2D tHdrBezel;
+  uniform float uExposure;
+  uniform float uUseAces;
+  varying vec2 vUv;
+
+  vec3 RRTAndODTFit(vec3 v) {
+    vec3 a = v * (v + 0.0245786) - 0.000090537;
+    vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+    return a / b;
+  }
+
+  vec3 applyACESFilmic(vec3 color) {
+    const mat3 ACESInputMat = mat3(
+      vec3(0.59719, 0.07600, 0.02840),
+      vec3(0.35458, 0.90834, 0.13383),
+      vec3(0.04823, 0.01566, 0.83777)
+    );
+    const mat3 ACESOutputMat = mat3(
+      vec3( 1.60475, -0.10208, -0.00327),
+      vec3(-0.53108,  1.10813, -0.07276),
+      vec3(-0.07367, -0.00605,  1.07602)
+    );
+    color *= uExposure / 0.6;
+    color = ACESInputMat * color;
+    color = RRTAndODTFit(color);
+    color = ACESOutputMat * color;
+    return clamp(color, 0.0, 1.0);
+  }
+
+  vec3 linearToSRGB(vec3 c) {
+    return mix(
+      pow(c, vec3(0.41666)) * 1.055 - vec3(0.055),
+      c * 12.92,
+      vec3(lessThanEqual(c, vec3(0.0031308)))
+    );
+  }
+
+  void main() {
+    vec4 tex = texture2D(tHdrBezel, vUv);
+    if (tex.a < 0.001) {
+      gl_FragColor = vec4(0.0);
+      return;
+    }
+    vec3 rgb = tex.rgb / tex.a;
+    if (uUseAces > 0.5) {
+      rgb = applyACESFilmic(rgb);
+    } else {
+      rgb = clamp(rgb, 0.0, 1.0);
+    }
+    rgb = linearToSRGB(rgb);
+    gl_FragColor = vec4(rgb * tex.a, tex.a);
+  }
+`
+
 const BEZEL_COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
   uniform sampler2D tBezel;
   varying vec2 vUv;
   void main() {
     vec4 tex = texture2D(tBezel, vUv);
     if (tex.a < 0.001) discard;
-    gl_FragColor = vec4(tex.rgb / tex.a, tex.a);
-    #include <tonemapping_fragment>
-    #include <colorspace_fragment>
+    gl_FragColor = tex;
   }
 `
 
@@ -184,12 +239,18 @@ function bakeStaticBezelTarget(
   const prevClearAlpha = gl.getClearAlpha()
   const prevAutoClear = gl.autoClear
 
+  const restoreGlState = () => {
+    gl.setRenderTarget(prevTarget)
+    gl.setClearColor(prevClearColor, prevClearAlpha)
+    Reflect.set(gl, 'autoClear', prevAutoClear)
+  }
+
   const testCompleteness = (rt: WebGLRenderTarget) => {
     gl.setRenderTarget(rt)
     return rawGl.checkFramebufferStatus(rawGl.FRAMEBUFFER) === rawGl.FRAMEBUFFER_COMPLETE
   }
 
-  const createTarget = (type: TextureDataType) => {
+  const createHdrTarget = (type: TextureDataType) => {
     const candidate = new WebGLRenderTarget(w, h, {
       minFilter: LinearFilter,
       magFilter: LinearFilter,
@@ -206,33 +267,64 @@ function bakeStaticBezelTarget(
     return null
   }
 
+  const createSrgbTarget = () => {
+    const candidate = new WebGLRenderTarget(w, h, {
+      minFilter: LinearFilter,
+      magFilter: LinearFilter,
+      type: UnsignedByteType,
+      samples: 0,
+      depthBuffer: false,
+      stencilBuffer: false,
+    })
+    try {
+      if (testCompleteness(candidate)) return candidate
+    } catch {
+      // Fall through to cleanup.
+    }
+    gl.setRenderTarget(null)
+    candidate.dispose()
+    return null
+  }
+
+  let hdrRt: WebGLRenderTarget | null = null
+  let bakeMaterial: ShaderMaterial | null = null
+
   try {
-    let rt = state.bezelRT
-    if (rt && (rt.width !== w || rt.height !== h)) {
-      rt.setSize(w, h)
-      if (!testCompleteness(rt)) {
+    gl.setScissorTest(false)
+
+    if (hasFloatColorBuffer) {
+      hdrRt = createHdrTarget(HalfFloatType)
+    }
+    if (!hdrRt) {
+      hdrRt = createHdrTarget(UnsignedByteType)
+    }
+    if (!hdrRt) {
+      restoreGlState()
+      fallbackBezelPassToDirect(state, gl, setDpr)
+      return false
+    }
+
+    let bezelSrgbRt = state.bezelRT
+    if (bezelSrgbRt && (bezelSrgbRt.width !== w || bezelSrgbRt.height !== h)) {
+      bezelSrgbRt.setSize(w, h)
+      if (!testCompleteness(bezelSrgbRt)) {
         gl.setRenderTarget(null)
-        rt.dispose()
-        rt = null
+        bezelSrgbRt.dispose()
+        bezelSrgbRt = null
         state.bezelRT = null
       }
     }
 
-    if (!rt) {
-      if (hasFloatColorBuffer) {
-        rt = createTarget(HalfFloatType)
-      }
-      if (!rt) {
-        rt = createTarget(UnsignedByteType)
-      }
-      if (!rt) {
-        gl.setRenderTarget(prevTarget)
-        gl.setClearColor(prevClearColor, prevClearAlpha)
-        Reflect.set(gl, 'autoClear', prevAutoClear)
+    if (!bezelSrgbRt) {
+      bezelSrgbRt = createSrgbTarget()
+      if (!bezelSrgbRt) {
+        hdrRt.dispose()
+        hdrRt = null
+        restoreGlState()
         fallbackBezelPassToDirect(state, gl, setDpr)
         return false
       }
-      state.bezelRT = rt
+      state.bezelRT = bezelSrgbRt
     }
 
     for (const mesh of state.bezelMeshes) {
@@ -243,13 +335,44 @@ function bakeStaticBezelTarget(
       mesh.visible = false
     }
 
+    // Stage 1: Render stationary bezel meshes into temporary MSAA HDR render target.
     Reflect.set(gl, 'autoClear', false)
-    gl.setRenderTarget(rt)
+    gl.setRenderTarget(hdrRt)
     gl.setClearColor(0x000000, 0)
     gl.clear(true, true, true)
     gl.compile(scene, camera)
     gl.render(scene, camera)
+
+    // Stage 2: Resolve, ACESFilmic tone-map, sRGB-encode, and premultiply once into persistent RGBA8 RT.
+    bakeMaterial = new ShaderMaterial({
+      uniforms: {
+        tHdrBezel: { value: hdrRt.texture },
+        uExposure: { value: gl.toneMappingExposure },
+        uUseAces: { value: gl.toneMapping === ACESFilmicToneMapping ? 1 : 0 },
+      },
+      vertexShader: BEZEL_COMPOSITE_VERTEX_SHADER,
+      fragmentShader: BEZEL_BAKE_TONEMAP_FRAGMENT_SHADER,
+      transparent: false,
+      blending: NoBlending,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    })
+    const bakeScene = new Scene()
+    const bakeQuad = new Mesh(composite.geometry, bakeMaterial)
+    bakeQuad.frustumCulled = false
+    bakeScene.add(bakeQuad)
+
+    gl.setRenderTarget(bezelSrgbRt)
+    gl.setClearColor(0x000000, 0)
+    gl.clear(true, false, false)
+    gl.render(bakeScene, composite.camera)
     gl.setRenderTarget(null)
+
+    hdrRt.dispose()
+    hdrRt = null
+    bakeMaterial.dispose()
+    bakeMaterial = null
 
     for (const mesh of state.bezelMeshes) {
       mesh.visible = false
@@ -263,17 +386,15 @@ function bakeStaticBezelTarget(
     gl.compile(scene, camera)
     gl.compile(composite.scene, composite.camera)
 
-    gl.setRenderTarget(prevTarget)
-    gl.setClearColor(prevClearColor, prevClearAlpha)
-    Reflect.set(gl, 'autoClear', prevAutoClear)
+    restoreGlState()
 
-    composite.material.uniforms.tBezel.value = rt.texture
+    composite.material.uniforms.tBezel.value = bezelSrgbRt.texture
     state.bakedKey = key
     return true
   } catch {
-    gl.setRenderTarget(prevTarget)
-    gl.setClearColor(prevClearColor, prevClearAlpha)
-    Reflect.set(gl, 'autoClear', prevAutoClear)
+    hdrRt?.dispose()
+    bakeMaterial?.dispose()
+    restoreGlState()
     fallbackBezelPassToDirect(state, gl, setDpr)
     return false
   }
@@ -304,10 +425,10 @@ function BezelBakePass({ model }: { model: Object3D }) {
       fragmentShader: BEZEL_COMPOSITE_FRAGMENT_SHADER,
       transparent: true,
       blending: NormalBlending,
-      premultipliedAlpha: false,
+      premultipliedAlpha: true,
       depthTest: false,
       depthWrite: false,
-      toneMapped: true,
+      toneMapped: false,
     })
     const quad = new Mesh(geometry, material)
     quad.frustumCulled = false
@@ -334,7 +455,7 @@ function BezelBakePass({ model }: { model: Object3D }) {
     }
   }, [gl, model, invalidate])
 
-  useFrame(({ gl: frameGl, scene: frameScene, camera: frameCamera }) => {
+  useFrame(({ gl: frameGl, scene: frameScene, camera: frameCamera, size }) => {
     const state = bakeStateRef.current
     const composite = state.composite
     if (state.fboSupported && composite && state.bezelMeshes.length > 0) {
@@ -364,10 +485,22 @@ function BezelBakePass({ model }: { model: Object3D }) {
         const prevClearColor = frameGl.getClearColor(frameClearColorRef.current)
         const prevClearAlpha = frameGl.getClearAlpha()
         Reflect.set(frameGl, 'autoClear', false)
+        frameGl.setScissorTest(false)
         frameGl.setRenderTarget(null)
         frameGl.setClearColor(0x000000, 0)
         frameGl.clear(true, true, true)
+
+        const sx = Math.floor(size.width * 0.23)
+        const sy = Math.floor(size.height * 0.23)
+        const sw = Math.min(size.width - sx, Math.ceil(size.width * 0.54))
+        const sh = Math.min(size.height - sy, Math.ceil(size.height * 0.54))
+        if (sw > 0 && sh > 0) {
+          frameGl.setScissor(sx, sy, sw, sh)
+          frameGl.setScissorTest(true)
+        }
         frameGl.render(frameScene, frameCamera)
+        frameGl.setScissorTest(false)
+
         frameGl.clearDepth()
         frameGl.render(composite.scene, composite.camera)
         frameGl.setClearColor(prevClearColor, prevClearAlpha)
@@ -604,12 +737,8 @@ export default function LensScene({
   return <Canvas
     className="about__lens-canvas"
     onCreated={({ gl, setDpr }) => {
-      if (isIntegratedOrLowPowerGpu(gl.getContext())) {
-        if (bakeStaticBezel) {
-          setDpr(Math.min(window.devicePixelRatio || 1, 1.5))
-        } else if (!staticSnapshot) {
-          setDpr(Math.min(window.devicePixelRatio || 1, 1.25))
-        }
+      if (!staticSnapshot && isIntegratedOrLowPowerGpu(gl.getContext())) {
+        setDpr(Math.min(window.devicePixelRatio || 1, 1.25))
       }
       gl.domElement.addEventListener('webglcontextlost', event => {
         event.preventDefault()
@@ -623,7 +752,7 @@ export default function LensScene({
     camera={aboutLens.camera}
     dpr={lensDpr}
     scene={{ environmentIntensity: 0.35 }}
-    gl={{ alpha: true, antialias: true, powerPreference: 'default' }}
+    gl={{ alpha: true, antialias: true, preserveDrawingBuffer: false, powerPreference: 'default' }}
     fallback={<div className="about__lens-fallback" data-lens-state="fallback" />}
   >
     <StudioLighting />
