@@ -64,6 +64,7 @@ type LensSceneProps = {
 
 type LensModelProps = LensSceneProps & {
   onSnapshot?: (dataUrl: string) => void
+  onSnapshotBlob?: (blob: Blob) => void
   onSnapshotStart?: () => void
 }
 
@@ -181,9 +182,7 @@ const BEZEL_COMPOSITE_FRAGMENT_SHADER = /* glsl */ `
   uniform sampler2D tBezel;
   varying vec2 vUv;
   void main() {
-    vec4 tex = texture2D(tBezel, vUv);
-    if (tex.a < 0.001) discard;
-    gl_FragColor = tex;
+    gl_FragColor = texture2D(tBezel, vUv);
   }
 `
 
@@ -488,7 +487,7 @@ function BezelBakePass({ model }: { model: Object3D }) {
         frameGl.setScissorTest(false)
         frameGl.setRenderTarget(null)
         frameGl.setClearColor(0x000000, 0)
-        frameGl.clear(true, true, true)
+        frameGl.clear(true, true, false)
 
         const sx = Math.floor(size.width * 0.23)
         const sy = Math.floor(size.height * 0.23)
@@ -501,7 +500,6 @@ function BezelBakePass({ model }: { model: Object3D }) {
         frameGl.render(frameScene, frameCamera)
         frameGl.setScissorTest(false)
 
-        frameGl.clearDepth()
         frameGl.render(composite.scene, composite.camera)
         frameGl.setClearColor(prevClearColor, prevClearAlpha)
         Reflect.set(frameGl, 'autoClear', prevAutoClear)
@@ -542,6 +540,7 @@ function LensModel({
   staticSnapshot,
   bakeStaticBezel = false,
   onSnapshot,
+  onSnapshotBlob,
   onSnapshotStart,
 }: LensModelProps) {
   const gltf = useLoader(GLTFLoader, url, configureLensLoader)
@@ -621,24 +620,48 @@ function LensModel({
   }, [model, aperture, invalidate, transition, staticSnapshot, bakeStaticBezel])
 
   useEffect(() => {
-    if (!staticSnapshot || !onSnapshot) return
+    if (!staticSnapshot || (!onSnapshot && !onSnapshotBlob)) return
     onSnapshotStart?.()
     let cancelled = false
     let raf2 = 0
+    const fallbackToDataUrl = () => {
+      if (cancelled || !onSnapshot) return
+      try {
+        let dataUrl = gl.domElement.toDataURL('image/webp', 0.98)
+        if (!dataUrl.startsWith('data:image/webp')) {
+          dataUrl = gl.domElement.toDataURL('image/png')
+        }
+        if (dataUrl.startsWith('data:image/') && dataUrl.length > 2048) {
+          onSnapshot(dataUrl)
+        }
+      } catch {
+        // Brave Shields strict fingerprinting can throw on toDataURL;
+        // the 450ms safety timeout keeps transition initialization unblocked.
+      }
+    }
     const raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
         if (cancelled) return
         try {
           gl.render(scene, camera)
-          let dataUrl = gl.domElement.toDataURL('image/webp', 0.98)
-          if (!dataUrl.startsWith('data:image/webp')) {
-            dataUrl = gl.domElement.toDataURL('image/png')
-          }
-          if (dataUrl.startsWith('data:image/') && dataUrl.length > 2048) {
-            onSnapshot(dataUrl)
+          if (onSnapshotBlob && typeof gl.domElement.toBlob === 'function') {
+            gl.domElement.toBlob(
+              blob => {
+                if (cancelled) return
+                if (blob && blob.size > 2048) {
+                  onSnapshotBlob(blob)
+                } else {
+                  fallbackToDataUrl()
+                }
+              },
+              'image/webp',
+              0.98,
+            )
+          } else {
+            fallbackToDataUrl()
           }
         } catch {
-          // Brave Shields strict fingerprinting can throw on toDataURL;
+          // Brave Shields strict fingerprinting can throw on toBlob/toDataURL;
           // the 450ms safety timeout keeps transition initialization unblocked.
         }
       })
@@ -648,7 +671,7 @@ function LensModel({
       cancelAnimationFrame(raf1)
       cancelAnimationFrame(raf2)
     }
-  }, [staticSnapshot, onSnapshot, onSnapshotStart, gl, scene, camera, model, aperture])
+  }, [staticSnapshot, onSnapshot, onSnapshotBlob, onSnapshotStart, gl, scene, camera, model, aperture])
 
   return <>
     <primitive object={model} dispose={null} />
@@ -665,7 +688,9 @@ export default function LensScene({
   staticSnapshot,
   bakeStaticBezel = false,
 }: LensSceneProps) {
-  const [snapshotUrl, setSnapshotUrl] = useState<string | null>(null)
+  const [snapshotBlob, setSnapshotBlob] = useState<Blob | null>(null)
+  const [fallbackDataUrl, setFallbackDataUrl] = useState<string | null>(null)
+  const [blobObjectUrl, setBlobObjectUrl] = useState<string | null>(null)
   const intentionalUnmountRef = useRef(false)
   const readyCalledRef = useRef(false)
   const readyTimerRef = useRef<number | null>(null)
@@ -676,6 +701,23 @@ export default function LensScene({
     readyCalledRef.current = true
     transition?.ready()
   }, [transition])
+
+  useEffect(() => {
+    if (!snapshotBlob) return
+    let cancelled = false
+    const url = URL.createObjectURL(snapshotBlob)
+    queueMicrotask(() => {
+      if (!cancelled) {
+        setBlobObjectUrl(url)
+      }
+    })
+    return () => {
+      cancelled = true
+      URL.revokeObjectURL(url)
+    }
+  }, [snapshotBlob])
+
+  const snapshotUrl = snapshotBlob ? blobObjectUrl : fallbackDataUrl
 
   useEffect(() => {
     intentionalUnmountRef.current = false
@@ -706,7 +748,16 @@ export default function LensScene({
       window.clearTimeout(safetyTimerRef.current)
       safetyTimerRef.current = null
     }
-    setSnapshotUrl(dataUrl)
+    setFallbackDataUrl(dataUrl)
+  }, [])
+
+  const handleSnapshotBlob = useCallback((blob: Blob) => {
+    intentionalUnmountRef.current = true
+    if (safetyTimerRef.current !== null) {
+      window.clearTimeout(safetyTimerRef.current)
+      safetyTimerRef.current = null
+    }
+    setSnapshotBlob(blob)
   }, [])
 
   useEffect(() => {
@@ -734,6 +785,11 @@ export default function LensScene({
     )
   }
 
+  const powerPreference: WebGLPowerPreference =
+    !staticSnapshot && typeof window !== 'undefined' && !window.matchMedia(aboutLens.mobileQuery).matches
+      ? 'high-performance'
+      : 'default'
+
   return <Canvas
     className="about__lens-canvas"
     onCreated={({ gl, setDpr }) => {
@@ -752,7 +808,7 @@ export default function LensScene({
     camera={aboutLens.camera}
     dpr={lensDpr}
     scene={{ environmentIntensity: 0.35 }}
-    gl={{ alpha: true, antialias: true, preserveDrawingBuffer: false, powerPreference: 'default' }}
+    gl={{ alpha: true, antialias: true, stencil: false, preserveDrawingBuffer: false, powerPreference }}
     fallback={<div className="about__lens-fallback" data-lens-state="fallback" />}
   >
     <StudioLighting />
@@ -764,6 +820,7 @@ export default function LensScene({
         staticSnapshot={staticSnapshot}
         bakeStaticBezel={bakeStaticBezel}
         onSnapshot={staticSnapshot ? handleSnapshot : undefined}
+        onSnapshotBlob={staticSnapshot ? handleSnapshotBlob : undefined}
         onSnapshotStart={staticSnapshot ? handleSnapshotStart : undefined}
       />
     </Suspense>

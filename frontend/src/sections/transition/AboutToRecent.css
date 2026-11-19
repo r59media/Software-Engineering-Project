@@ -66,3 +66,15 @@
 
 /* R3F descendants must never intercept gallery clicks or touch gestures. */
 .lens-transition__lens * { pointer-events: none !important; }
+
+.lens-transition[data-progress="active"] .about .about__art,
+.lens-transition[data-progress="active"] .about .about__portrait-pose,
+.lens-transition[data-progress="1"] .about .about__art,
+.lens-transition[data-progress="1"] .about .about__portrait-pose {
+  will-change: auto;
+}
+
+.lens-transition[data-progress="active"] .recent__dot--current {
+  filter: none;
+  -webkit-filter: none;
+}

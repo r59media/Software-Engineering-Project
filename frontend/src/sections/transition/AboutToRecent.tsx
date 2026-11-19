@@ -188,19 +188,29 @@ export function AboutToRecent() {
         Math.max(cx, width - cx),
         Math.max(cyRecent, viewport - cyRecent),
       )
-      const innerApertureRadius = size * scale * 0.305
+      const innerApertureRadius = size * scale * 0.25
       const lensOffscreen = progress > 0.62 && innerApertureRadius > maxCornerDist
       if (!lensOffscreen) {
         overlay.style.transform = `translate3d(${cx - size * scale / 2}px, ${cy - size * scale / 2}px, 0) scale3d(${size * scale / 640}, ${size * scale / 640}, 1)`
       }
-      const nextClipPath = (revealed || lensOffscreen)
-        ? 'none'
-        : `circle(${roundHalf(size * scale * 0.32)}px at ${roundHalf(cx)}px ${roundHalf(cyRecent)}px)`
+      const recentVisible = aperture > 0 || revealed
+      let nextClipPath: string
+      if (revealed || lensOffscreen) {
+        nextClipPath = 'none'
+      } else if (!recentVisible) {
+        nextClipPath = 'inset(50% 50% 50% 50%)'
+      } else {
+        const half = size * scale * 0.29
+        const top = Math.max(0, roundHalf(cyRecent - half))
+        const right = Math.max(0, roundHalf(width - (cx + half)))
+        const bottom = Math.max(0, roundHalf(viewport - (cyRecent + half)))
+        const left = Math.max(0, roundHalf(cx - half))
+        nextClipPath = `inset(${top}px ${right}px ${bottom}px ${left}px)`
+      }
       if (nextClipPath !== prevClipPath) {
         prevClipPath = nextClipPath
         recent.style.clipPath = nextClipPath
       }
-      const recentVisible = progress > 0
       if (recentVisible !== prevRecentVisible) {
         prevRecentVisible = recentVisible
         recent.style.visibility = recentVisible ? 'visible' : 'hidden'
@@ -209,6 +219,7 @@ export function AboutToRecent() {
       if (active !== prevOverlayVisible) {
         prevOverlayVisible = active
         overlay.style.opacity = active ? '1' : '0'
+        overlay.style.visibility = active ? 'visible' : 'hidden'
       }
       const forcePaint = active && !wasLensVisibleRef.current
       wasLensVisibleRef.current = active

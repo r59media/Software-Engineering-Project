@@ -35,7 +35,7 @@ export function initBrowserEnv(): void {
   }
 }
 
-const IGPU_PATTERN = /intel|uhd|iris|hd graphics|integrated|radeon\(tm\) graphics|vega|mali|adreno|apple gpu|swiftshader|llvmpipe/i
+const IGPU_PATTERN = /intel|uhd|iris|hd graphics|integrated|radeon(?:\(tm\))? graphics|radeon\s+[6789]\d{2}m|vega|mali|immortalis|adreno|apple gpu|swiftshader|llvmpipe/i
 
 export function isIntegratedOrLowPowerGpu(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
   if (isWebKit || isIPad) return true

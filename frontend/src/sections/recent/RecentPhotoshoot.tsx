@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion, type TargetAndTransition } from 'motion/react'
 import type { PhotoshootPhoto } from '../../types/recentPhotoshoot'
 import { recentInitialPhotoId, recentPhotos } from '../../config/recentPhotoshoot'
@@ -15,73 +15,80 @@ interface RecentPhotoshootProps {
 }
 
 type SlotConfig = TargetAndTransition
+type ViewportMode = 'desktop' | 'tablet' | 'mobile'
 
-const getSlotStyles = (isMobile: boolean): Record<number, SlotConfig> => ({
-  0: {
-    left: '50%',
-    top: 'min(6.16cqw, 10svh)',
-    rotate: 0,
-    scale: 1,
-    zIndex: 5,
-    opacity: 1,
-    x: '-50%',
-  },
-  '-1': {
-    left: isMobile ? '-5%' : '22.9%',
-    top: isMobile ? 'min(8cqw, 12svh)' : 'min(7.5cqw, 12svh)',
-    rotate: -8.66,
-    scale: 0.95,
-    zIndex: 3,
-    opacity: 0.55,
-    x: '-50%',
-  },
-  1: {
-    left: isMobile ? '105%' : '77.1%',
-    top: isMobile ? 'min(8cqw, 12svh)' : 'min(7.5cqw, 12svh)',
-    rotate: 8.66,
-    scale: 0.95,
-    zIndex: 3,
-    opacity: 0.55,
-    x: '-50%',
-  },
-  '-2': {
-    left: isMobile ? '-45%' : '-4.2%',
-    top: 'min(13.5cqw, 22svh)',
-    rotate: -17.32,
-    scale: 0.85,
-    zIndex: 1,
-    opacity: isMobile ? 0 : 0.35,
-    x: '-50%',
-  },
-  2: {
-    left: isMobile ? '145%' : '104.2%',
-    top: 'min(13.5cqw, 22svh)',
-    rotate: 17.32,
-    scale: 0.85,
-    zIndex: 1,
-    opacity: isMobile ? 0 : 0.35,
-    x: '-50%',
-  },
-})
+const MODE_METRICS: Record<ViewportMode, { x1: number; x2: number; xOff: number; y1: number; opacity2: number }> = {
+  desktop: { x1: 0.271, x2: 0.542, xOff: 0.75, y1: 0.075, opacity2: 0.35 },
+  tablet: { x1: 0.32, x2: 0.75, xOff: 0.75, y1: 0.08, opacity2: 0 },
+  mobile: { x1: 0.55, x2: 0.95, xOff: 0.95, y1: 0.08, opacity2: 0 },
+}
 
-const getOffscreenLeft = (isMobile: boolean): SlotConfig => ({
-  left: isMobile ? '-45%' : '-25%',
-  top: 'min(18cqw, 28svh)',
+const getSlotStyles = (mode: ViewportMode, stageWidth: number, svh: number): Record<number, SlotConfig> => {
+  const { x1, x2, y1, opacity2 } = MODE_METRICS[mode]
+  const y0 = Math.min(0.0616 * stageWidth, 0.10 * svh)
+  const y1Px = Math.min(y1 * stageWidth, 0.12 * svh)
+  const y2 = Math.min(0.135 * stageWidth, 0.22 * svh)
+
+  return {
+    0: {
+      x: 0,
+      y: y0,
+      rotate: 0,
+      scale: 1,
+      zIndex: 5,
+      opacity: 1,
+    },
+    '-1': {
+      x: -x1 * stageWidth,
+      y: y1Px,
+      rotate: -8.66,
+      scale: 0.95,
+      zIndex: 3,
+      opacity: 0.55,
+    },
+    1: {
+      x: x1 * stageWidth,
+      y: y1Px,
+      rotate: 8.66,
+      scale: 0.95,
+      zIndex: 3,
+      opacity: 0.55,
+    },
+    '-2': {
+      x: -x2 * stageWidth,
+      y: y2,
+      rotate: -17.32,
+      scale: 0.85,
+      zIndex: 1,
+      opacity: opacity2,
+    },
+    2: {
+      x: x2 * stageWidth,
+      y: y2,
+      rotate: 17.32,
+      scale: 0.85,
+      zIndex: 1,
+      opacity: opacity2,
+    },
+  }
+}
+
+const getOffscreenLeft = (mode: ViewportMode, stageWidth: number, svh: number): SlotConfig => ({
+  x: -MODE_METRICS[mode].xOff * stageWidth,
+  y: Math.min(0.18 * stageWidth, 0.28 * svh),
   rotate: -25,
   scale: 0.75,
   zIndex: 0,
   opacity: 0,
-  x: '-50%',
 })
 
-const getOffscreenRight = (isMobile: boolean): SlotConfig => ({
-  left: isMobile ? '145%' : '125%',
-  top: 'min(18cqw, 28svh)',
+const getOffscreenRight = (mode: ViewportMode, stageWidth: number, svh: number): SlotConfig => ({
+  x: MODE_METRICS[mode].xOff * stageWidth,
+  y: Math.min(0.18 * stageWidth, 0.28 * svh),
   rotate: 25,
   scale: 0.75,
   zIndex: 0,
   opacity: 0,
-  x: '-50%',
 })
 
 const CAROUSEL_EASING: [number, number, number, number] = [0.25, 1, 0.5, 1]
@@ -94,6 +101,7 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
   const [viewerOpen, setViewerOpen] = useState(false)
   const items = useMemo(() => photos.filter((photo, index) => photo.imageUrl.trim() && photos.findIndex(item => item.id === photo.id) === index), [photos])
   const sectionRef = useRef<HTMLElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
   const [direction, setDirection] = useState<-1 | 1>(1)
   const [stepCount, setStepCount] = useState(0)
   const [centerHovered, setCenterHovered] = useState(false)
@@ -119,24 +127,63 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
   }, [items, activeIndex])
 
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' ? window.matchMedia('(max-width: 1000px)').matches : false)
+  const [isTablet, setIsTablet] = useState(() => typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px) and (max-width: 1024px)').matches : false)
+  const [stageSize, setStageSize] = useState<{ width: number; svh: number }>(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1440,
+    svh: typeof window !== 'undefined' ? window.innerHeight : 900,
+  }))
 
   useEffect(() => {
-    const mql = window.matchMedia('(max-width: 1000px)')
-    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches)
-    mql.addEventListener('change', onChange)
-    return () => mql.removeEventListener('change', onChange)
+    const mobileMql = window.matchMedia('(max-width: 1000px)')
+    const tabletMql = window.matchMedia('(min-width: 768px) and (max-width: 1024px)')
+    const onMobileChange = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    const onTabletChange = (e: MediaQueryListEvent) => setIsTablet(e.matches)
+    mobileMql.addEventListener('change', onMobileChange)
+    tabletMql.addEventListener('change', onTabletChange)
+    return () => {
+      mobileMql.removeEventListener('change', onMobileChange)
+      tabletMql.removeEventListener('change', onTabletChange)
+    }
   }, [])
 
-  const slotStyles = useMemo(() => getSlotStyles(isMobile), [isMobile])
-  const offscreenLeft = useMemo(() => getOffscreenLeft(isMobile), [isMobile])
-  const offscreenRight = useMemo(() => getOffscreenRight(isMobile), [isMobile])
+  useLayoutEffect(() => {
+    const el = stageRef.current
+    if (!el) return
+
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect()
+      const width = rect.width || window.innerWidth
+      const svh = window.innerHeight
+      setStageSize(prev => (prev.width === width && prev.svh === svh ? prev : { width, svh }))
+    }
+
+    updateSize()
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateSize)
+      return () => window.removeEventListener('resize', updateSize)
+    }
+
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(el)
+    window.addEventListener('resize', updateSize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateSize)
+    }
+  }, [])
+
+  const viewportMode: ViewportMode = isTablet ? 'tablet' : isMobile ? 'mobile' : 'desktop'
+  const slotStyles = useMemo(() => getSlotStyles(viewportMode, stageSize.width, stageSize.svh), [viewportMode, stageSize.width, stageSize.svh])
+  const offscreenLeft = useMemo(() => getOffscreenLeft(viewportMode, stageSize.width, stageSize.svh), [viewportMode, stageSize.width, stageSize.svh])
+  const offscreenRight = useMemo(() => getOffscreenRight(viewportMode, stageSize.width, stageSize.svh), [viewportMode, stageSize.width, stageSize.svh])
 
   const offsets = useMemo(() => {
-    if (isMobile) {
+    if (isMobile || isTablet) {
       return items.length >= 3 ? [-1, 0, 1] : items.length === 2 ? [0, 1] : items.length === 1 ? [0] : []
     }
     return items.length >= 5 ? [-2, -1, 0, 1, 2] : items.length === 4 ? [-1, 0, 1, 2] : items.length === 3 ? [-1, 0, 1] : items.length === 2 ? [0, 1] : items.length === 1 ? [0] : []
-  }, [items.length, isMobile])
+  }, [items.length, isMobile, isTablet])
 
   const step = useCallback((stepDirection: -1 | 1) => {
     if (items.length < 2) return
@@ -225,6 +272,7 @@ export function RecentPhotoshoot({ photos: photosOverride, initialPhotoId = rece
     <div className="recent__glow" aria-hidden="true" />
     <div className="recent__composition" data-recent-part="composition">
       <div
+        ref={stageRef}
         className="recent__stage"
         data-recent-part="carousel"
         role="group"
