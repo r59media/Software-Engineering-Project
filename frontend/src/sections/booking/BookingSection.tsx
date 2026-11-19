@@ -15,6 +15,8 @@ import { BookingDateTime } from './BookingDateTime'
 import { validateBookingInfo } from './bookingValidation'
 import { BookingYourInfo } from './BookingYourInfo'
 import { BookingSummary } from './BookingSummary'
+import { BookingDeposit } from './BookingDeposit'
+import type { ConfirmedBookingSummary } from '../../types/booking'
 import './BookingSection.css'
 
 export function BookingSection(props: BookingSectionProps) {
@@ -94,6 +96,8 @@ function BookingFlow({
   const [customerInfo, setCustomerInfo] = useState<BookingCustomerInfo | null>(null)
   const [photoPermissions, setPhotoPermissions] = useState<BookingPhotoPermissions>({ websitePortfolio: false, socialMedia: false })
   const [selectedFeeIds, setSelectedFeeIds] = useState<string[]>([])
+  const [internalConfirmed, setInternalConfirmed] = useState<ConfirmedBookingSummary | null>(null)
+  const activeConfirmed = confirmedBooking || internalConfirmed
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   // Find the selected service
@@ -199,7 +203,7 @@ function BookingFlow({
     )
   }
 
-  if (confirmedBooking && selectedService && dateTime && customerInfo) {
+  if (activeConfirmed && selectedService && dateTime && customerInfo) {
     const formattedDate = new Intl.DateTimeFormat('en-US', {
       weekday: 'long',
       month: 'long',
@@ -211,6 +215,7 @@ function BookingFlow({
       new Intl.NumberFormat('en-US', { style: 'currency', currency: selectedService.currency || 'USD' }).format(cents / 100)
 
     const handleBookAnother = () => {
+      setInternalConfirmed(null)
       setStep('services')
       setDateTime(null)
       setSelectedServiceId(null)
@@ -232,7 +237,7 @@ function BookingFlow({
                     Confirmed
                   </p>
                   <h2 id="booking-title">
-                    BOOKING CONFIRMED{confirmedBooking.bookingId ? ` #${confirmedBooking.bookingId}` : ''}
+                    BOOKING CONFIRMED{activeConfirmed.bookingId ? ` #${activeConfirmed.bookingId}` : ''}
                   </h2>
                 </div>
                 <p className="booking-review__subtitle">Your deposit has been received and your session is reserved.</p>
@@ -251,9 +256,9 @@ function BookingFlow({
                         <h4>{selectedService.name}</h4>
                       </div>
                       <p className="booking-review__detail-line">{attendees} {attendees === 1 ? 'person' : 'people'}</p>
-                      {confirmedBooking.eventLocation && (
+                      {activeConfirmed.eventLocation && (
                         <p className="booking-review__detail-line" style={{ marginTop: '6px' }}>
-                          Location: {confirmedBooking.eventLocation}
+                          Location: {activeConfirmed.eventLocation}
                         </p>
                       )}
                     </section>
@@ -305,15 +310,15 @@ function BookingFlow({
                   >
                     <div>
                       <span style={{ display: 'block', fontSize: '12px', opacity: 0.8 }}>Session Total</span>
-                      <strong style={{ fontSize: '20px' }}>{formatCurrency(confirmedBooking.totalCents)}</strong>
+                      <strong style={{ fontSize: '20px' }}>{formatCurrency(activeConfirmed.totalCents)}</strong>
                     </div>
                     <div>
                       <span style={{ display: 'block', fontSize: '12px', opacity: 0.8 }}>Deposit Paid</span>
-                      <strong style={{ fontSize: '20px' }}>{formatCurrency(confirmedBooking.depositPaidCents)}</strong>
+                      <strong style={{ fontSize: '20px' }}>{formatCurrency(activeConfirmed.depositPaidCents)}</strong>
                     </div>
                     <div>
                       <span style={{ display: 'block', fontSize: '12px', opacity: 0.8 }}>Remaining Balance Due</span>
-                      <strong style={{ fontSize: '20px' }}>{formatCurrency(confirmedBooking.balanceDueCents)}</strong>
+                      <strong style={{ fontSize: '20px' }}>{formatCurrency(activeConfirmed.balanceDueCents)}</strong>
                     </div>
                   </div>
 
@@ -326,9 +331,9 @@ function BookingFlow({
                       gap: '12px',
                     }}
                   >
-                    {confirmedBooking.googleCalendarUrl && (
+                    {activeConfirmed.googleCalendarUrl && (
                       <a
-                        href={confirmedBooking.googleCalendarUrl}
+                        href={activeConfirmed.googleCalendarUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="booking-review__edit"
@@ -337,9 +342,9 @@ function BookingFlow({
                         Add to Google Calendar
                       </a>
                     )}
-                    {confirmedBooking.icsUrl && (
+                    {activeConfirmed.icsUrl && (
                       <a
-                        href={confirmedBooking.icsUrl}
+                        href={activeConfirmed.icsUrl}
                         download
                         className="booking-review__edit"
                         style={{ textAlign: 'left' }}
@@ -347,9 +352,9 @@ function BookingFlow({
                         Download .ics
                       </a>
                     )}
-                    {confirmedBooking.rescheduleUrl && (
+                    {activeConfirmed.rescheduleUrl && (
                       <a
-                        href={confirmedBooking.rescheduleUrl}
+                        href={activeConfirmed.rescheduleUrl}
                         className="booking-review__edit"
                         style={{ textAlign: 'left' }}
                       >
@@ -374,6 +379,38 @@ function BookingFlow({
     )
   }
 
+  if (effectiveStep === 'deposit' && selectedService && dateTime && customerInfo) {
+    return (
+      <BookingStage movement={movement} stage="deposit">
+        <section id="booking" className="booking" aria-labelledby="booking-title">
+          <div className="booking__inner">
+            <BookingDeposit
+              service={selectedService}
+              people={attendees}
+              pricing={pricing}
+              dateTime={dateTime}
+              customerInfo={customerInfo}
+              photoPermissions={photoPermissions}
+              selectedFeeIds={selectedFeeIds}
+              onBack={() => {
+                setStep('summary')
+                document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+              }}
+              onEdit={nextStep => {
+                setStep(nextStep)
+                document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+              }}
+              onSuccess={summary => {
+                setInternalConfirmed(summary)
+                document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+              }}
+            />
+          </div>
+        </section>
+      </BookingStage>
+    )
+  }
+
   return (
     <BookingStage movement={movement} stage="summary"><section id="booking" className="booking" aria-labelledby="booking-title">
       <div className="booking__inner">
@@ -391,7 +428,11 @@ function BookingFlow({
             setStep(nextStep)
             document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
           }}
-          onProceedToDeposit={onProceedToDeposit}
+          onProceedToDeposit={draft => {
+            onProceedToDeposit?.(draft)
+            setStep('deposit')
+            document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+          }}
         />}
       </div>
     </section></BookingStage>

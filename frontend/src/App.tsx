@@ -8,9 +8,8 @@ import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
-import type { BookingReviewDraft, BookingService, ConfirmedBookingSummary } from './types/booking'
+import type { BookingService, ConfirmedBookingSummary } from './types/booking'
 import type { ContactInquiry } from './types/contact'
-const DepositCheckoutModal = lazy(() => import('./sections/booking/DepositCheckoutModal').then(m => ({ default: m.DepositCheckoutModal })))
 const RescheduleModal = lazy(() => import('./sections/booking/RescheduleModal').then(m => ({ default: m.RescheduleModal })))
 
 const AboutToRecent = lazy(() => import('./sections/transition/AboutToRecent').then(m => ({ default: m.AboutToRecent })))
@@ -25,7 +24,6 @@ function App() {
   const [bookingServices, setBookingServices] = useState<readonly BookingService[]>(previewBookingServices)
   const [pricing, setPricing] = useState<PricingData | null>(null)
   const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
-  const [depositDraft, setDepositDraft] = useState<BookingReviewDraft | null>(null)
   const [confirmedBooking, setConfirmedBooking] = useState<ConfirmedBookingSummary | null>(null)
   const [rescheduleParams, setRescheduleParams] = useState<{ bookingId: string; token: string } | null>(() => {
     const params = new URLSearchParams(window.location.search)
@@ -281,9 +279,8 @@ function App() {
           inquiryHref="#contact"
           confirmedBooking={confirmedBooking}
           onResetBooking={() => setConfirmedBooking(null)}
-          onProceedToDeposit={draft => {
+          onProceedToDeposit={() => {
             setConfirmedBooking(null)
-            setDepositDraft(draft)
           }}
         />
       </Suspense>
@@ -295,18 +292,6 @@ function App() {
       </Suspense>
     </main>
     <SiteFooter />
-    {depositDraft && (
-      <Suspense fallback={null}>
-        <DepositCheckoutModal
-          draft={depositDraft}
-          service={bookingServices.find(s => s.id === depositDraft.serviceId) || null}
-          pricing={pricing}
-          squareConfig={pricing?.squareConfig ?? null}
-          onClose={() => setDepositDraft(null)}
-          onSuccess={summary => setConfirmedBooking(summary)}
-        />
-      </Suspense>
-    )}
   </div>
 }
 
