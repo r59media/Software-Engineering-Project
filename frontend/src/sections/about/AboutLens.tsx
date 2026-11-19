@@ -1,8 +1,7 @@
-import { Component, lazy, Suspense, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, lazy, Suspense, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { LensTransitionContext } from '../transition/LensTransitionContext'
 import { aboutLens } from '../../config/aboutLens'
 import { isSlowConnection } from '../../utils/browserEnv'
-import { getGpuProfile } from '../../utils/gpuProfile'
 
 const loadLensScene = () => import('./LensScene')
 const LensScene = lazy(loadLensScene)
@@ -19,7 +18,6 @@ class LensBoundary extends Component<{ children: ReactNode; onFailure?: () => vo
 }
 
 export function AboutLens() {
-  const gpu = useMemo(() => getGpuProfile(), [])
   const transition = useContext(LensTransitionContext)
   const host = useRef<HTMLDivElement>(null)
   const [ready, setReady] = useState(false)
@@ -36,7 +34,7 @@ export function AboutLens() {
     return () => { media.removeEventListener('change', update); observer.disconnect() }
   }, [])
 
-  const url = mobile || gpu.lens.modelVariant === 'mobile' ? aboutLens.mobileUrl : aboutLens.desktopUrl
+  const url = mobile ? aboutLens.mobileUrl : aboutLens.desktopUrl
 
   useEffect(() => {
     if (isSlowConnection) return

@@ -1,5 +1,3 @@
-import { classifyGpuRenderer } from './gpuProfile.ts'
-
 const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
 
 export const isIPad: boolean =
@@ -11,18 +9,6 @@ export const isWebKit: boolean =
   (isIPad ||
     /iPhone|iPod/i.test(ua) ||
     /^((?!chrome|chromium|crios|fxios|edgios|opr|android).)*safari/i.test(ua))
-
-export const isBraveBrowser: boolean =
-  typeof navigator !== 'undefined' &&
-  Boolean((navigator as Navigator & { brave?: unknown }).brave)
-
-export function isHdrDisplay(): boolean {
-  return (
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(dynamic-range: high)').matches
-  )
-}
 
 type NetworkInformationLike = {
   saveData?: boolean
@@ -49,6 +35,8 @@ export function initBrowserEnv(): void {
   }
 }
 
+const IGPU_PATTERN = /intel|uhd|iris|hd graphics|integrated|radeon\(tm\) graphics|vega|mali|adreno|apple gpu|swiftshader|llvmpipe/i
+
 export function isIntegratedOrLowPowerGpu(gl: WebGLRenderingContext | WebGL2RenderingContext): boolean {
   if (isWebKit || isIPad) return true
   try {
@@ -56,24 +44,7 @@ export function isIntegratedOrLowPowerGpu(gl: WebGLRenderingContext | WebGL2Rend
     const renderer = ext
       ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '')
       : String(gl.getParameter(gl.RENDERER) || '')
-    const vendor = ext
-      ? String(gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) || '')
-      : String(gl.getParameter(gl.VENDOR) || '')
-    const profile = classifyGpuRenderer({
-      renderer,
-      vendor,
-      isWebGL2: true,
-      majorPerformanceCaveat: false,
-      maxTextureSize: 4096,
-      maxSamples: 4,
-      isWebKit,
-      isIPad,
-      isMobile: false,
-      isBrave: isBraveBrowser,
-      isHdrDisplay: isHdrDisplay(),
-      devicePixelRatio: 1,
-    })
-    return profile.tier < 3
+    return IGPU_PATTERN.test(renderer)
   } catch {
     return false
   }
