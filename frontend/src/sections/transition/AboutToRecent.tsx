@@ -30,8 +30,6 @@ export function AboutToRecent() {
   const [reduced, setReduced] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
   const listeners = useRef(new Set<LensApertureListener>())
   const wasLensVisibleRef = useRef(false)
-  const [recentRevealed, setRecentRevealed] = useState(false)
-  const recentRevealedRef = useRef(false)
   const controller = useMemo<LensTransitionController>(() => ({
     subscribe: () => () => {},
     setAperture: () => {},
@@ -178,10 +176,6 @@ export function AboutToRecent() {
 
     const applyProgress = (progress: number) => {
       const revealed = progress >= 1
-      if (revealed !== recentRevealedRef.current) {
-        recentRevealedRef.current = revealed
-        setRecentRevealed(revealed)
-      }
       const move = smooth(clamp(progress / 0.6))
       const zoom = smooth(clamp((progress - 0.08) / 0.92))
       const aperture = smooth(clamp((progress - 0.12) / 0.5))
@@ -387,10 +381,6 @@ export function AboutToRecent() {
       prevProgressState = null
       prevClipPath = null
       wasLensVisibleRef.current = false
-      if (recentRevealedRef.current) {
-        recentRevealedRef.current = false
-        setRecentRevealed(false)
-      }
       overlayController.setAperture(0, false)
     }
   }, [enabled, overlayController])
@@ -401,7 +391,7 @@ export function AboutToRecent() {
       <div className="lens-transition__stage">
         {enabled && <a className="lens-transition__skip" href="#recent-photoshoot">Skip lens transition</a>}
         <About />
-        <div className="lens-transition__recent"><RecentPhotoshoot paused={canAnimate && !recentRevealed} /></div>
+        <div className="lens-transition__recent"><RecentPhotoshoot /></div>
         <div className="lens-transition__lens" aria-hidden="true">
           {canAnimate && <TransitionLens url={url} controller={overlayController} />}
         </div>
