@@ -47,9 +47,8 @@
   transform: rotate(calc(-2deg + var(--local-rot, 0deg)))
              translate3d(var(--local-tx, 0px), var(--local-ty, 0px), 0);
   transform-origin: center center;
-  filter: drop-shadow(0 4px 6px rgba(17, 17, 17, 0.12))
-          drop-shadow(0 14px 24px rgba(17, 17, 17, 0.22))
-          drop-shadow(4px 20px 32px rgba(17, 17, 17, 0.12));
+  filter: drop-shadow(3px 8px 10px rgba(17, 17, 17, 0.14))
+          drop-shadow(6px 16px 20px rgba(17, 17, 17, 0.12));
   transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.35s ease;
   will-change: transform;
 }
@@ -86,6 +85,9 @@
 .about__decorations [data-about-part="bottom-memory-card"] { width: 3.3%; left: 79.9%; bottom: 12.4cqw; }
 .about__decorations [data-about-part="bottom-memory-card"] .about__art { transform: rotate(18.45deg); }
 @media (max-width: 1000px) {
+  .about__decorations .about__art {
+    filter: drop-shadow(4px 6px 6px var(--color-black-30));
+  }
   .about__layout { grid-template-columns: 1fr; padding-top: clamp(3rem, 8vw, 5rem); }
   .about__collage { width: min(100%, 710px); justify-self: center; }
   .about__content {
@@ -106,24 +108,13 @@
 }
 
 @media (max-width: 600px) {
+  .about__portrait-pose {
+    filter: drop-shadow(2px 6px 8px rgba(17, 17, 17, 0.14))
+            drop-shadow(4px 12px 14px rgba(17, 17, 17, 0.12));
+  }
   .about__decorations [data-about-part="bottom-right-camera"] { width: 36%; }
 }
 
-html[data-engine="webkit"] .about__portrait-pose {
-  filter: none;
-  will-change: transform;
-}
-
-html[data-engine="webkit"] .about__portrait-pose::before {
-  content: '';
-  position: absolute;
-  inset: 5% 6.8% 5.5% 6.8%;
-  z-index: -1;
-  pointer-events: none;
-  box-shadow: 0 4px 6px rgba(17, 17, 17, 0.12),
-              0 14px 24px rgba(17, 17, 17, 0.22),
-              4px 20px 32px rgba(17, 17, 17, 0.12);
-}
 
 @media (min-width: 768px) and (max-width: 1000px) {
   .about__content {
@@ -173,14 +164,9 @@ html[data-engine="webkit"] .about__portrait-pose::before {
     transform: rotate(calc(-2deg + var(--local-rot, 1.2deg)))
                translate3d(var(--local-tx, 0px), calc(var(--local-ty, 0px) - 10px), 0)
                scale(1.02);
-    filter: drop-shadow(0 8px 12px rgba(17, 17, 17, 0.16))
-            drop-shadow(0 22px 36px rgba(17, 17, 17, 0.28))
-            drop-shadow(6px 30px 48px rgba(17, 17, 17, 0.16));
+    filter: drop-shadow(4px 12px 14px rgba(17, 17, 17, 0.18))
+            drop-shadow(8px 22px 28px rgba(17, 17, 17, 0.16));
     transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1), filter 0.3s ease;
-  }
-
-  html[data-engine="webkit"] .about__portrait:hover .about__portrait-pose {
-    filter: none;
   }
 }
 
