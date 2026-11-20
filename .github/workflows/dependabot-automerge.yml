@@ -1,9 +1,8 @@
 name: Dependabot Auto-Merge
 
 on:
-  workflow_run:
-    workflows: ["Auto-Maintenance & Dependency Verification"]
-    types: [completed]
+  pull_request_target:
+    types: [opened, synchronize, reopened, closed]
 
 permissions:
   contents: write
@@ -12,50 +11,29 @@ permissions:
 jobs:
   automerge:
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.pull_requests[0].number != null
+      github.event.action != 'closed' &&
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
-    outputs:
-      merged: ${{ steps.merge.outputs.merged }}
     steps:
-      - name: Checkout main
-        uses: actions/checkout@v7
-        with:
-          ref: main
-
-      - name: Verify PR author is dependabot[bot]
-        id: pr_author
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          AUTHOR=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.workflow_run.pull_requests[0].number }}" --jq '.user.login')
-          if [ "$AUTHOR" = "dependabot[bot]" ]; then
-            echo "is_dependabot=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "PR author is '$AUTHOR', not dependabot[bot]. Skipping auto-merge."
-            echo "is_dependabot=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Fetch Dependabot metadata
         id: metadata
-        if: steps.pr_author.outputs.is_dependabot == 'true'
         uses: dependabot/fetch-metadata@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Merge safe patch updates
-        id: merge
-        if: >-
-          steps.pr_author.outputs.is_dependabot == 'true' &&
-          steps.metadata.outputs.update-type == 'version-update:semver-patch'
-        run: |
-          gh pr merge --auto --squash "${{ github.event.workflow_run.pull_requests[0].number }}"
-          echo "merged=true" >> "$GITHUB_OUTPUT"
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr merge --auto --squash "$PR_NUMBER"
 
   deploy:
-    needs: automerge
-    if: needs.automerge.outputs.merged == 'true'
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.base.ref == 'main'
     uses: ./.github/workflows/deploy.yml
     secrets: inherit

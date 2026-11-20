@@ -48,6 +48,7 @@ jobs:
           pnpm --dir frontend run check
           pnpm --dir admin run typecheck
           pnpm --dir backend run typecheck
+          pnpm --dir backend run build
           pnpm --dir backend test
 
       - name: Verify Cloudflare Credentials
