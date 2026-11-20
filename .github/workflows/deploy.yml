@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+  workflow_call:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -25,7 +30,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: 'pnpm'
           cache-dependency-path: |
             frontend/pnpm-lock.yaml
@@ -38,30 +43,53 @@ jobs:
           pnpm --dir admin install --frozen-lockfile
           pnpm --dir backend install --frozen-lockfile
 
-      - name: Build & test frontend, admin, & backend
+      - name: Verify & test frontend, admin, & backend
         run: |
           pnpm --dir frontend run check
           pnpm --dir admin run typecheck
           pnpm --dir backend run typecheck
-          pnpm --dir backend run build
           pnpm --dir backend test
 
-      - name: Check Cloudflare Credentials
-        id: check_token
+      - name: Verify Cloudflare Credentials
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          if [ -z "$CF_TOKEN" ]; then
-            echo "has_token=false" >> $GITHUB_OUTPUT
-            echo "::warning title=Missing Secret::CLOUDFLARE_API_TOKEN is not configured in repository secrets. Skipping wrangler deployment."
-          else
-            echo "has_token=true" >> $GITHUB_OUTPUT
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
+            echo "::error title=Missing Secret::CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be configured in repository secrets."
+            exit 1
           fi
 
       - name: Deploy to Cloudflare Workers
-        if: steps.check_token.outputs.has_token == 'true'
+        id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: 'backend'
+
+      - name: Post-deploy health check & auto-rollback
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+          DEPLOY_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          BASE_URL="${PRODUCTION_URL:-$DEPLOY_URL}"
+          if [ -z "$BASE_URL" ]; then
+            echo "::warning title=No Health URL::Neither vars.PRODUCTION_URL nor steps.deploy.outputs.deployment-url is set. Skipping health check."
+            exit 0
+          fi
+          HEALTH_URL="${BASE_URL%/}/api/health"
+          echo "Checking health at $HEALTH_URL"
+          for i in 1 2 3; do
+            if curl -fsS --max-time 10 "$HEALTH_URL"; then
+              echo "Health check passed on attempt $i."
+              exit 0
+            fi
+            echo "Health check attempt $i failed; retrying in 5s..."
+            sleep 5
+          done
+          echo "::error title=Health Check Failed::All 3 /api/health checks failed. Rolling back Worker deployment."
+          pnpm --dir backend exec wrangler rollback --yes
+          exit 1

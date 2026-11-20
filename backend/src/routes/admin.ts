@@ -19,6 +19,7 @@ import {
 } from '../middleware/auth'
 import { DEFAULT_PROFILE, ensurePortfolioDefaults, listPortfolio, portfolioListQuery } from './portfolio'
 import { bumpPublicContentVersion } from '../lib/edgeCache'
+import { syncRollingScheduleSlots } from '../lib/scheduleSync'
 import { isEmailConfigured, sendEmail } from '../email'
 import {
   addDaysISO,
@@ -129,6 +130,7 @@ export async function ensureSchemaReady(db?: D1Database): Promise<void> {
   if (existing) return existing
 
   const promise = (async () => {
+    let allSucceeded = true
     try {
       await db.prepare(BOOKING_PAYMENTS_TABLE_SQL).run()
       await db.prepare(BOOKING_PAYMENTS_INDEX_SQL).run()
@@ -137,14 +139,22 @@ export async function ensureSchemaReady(db?: D1Database): Promise<void> {
           await db.prepare(step.sql).run()
         } catch (err) {
           if (!step.ignoreError) {
+            allSucceeded = false
             console.warn('Schema step failed (non-fatal):', err)
           }
         }
       }
-      await ensurePhotoPermissionsColumns(db)
+      const photoOk = await ensurePhotoPermissionsColumns(db)
+      if (!photoOk) {
+        allSucceeded = false
+      }
     } catch (err) {
-      schemaReadyByDb.delete(db)
+      allSucceeded = false
       console.warn('ensureSchemaReady failed:', err)
+    } finally {
+      if (!allSucceeded) {
+        schemaReadyByDb.delete(db)
+      }
     }
   })()
 
@@ -594,6 +604,7 @@ adminRouter.post('/schedule', async (c) => {
 
       if (statements.length > 0) {
         await c.env.DB.batch(statements)
+        await syncRollingScheduleSlots(c.env.DB)
       }
 
       return c.json({ success: true, status: 'success', data: { updated: true } })
@@ -696,6 +707,7 @@ adminRouter.put('/availability', async (c) => {
     await c.env.DB.prepare(
       "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('weekly_availability', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
     ).bind(val).run()
+    await syncRollingScheduleSlots(c.env.DB)
 
     return c.json({ success: true, status: 'success', availability: cleanAvailability, data: cleanAvailability })
   } catch (e: any) {

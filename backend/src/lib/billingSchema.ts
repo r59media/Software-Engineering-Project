@@ -66,13 +66,14 @@ export const BILLING_SCHEMA_STEPS: readonly { sql: string; ignoreError: boolean 
  * Safely applies photo permission columns to existing Bookings table if missing (Audit 3).
  * Verifies column presence against PRAGMA table_info(Bookings) to prevent errors and ensure
  * schema migration executes cleanly on production D1 instances.
+ * Returns true when Bookings exists and all columns are verified/applied, false otherwise.
  */
-export async function ensurePhotoPermissionsColumns(db: any): Promise<void> {
+export async function ensurePhotoPermissionsColumns(db: any): Promise<boolean> {
   try {
     const info = await db.prepare('PRAGMA table_info(Bookings)').all()
     const existing = new Set((info.results || []).map((col: any) => String(col.name).toLowerCase()))
 
-    if (existing.size === 0) return // Bookings table does not exist yet
+    if (existing.size === 0) return false // Bookings table does not exist yet
 
     const statements: string[] = []
     if (!existing.has('photo_permission_portfolio')) {
@@ -103,8 +104,10 @@ export async function ensurePhotoPermissionsColumns(db: any): Promise<void> {
     for (const sql of statements) {
       await db.prepare(sql).run()
     }
+    return true
   } catch (err) {
     console.warn('Could not ensure photo permissions columns on Bookings:', err)
+    return false
   }
 }
 

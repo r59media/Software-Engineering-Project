@@ -27,6 +27,7 @@ import {
   shouldBypassPublicEdgeCache,
   tryEdgeCacheMatch
 } from './lib/edgeCache'
+import { runDailyMaintenance } from './lib/scheduleSync'
 
 export { replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady }
 
@@ -1082,7 +1083,8 @@ function extractEarlyHintLinks(html: string): string[] {
 
     if (relTokens.includes('stylesheet') && (/\.css(?:$|[?#])/i.test(href) || !href.includes('.'))) {
       seenHrefs.add(href)
-      styleHints.push(`<${href}>; rel=preload; as=style`)
+      const crossoriginAttr = /\bcrossorigin\b/i.test(tag) ? '; crossorigin' : ''
+      styleHints.push(`<${href}>; rel=preload; as=style${crossoriginAttr}`)
     } else if (relTokens.includes('preload')) {
       const asAttr = (getHtmlAttr(tag, 'as') || '').trim().toLowerCase()
       if ((asAttr === 'font' || /\.woff2(?:$|[?#])/i.test(href)) && /\.woff2(?:$|[?#])/i.test(href)) {
@@ -1249,4 +1251,11 @@ app.notFound((c) => {
   return c.text('Not Found', 404)
 })
 
-export default app
+export { app }
+
+export default {
+  fetch: app.fetch,
+  async scheduled(_controller: ScheduledController, env: Bindings, ctx: ExecutionContext) {
+    ctx.waitUntil(runDailyMaintenance(env.DB))
+  }
+}
