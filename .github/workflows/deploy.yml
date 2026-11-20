@@ -54,10 +54,9 @@ jobs:
       - name: Verify Cloudflare Credentials
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
-            echo "::error title=Missing Secret::CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be configured in repository secrets."
+          if [ -z "$CF_TOKEN" ]; then
+            echo "::error title=Missing Secret::CLOUDFLARE_API_TOKEN must be configured in repository secrets."
             exit 1
           fi
 
