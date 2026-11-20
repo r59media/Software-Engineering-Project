@@ -34,9 +34,9 @@
       return null;
     },
 
-    /** Block a date: POST /admin/blocked-dates → { id, date, dateStr, reason } */
-    async addBlockedDate({ date, reason }) {
-      return client().post('/admin/blocked-dates', { date, reason });
+    /** Block a date or date range: POST /admin/blocked-dates → { id, date, dateStr, reason } | { blockedDates } */
+    async addBlockedDate({ date, endDate, reason }) {
+      return client().post('/admin/blocked-dates', { date, ...(endDate ? { endDate } : {}), reason });
     },
 
     /** Unblock a date: DELETE /admin/blocked-dates/:id */

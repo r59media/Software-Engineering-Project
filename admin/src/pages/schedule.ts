@@ -640,7 +640,7 @@
 
   /* ---------- Blocked dates (records: written immediately) ---------- */
   function setBlockFormEnabled(on) {
-    ['#blockDateInput', '#blockReasonInput', '#btnBlockDate'].forEach(sel => {
+    ['#blockDateInput', '#blockEndDateInput', '#blockReasonInput', '#btnBlockDate'].forEach(sel => {
       const el = $(sel);
       if (el) el.disabled = !on;
     });
@@ -713,53 +713,112 @@
   function addBlockedDate() {
     if (!isLoaded('blockedDates')) return;
     const dateEl = $('#blockDateInput');
+    const endEl = $('#blockEndDateInput');
     const dateVal = dateEl?.value;
+    const endVal = endEl?.value || '';
     const reasonVal = $('#blockReasonInput')?.value.trim() || '';
+
     if (!dateVal || !window.R59.formValidation?.isValidISODate(dateVal)) {
-      setFieldError(dateEl, 'Please choose a valid date to block.');
-      dateEl?.focus();
-      return;
-    }
-    if (st().getBlockedDates().some(b => (b.dateStr || b.date) === dateVal)) {
-      setFieldError(dateEl, 'That date is already blocked.');
+      setFieldError(dateEl, 'Please choose a valid start date to block.');
       dateEl?.focus();
       return;
     }
     setFieldError(dateEl, '');
 
-    const dateFormatted = dateParts(dateVal).formatted;
-    window.R59.confirmation.confirmBlockDate(dateFormatted, () => commitBlockedDate(dateVal, reasonVal));
+    if (endVal) {
+      if (!window.R59.formValidation?.isValidISODate(endVal)) {
+        setFieldError(endEl, 'Please choose a valid end date.');
+        endEl?.focus();
+        return;
+      }
+      if (endVal < dateVal) {
+        setFieldError(endEl, 'End date must be on or after start date.');
+        endEl?.focus();
+        return;
+      }
+      const [sy, sm, sd] = dateVal.split('-').map(Number);
+      const [ey, em, ed] = endVal.split('-').map(Number);
+      const daySpan = Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86400000) + 1;
+      if (daySpan > 90) {
+        setFieldError(endEl, 'Date range cannot exceed 90 days.');
+        endEl?.focus();
+        return;
+      }
+    }
+    setFieldError(endEl, '');
+
+    const rangeDates = [];
+    const [sy, sm, sd] = dateVal.split('-').map(Number);
+    const cursor = new Date(Date.UTC(sy, sm - 1, sd));
+    const targetEnd = endVal || dateVal;
+    while (true) {
+      const iso = cursor.toISOString().slice(0, 10);
+      rangeDates.push(iso);
+      if (iso >= targetEnd) break;
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+
+    const blockedSet = new Set(st().getBlockedDates().map(b => b.dateStr || b.date));
+    if (rangeDates.every(d => blockedSet.has(d))) {
+      const targetEl = endVal ? endEl : dateEl;
+      setFieldError(targetEl, endVal ? 'All dates in that range are already blocked.' : 'That date is already blocked.');
+      targetEl?.focus();
+      return;
+    }
+
+    const dateFormatted = endVal
+      ? `${dateParts(dateVal).formatted} – ${dateParts(endVal).formatted}`
+      : dateParts(dateVal).formatted;
+    window.R59.confirmation.confirmBlockDate(dateFormatted, () => commitBlockedDate(dateVal, endVal, reasonVal));
   }
 
-  async function commitBlockedDate(dateVal, reasonVal) {
+  async function commitBlockedDate(dateVal, endVal, reasonVal) {
     const btn = $('#btnBlockDate');
     if (btn) btn.disabled = true;
     const reason = reasonVal || '';
     try {
-      const res = await window.R59.scheduleApi.addBlockedDate({ date: dateVal, reason });
-      const id = res?.id ?? res?.data?.id;
-      if (id === undefined || id === null) throw new Error('The server did not return the new blocked date.');
+      const res = await window.R59.scheduleApi.addBlockedDate({
+        date: dateVal,
+        endDate: endVal || undefined,
+        reason
+      });
+      const dataObj = res?.data && typeof res.data === 'object' ? res.data : null;
+      const returned = Array.isArray(res?.blockedDates)
+        ? res.blockedDates
+        : Array.isArray(dataObj?.blockedDates)
+          ? dataObj.blockedDates
+          : (res?.id != null ? [res] : (dataObj?.id != null ? [dataObj] : []));
+      if (returned.length === 0) throw new Error('The server did not return the new blocked date(s).');
+
       const list = st().getBlockedDates();
-      if (!list.some(b => String(b.id) === String(id))) {
-        const date = res?.date || res?.data?.date || dateVal;
-        list.push({
-          id,
-          date,
-          dateStr: date,
-          dateFormatted: formatBlockedDate(date),
-          reason: res?.reason ?? res?.data?.reason ?? reason
-        });
+      for (const item of returned) {
+        const id = item?.id;
+        if (id === undefined || id === null) continue;
+        if (!list.some(b => String(b.id) === String(id))) {
+          const date = item?.date || item?.dateStr || dateVal;
+          list.push({
+            id,
+            date,
+            dateStr: date,
+            dateFormatted: formatBlockedDate(date),
+            reason: item?.reason ?? reason
+          });
+        }
       }
+
       $('#blockDateInput').value = '';
+      if ($('#blockEndDateInput')) $('#blockEndDateInput').value = '';
       $('#blockReasonInput').value = '';
       afterBlockedChange();
 
-      const existing = st().getBookings().filter(b => b.date === dateVal && statusKey(b) !== 'cancelled').length;
+      const rangeEnd = endVal || dateVal;
+      const existing = st().getBookings().filter(b => b.date >= dateVal && b.date <= rangeEnd && statusKey(b) !== 'cancelled').length;
+      const label = endVal ? `${returned.length} dates blocked` : 'Date blocked';
       toast(existing
-        ? `Date blocked — note: ${existing} existing booking${existing > 1 ? 's' : ''} on that day ${existing > 1 ? 'are' : 'is'} not cancelled`
-        : 'Date blocked', { type: 'success' });
+        ? `${label} — note: ${existing} existing booking${existing > 1 ? 's' : ''} in that ${endVal ? 'range' : 'day'} ${existing > 1 ? 'are' : 'is'} not cancelled`
+        : label, { type: 'success' });
     } catch (err) {
-      if (err.status !== 401) toast(`Couldn't block the date. ${err.message}`, { type: 'error' });
+      if (err.status !== 401) toast(`Couldn't block the date(s). ${err.message}`, { type: 'error' });
     } finally {
       if (btn) btn.disabled = !isLoaded('blockedDates');
     }
@@ -2573,6 +2632,9 @@
 
     $('#btnBlockDate')?.addEventListener('click', addBlockedDate);
     $('#blockDateInput')?.addEventListener('input', e => {
+      if (e.target.getAttribute('aria-invalid') === 'true') setFieldError(e.target, '');
+    });
+    $('#blockEndDateInput')?.addEventListener('input', e => {
       if (e.target.getAttribute('aria-invalid') === 'true') setFieldError(e.target, '');
     });
 

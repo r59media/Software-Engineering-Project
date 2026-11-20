@@ -13,6 +13,7 @@ import { adminRouter, DEFAULT_PROFILE, replaceMediaStorageChunks, ensurePhotoPer
 import { squareWebhookRouter } from './routes/squareWebhook'
 import { pricingRouter, couponsRouter } from './routes/pricing'
 import { rescheduleRoutes } from './routes/reschedule'
+import { addressRouter } from './routes/address'
 import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret, getMediaSigningSecret, getSessionsValidAfter, timingSafeEqual } from './middleware/auth'
 import { signMediaKey, verifyMediaSignature, parseRangeHeader, parseMediaVariantWidth } from './utils/signedUrl'
 import {
@@ -52,6 +53,7 @@ export type Bindings = {
   EMAIL_FROM?: string
   SQUARE_TERMINAL_DEVICE_ID?: string
   MEDIA_SIGNING_SECRET?: string
+  GOOGLE_MAPS_API_KEY?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -663,6 +665,7 @@ app.route('/api/leads', contactRouter)
 app.route('/api/schedule', scheduleRouter)
 app.route('/api/upload-url', uploadRouter)
 app.route('/api/checkout', checkoutRouter)
+app.route('/api/address-autocomplete', addressRouter)
 app.route('/api/bookings', rescheduleRoutes)
 app.route('/api/portfolio', portfolioRouter)
 app.route('/api/services', servicesRouter)

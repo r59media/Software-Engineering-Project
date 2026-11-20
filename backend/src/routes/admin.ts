@@ -725,11 +725,12 @@ adminRouter.get('/blocked-dates', async (c) => {
   }
 })
 
-// POST: Add a blocked date
+// POST: Add a blocked date (or inclusive vacation date range)
 adminRouter.post('/blocked-dates', async (c) => {
   try {
     const body = await c.req.json()
     const date = String(body.date || body.dateStr || '').trim()
+    const endDate = String(body.endDate || body.end_date || '').trim()
     const reason = String(body.reason || '').trim()
 
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -742,21 +743,83 @@ adminRouter.post('/blocked-dates', async (c) => {
       }, 400)
     }
 
-    const existing = await c.env.DB.prepare(
-      'SELECT id, date, reason FROM Blocked_Dates WHERE date = ?'
-    ).bind(date).first<{ id: number; date: string; reason: string }>()
+    let dates: string[]
+    if (endDate) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < date) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Valid endDate (YYYY-MM-DD) on or after date is required.',
+            details: [{ field: 'endDate', message: 'endDate must be YYYY-MM-DD and >= date.', code: 'INVALID_FORMAT' }]
+          }
+        }, 400)
+      }
 
-    if (existing) {
-      const payload = { id: existing.id, date: existing.date, dateStr: existing.date, reason: existing.reason || '' }
-      return c.json({ success: true, status: 'success', ...payload, data: payload })
+      const toUtcMs = (iso: string) => {
+        const [y, m, d] = iso.split('-').map(Number)
+        return Date.UTC(y, m - 1, d)
+      }
+      const spanDays = Math.round((toUtcMs(endDate) - toUtcMs(date)) / 86_400_000) + 1
+      if (spanDays > 90) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Blocked date range cannot exceed 90 days.',
+            details: [{ field: 'endDate', message: 'Blocked date range cannot exceed 90 days.', code: 'RANGE_TOO_LARGE' }]
+          }
+        }, 400)
+      }
+
+      dates = Array.from({ length: spanDays }, (_, i) => addDaysISO(date, i))
+    } else {
+      dates = [date]
     }
 
-    const result = await c.env.DB.prepare(
-      'INSERT INTO Blocked_Dates (date, reason) VALUES (?, ?)'
-    ).bind(date, reason).run()
+    const placeholders = dates.map(() => '?').join(', ')
+    const existingRes = await c.env.DB.prepare(
+      `SELECT id, date, reason FROM Blocked_Dates WHERE date IN (${placeholders})`
+    ).bind(...dates).all<{ id: number; date: string; reason: string }>()
 
-    const payload = { id: result.meta.last_row_id, date, dateStr: date, reason }
-    return c.json({ success: true, status: 'success', ...payload, data: payload })
+    const byDate = new Map<string, { id: number; date: string; reason: string }>()
+    for (const row of existingRes.results || []) {
+      byDate.set(row.date, row)
+    }
+
+    for (const d of dates) {
+      if (!byDate.has(d)) {
+        const result = await c.env.DB.prepare(
+          'INSERT INTO Blocked_Dates (date, reason) VALUES (?, ?)'
+        ).bind(d, reason).run()
+        byDate.set(d, {
+          id: Number(result.meta.last_row_id),
+          date: d,
+          reason
+        })
+      }
+    }
+
+    const items = dates
+      .slice()
+      .sort()
+      .map((d) => {
+        const row = byDate.get(d)!
+        return {
+          id: row.id,
+          date: row.date,
+          dateStr: row.date,
+          reason: row.reason || ''
+        }
+      })
+
+    const firstItem = items[0]
+    return c.json({
+      success: true,
+      status: 'success',
+      ...firstItem,
+      blockedDates: items,
+      count: items.length,
+      data: firstItem
+    })
   } catch (e: any) {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not add blocked date.', details: [] } }, 500)
   }

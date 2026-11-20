@@ -12,6 +12,34 @@ import { sendBookingConfirmationEmail } from '../email'
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const IDEMPOTENCY_KEY_REGEX = /^[a-zA-Z0-9_-]{8,36}$/
 
+export function stripControlChars(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/[\x00-\x1F\x7F]/g, '').trim() : ''
+}
+
+export function sanitizeCheckoutIdentityAndLocation(body: Record<string, unknown>) {
+  const rawName = body.clientName ?? body.customer_name
+  const clientName = stripControlChars(rawName)
+
+  const rawLocationMode = body.locationMode ?? body.location_mode
+  const locationMode: 'studio' | 'on_location' = rawLocationMode === 'on_location' ? 'on_location' : 'studio'
+  const isOnLocation = locationMode === 'on_location'
+  const rawEventLocation = body.eventLocation ?? body.event_location ?? body.location
+  const trimmedEventLocation = stripControlChars(rawEventLocation).slice(0, 500)
+  const eventLocation = isOnLocation ? (trimmedEventLocation || 'R59 Media Studio') : 'R59 Media Studio'
+
+  const rawAgreementSig = body.agreementSignatureName ?? body.agreement_signature_name
+  const agreementSignatureName = stripControlChars(rawAgreementSig).slice(0, 200)
+
+  return {
+    clientName,
+    locationMode,
+    isOnLocation,
+    trimmedEventLocation,
+    eventLocation,
+    agreementSignatureName
+  }
+}
+
 // Per-IP rate limiter for checkout (max 10 requests/minute, bounded at 1000 entries)
 const MAX_CHECKOUT_IPS = 1000
 const CHECKOUT_WINDOW_MS = 60 * 1000
@@ -87,10 +115,16 @@ checkoutRouter.post('/', async (c) => {
       }, 400)
     }
     const serviceId = body.serviceId ?? body.service_id
-    const rawName = body.clientName ?? body.customer_name
     const rawEmail = body.clientEmail ?? body.customer_email
-    const clientName = typeof rawName === 'string' ? rawName.trim() : ''
     const clientEmail = typeof rawEmail === 'string' ? rawEmail.trim() : ''
+    const {
+      clientName,
+      locationMode,
+      isOnLocation,
+      trimmedEventLocation,
+      eventLocation,
+      agreementSignatureName
+    } = sanitizeCheckoutIdentityAndLocation(body)
     const rawPhone = body.customer_phone ?? body.customerPhone ?? body.phone
     const customerPhone = typeof rawPhone === 'string' ? rawPhone.trim().slice(0, 50) : ''
     const rawNotes = body.notes ?? body.message ?? body.clientNotes
@@ -110,14 +144,6 @@ checkoutRouter.post('/', async (c) => {
 
     const rawSelectedFeeIds = body.selectedFeeIds ?? body.selected_fee_ids
     const selectedFeeIds = Array.isArray(rawSelectedFeeIds) ? rawSelectedFeeIds.map((id: unknown) => String(id).trim()).filter(Boolean) : []
-    const rawLocationMode = body.locationMode ?? body.location_mode
-    const locationMode: 'studio' | 'on_location' = rawLocationMode === 'on_location' ? 'on_location' : 'studio'
-    const isOnLocation = locationMode === 'on_location'
-    const rawEventLocation = body.eventLocation ?? body.event_location ?? body.location
-    const trimmedEventLocation = typeof rawEventLocation === 'string' ? rawEventLocation.trim().slice(0, 500) : ''
-    const eventLocation = trimmedEventLocation || 'R59 Media Studio'
-    const rawAgreementSig = body.agreementSignatureName ?? body.agreement_signature_name
-    const agreementSignatureName = typeof rawAgreementSig === 'string' ? rawAgreementSig.trim().slice(0, 200) : ''
 
     const photoPermissions = body.photoPermissions ?? body.photo_permissions
     let photoPermissionPortfolio = 0

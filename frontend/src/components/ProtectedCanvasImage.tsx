@@ -14,6 +14,7 @@ export interface ProtectedCanvasImageProps {
   loading?: 'lazy' | 'eager' | string
   fetchPriority?: 'high' | 'low' | 'auto'
   forceOriginal?: boolean
+  minDpr?: number
   rootMargin?: string
   placeholderColor?: string
   onError?: () => void
@@ -279,6 +280,7 @@ function computeTargetDimensions(
   srcW: number,
   srcH: number,
   propWidth?: number,
+  minDpr = 1,
 ): { targetW: number; targetH: number } {
   const rect = canvas.getBoundingClientRect()
   let cssWidth = rect.width > 0 ? rect.width : canvas.clientWidth
@@ -291,7 +293,9 @@ function computeTargetDimensions(
     cssWidth = propWidth && propWidth > 0 ? propWidth : srcW
   }
 
-  const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1
+  const dpr = typeof window !== 'undefined'
+    ? Math.min(Math.max(window.devicePixelRatio || 1, minDpr), 2)
+    : Math.min(Math.max(1, minDpr), 2)
   let targetW = Math.min(srcW, MAX_CANVAS_DIMENSION, Math.max(1, Math.ceil(cssWidth * dpr)))
   let targetH = Math.max(1, Math.round(targetW * (srcH / srcW)))
   if (targetH > MAX_CANVAS_DIMENSION) {
@@ -301,12 +305,17 @@ function computeTargetDimensions(
   return { targetW, targetH }
 }
 
-function drawDrawableToCanvas(canvas: HTMLCanvasElement, source: DrawableSource, propWidth?: number): boolean {
+function drawDrawableToCanvas(
+  canvas: HTMLCanvasElement,
+  source: DrawableSource,
+  propWidth?: number,
+  minDpr = 1,
+): boolean {
   const { width: srcW, height: srcH } = getDrawableDimensions(source)
   if (srcW === 0 || srcH === 0) {
     return false
   }
-  const { targetW, targetH } = computeTargetDimensions(canvas, srcW, srcH, propWidth)
+  const { targetW, targetH } = computeTargetDimensions(canvas, srcW, srcH, propWidth, minDpr)
   if (canvas.width !== targetW || canvas.height !== targetH) {
     canvas.width = targetW
     canvas.height = targetH
@@ -335,6 +344,7 @@ export function ProtectedCanvasImage({
   loading,
   fetchPriority,
   forceOriginal = false,
+  minDpr = 1,
   rootMargin = '600px',
   placeholderColor = 'transparent',
   onError,
@@ -390,7 +400,7 @@ export function ProtectedCanvasImage({
       const canvas = canvasRef.current
       if (!canvas) return
       try {
-        if (drawDrawableToCanvas(canvas, source, widthRef.current)) {
+        if (drawDrawableToCanvas(canvas, source, widthRef.current, minDpr)) {
           hasDrawn = true
           offscreenReleased = false
           setLoadedSrc(src)
@@ -529,7 +539,7 @@ export function ProtectedCanvasImage({
         const { width: srcW, height: srcH } = getDrawableDimensions(cachedDrawable)
         if (srcW === 0 || srcH === 0) return
 
-        const { targetW, targetH } = computeTargetDimensions(canvas, srcW, srcH, widthRef.current)
+        const { targetW, targetH } = computeTargetDimensions(canvas, srcW, srcH, widthRef.current, minDpr)
         const maxTargetW = Math.min(srcW, MAX_CANVAS_DIMENSION)
         const maxTargetH = Math.min(srcH, MAX_CANVAS_DIMENSION)
         const grewEnough =
@@ -599,7 +609,7 @@ export function ProtectedCanvasImage({
         cancelAnimationFrame(rafId)
       }
     }
-  }, [src, eager, loading, fetchPriority, forceOriginal, rootMargin])
+  }, [src, eager, loading, fetchPriority, forceOriginal, minDpr, rootMargin])
 
   const canvasStyle: CSSProperties = objectPosition ? { objectPosition } : {}
   const containerStyle: CSSProperties = {

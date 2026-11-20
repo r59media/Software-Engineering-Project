@@ -1,6 +1,6 @@
 import { AnimatePresence, LayoutGroup, motion, useIsPresent, useReducedMotion } from 'motion/react'
 import type { ReactNode } from 'react'
-import { forwardRef, useMemo, useState } from 'react'
+import { forwardRef, useEffect, useMemo, useState } from 'react'
 import { previewBookingServices } from '../../config/booking'
 import type {
   BookingCustomerInfo,
@@ -15,7 +15,7 @@ import { BookingDateTime } from './BookingDateTime'
 import { validateBookingInfo } from './bookingValidation'
 import { BookingYourInfo } from './BookingYourInfo'
 import { BookingSummary } from './BookingSummary'
-import { BookingDeposit } from './BookingDeposit'
+import { BookingDeposit, warmSquarePaymentSdk } from './BookingDeposit'
 import type { ConfirmedBookingSummary } from '../../types/booking'
 import './BookingSection.css'
 
@@ -76,6 +76,7 @@ const STEP_ORDER: Record<BookingStep, number> = {
 function BookingFlow({
   services = previewBookingServices,
   pricing = null,
+  squareConfig = null,
   status = 'ready',
   onRetry,
   inquiryHref = '#contact',
@@ -110,6 +111,8 @@ function BookingFlow({
     return null
   }, [services, selectedServiceId])
 
+  const effectiveSquareConfig = squareConfig ?? pricing?.squareConfig ?? null
+
   // Derive effectiveStep during render to avoid setState in effect
   let effectiveStep: BookingStep = step
   if (step === 'datetime' && !selectedServiceId) {
@@ -119,6 +122,18 @@ function BookingFlow({
   } else if ((step === 'summary' || step === 'deposit') && (!selectedServiceId || !dateTime || !customerInfo)) {
     effectiveStep = 'services'
   }
+
+  useEffect(() => {
+    if (!effectiveSquareConfig) return
+    if (
+      effectiveStep === 'services' ||
+      effectiveStep === 'datetime' ||
+      effectiveStep === 'info' ||
+      effectiveStep === 'summary'
+    ) {
+      warmSquarePaymentSdk(effectiveSquareConfig)
+    }
+  }, [effectiveSquareConfig, effectiveStep])
 
   const handleServicesContinue = (selection: ServiceSelection) => {
     if (selection.serviceId !== selectedServiceId || selection.people !== attendees) setDateTime(null)
@@ -388,6 +403,7 @@ function BookingFlow({
               service={selectedService}
               people={attendees}
               pricing={pricing}
+              squareConfig={effectiveSquareConfig}
               dateTime={dateTime}
               customerInfo={customerInfo}
               photoPermissions={photoPermissions}
