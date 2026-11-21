@@ -87,7 +87,7 @@ function getSocialLinks(profileSocial: unknown): Array<{ platform: string; href:
 }
 
 export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: HeroDestinations; homeHref?: string }) {
-  const { profile, error } = usePublicProfile()
+  const { profile } = usePublicProfile()
   const header = useRef<HTMLElement>(null)
   const dialog = useRef<HTMLDialogElement>(null)
   const trigger = useRef<HTMLButtonElement>(null)
