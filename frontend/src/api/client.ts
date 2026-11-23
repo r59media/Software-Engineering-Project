@@ -315,7 +315,23 @@ export async function fetchHeroSlides(fallbackSlides: readonly HeroSlide[], sign
       .filter(
         ({ rawUrl }) => typeof rawUrl === 'string' && (rawUrl.startsWith('https://') || rawUrl.startsWith('/'))
       )
-    return validItems.map(({ item, rawUrl }, index) => ({
+
+    // Deduplicate by normalized image URL to prevent duplicate slides from admin/database
+    const seenUrls = new Set<string>()
+    const uniqueItems: { item: PortfolioApiItem; rawUrl: string }[] = []
+    for (const entry of validItems) {
+      const normalizedUrl = entry.rawUrl.trim().toLowerCase()
+      if (!seenUrls.has(normalizedUrl)) {
+        seenUrls.add(normalizedUrl)
+        uniqueItems.push(entry)
+      }
+    }
+
+    if (uniqueItems.length === 0) {
+      return fallbackSlides
+    }
+
+    return uniqueItems.map(({ item, rawUrl }, index) => ({
       id: `api-hero-${item.id ?? index}`,
       imageUrl: rawUrl,
       alt: item.alt_text?.trim() || 'R59 Media featured photography',

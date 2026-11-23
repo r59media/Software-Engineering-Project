@@ -66,9 +66,13 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
   const location = profile?.location?.trim()
   const availableSlides = useMemo(() => {
     const ids = new Set<string>()
+    const urls = new Set<string>()
     return slides.filter(slide => {
-      if (!slide.imageUrl.trim() || ids.has(slide.id)) return false
+      const url = slide.imageUrl.trim()
+      const normalizedUrl = url.toLowerCase()
+      if (!url || ids.has(slide.id) || urls.has(normalizedUrl)) return false
       ids.add(slide.id)
+      urls.add(normalizedUrl)
       return true
     })
   }, [slides])
@@ -77,7 +81,10 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
   const [hidden, setHidden] = useState(() => document.hidden)
   const [inView, setInView] = useState(true)
   const controlled = activeSlideId !== undefined
-  const activeIndex = Math.max(0, availableSlides.findIndex(slide => slide.id === (controlled ? activeSlideId : currentId)))
+  const effectiveId = controlled
+    ? activeSlideId
+    : (currentId && availableSlides.some(s => s.id === currentId) ? currentId : availableSlides[0]?.id)
+  const activeIndex = Math.max(0, availableSlides.findIndex(slide => slide.id === effectiveId))
   const activeSlide = availableSlides[activeIndex]
 
   useEffect(() => {
@@ -120,7 +127,7 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
         const nextIndex = (currIndex + 1) % availableSlides.length
         return availableSlides[nextIndex].id
       })
-    }, 1800)
+    }, 5000)
     return () => window.clearInterval(interval)
   }, [controlled, availableSlides, hidden, inView])
 
@@ -137,7 +144,7 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
                 animate={{ x: '0%' }}
                 exit={{ x: '-100%' }}
                 transition={{
-                  duration: 0.22,
+                  duration: 0.7,
                   ease: [0.16, 1, 0.3, 1],
                 }}
               >
@@ -147,8 +154,10 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
           </AnimatePresence>
         </div>
         <div className="hero__content">
-          <p className="hero__role"><span aria-hidden="true" />Photographer</p>
-          <h1 id="hero-title">Kevin D<br />Gonzalez</h1>
+          <div className="hero__title-group">
+            <p className="hero__role"><span aria-hidden="true" />Photographer</p>
+            <h1 id="hero-title">Kevin D<br />Gonzalez</h1>
+          </div>
           {location ? (
             <p className="hero__location">{location}<span aria-hidden="true" /></p>
           ) : null}
