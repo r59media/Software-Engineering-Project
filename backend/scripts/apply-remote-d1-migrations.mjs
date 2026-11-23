@@ -13,23 +13,8 @@ function runWrangler(args, { capture = true } = {}) {
   })
 }
 
-function isMigrationPending(rawJson) {
-  const parsed = JSON.parse(rawJson)
-  const list = Array.isArray(parsed)
-    ? parsed
-    : Array.isArray(parsed?.results)
-      ? parsed.results
-      : Array.isArray(parsed?.migrations)
-        ? parsed.migrations
-        : []
-
-  return list.some((entry) => {
-    if (typeof entry === 'string') return entry === LEGACY_MIGRATION
-    if (entry && typeof entry === 'object') {
-      return entry.name === LEGACY_MIGRATION || entry.migration === LEGACY_MIGRATION
-    }
-    return false
-  })
+function isMigrationPending(rawOutput) {
+  return String(rawOutput || '').includes(LEGACY_MIGRATION)
 }
 
 function hasPhotoPermissionColumn() {
@@ -50,8 +35,8 @@ function hasPhotoPermissionColumn() {
   )
 }
 
-const pendingJson = runWrangler(['d1', 'migrations', 'list', DB_NAME, '--remote', '--json'])
-if (isMigrationPending(pendingJson) && hasPhotoPermissionColumn()) {
+const pendingOutput = runWrangler(['d1', 'migrations', 'list', DB_NAME, '--remote'])
+if (isMigrationPending(pendingOutput) && hasPhotoPermissionColumn()) {
   console.log(`[d1-migrate] Recording already-applied ${LEGACY_MIGRATION} in d1_migrations`)
   runWrangler(
     [
