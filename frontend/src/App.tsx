@@ -101,12 +101,17 @@ function DeferredSection({
     if (!target || typeof IntersectionObserver === 'undefined') return
     const observer = new IntersectionObserver(
       entries => {
-        if (entries.some(entry => entry.isIntersecting)) {
+        const hit = engaged
+          ? entries.some(entry => entry.isIntersecting)
+          : entries.some(entry => entry.isIntersecting && entry.intersectionRect.height > 1)
+        if (hit) {
           setIntersected(true)
           observer.disconnect()
         }
       },
-      { rootMargin: engaged ? (rootMargin ?? '600px') : '0px' },
+      engaged
+        ? { rootMargin: rootMargin ?? '600px' }
+        : { rootMargin: '-1px 0px -1px 0px', threshold: 0.01 },
     )
     observer.observe(target)
     return () => observer.disconnect()

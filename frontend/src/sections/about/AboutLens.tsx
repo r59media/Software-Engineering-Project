@@ -44,12 +44,12 @@ export function AboutLens() {
       target && typeof IntersectionObserver !== 'undefined'
         ? new IntersectionObserver(
             ([entry]) => {
-              if (entry.isIntersecting) {
+              if (entry?.isIntersecting && entry.intersectionRect.height > 1) {
                 engage()
                 observer?.disconnect()
               }
             },
-            { rootMargin: '0px' },
+            { rootMargin: '-1px 0px -1px 0px', threshold: 0.01 },
           )
         : null
     if (target && observer) observer.observe(target)

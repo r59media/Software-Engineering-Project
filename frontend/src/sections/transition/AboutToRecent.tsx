@@ -63,8 +63,10 @@ export function AboutToRecent() {
     let observer: IntersectionObserver | undefined
     if (root.current && typeof IntersectionObserver !== 'undefined') {
       observer = new IntersectionObserver(
-        ([entry]) => { if (entry?.isIntersecting) engage() },
-        { rootMargin: '0px' },
+        ([entry]) => {
+          if (entry?.isIntersecting && entry.intersectionRect.height > 1) engage()
+        },
+        { rootMargin: '-1px 0px -1px 0px', threshold: 0.01 },
       )
       observer.observe(root.current)
     }
