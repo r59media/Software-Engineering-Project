@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import type { Bindings } from '../index'
+import { ensureRollingSlotsUpToDate } from '../lib/scheduleSync.ts'
 
 export const scheduleRouter = new Hono<{ Bindings: Bindings }>()
 
@@ -84,6 +85,8 @@ scheduleRouter.get('/', async (c) => {
     if (currentHour === '24') currentHour = '00'
     const currentTime = `${currentHour}:${hash.minute}`
 
+    await ensureRollingSlotsUpToDate(c.env.DB, currentDate)
+
     const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100))
     const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
 
@@ -118,7 +121,7 @@ scheduleRouter.get('/', async (c) => {
          AND (date > ? OR (date = ? AND start_time > ?))
          AND date NOT IN (SELECT date FROM Blocked_Dates)
          ORDER BY date ASC, start_time ASC
-         LIMIT 1000`
+         LIMIT 2500`
       ).bind(currentDate, currentDate, currentTime).all()
 
       const matching = (results || []).filter(slot =>

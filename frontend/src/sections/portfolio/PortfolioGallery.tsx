@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { GalleryEmptyState } from './GalleryEmptyState'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import { PhotoLightbox } from '../recent/PhotoLightbox'
@@ -18,6 +18,27 @@ export function PortfolioGallery() {
   const { photos, loading } = useGalleryPhotos()
   const [activeCategory, setActiveCategory] = useState('All')
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
+  const [hasVisitedEmpty, setHasVisitedEmpty] = useState(false)
+  const sectionRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    const el = sectionRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') {
+      void import('./MemoryCardScene')
+      return
+    }
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries.some(entry => entry.isIntersecting)) {
+          void import('./MemoryCardScene')
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '400px' },
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   const categories = useMemo(() => {
     const found = new Set<string>(STANDARD_CATEGORIES)
@@ -44,8 +65,14 @@ export function PortfolioGallery() {
     return photos.filter(p => p.category.toLowerCase() === activeCategory.toLowerCase())
   }, [photos, activeCategory])
 
+  const isEmpty = !(loading && photos.length === 0) && filteredPhotos.length === 0
+
+  if (isEmpty && !hasVisitedEmpty) {
+    setHasVisitedEmpty(true)
+  }
+
   return (
-    <section id="portfolio" className="portfolio-gallery" aria-labelledby="portfolio-heading">
+    <section ref={sectionRef} id="portfolio" className="portfolio-gallery" aria-labelledby="portfolio-heading">
       <div className="portfolio-gallery__inner">
         <header className="portfolio-gallery__header">
           <p className="portfolio-gallery__eyebrow">
@@ -77,9 +104,7 @@ export function PortfolioGallery() {
           <div className="portfolio-gallery__loading" role="status">
             <span>Loading gallery...</span>
           </div>
-        ) : filteredPhotos.length === 0 ? (
-          <GalleryEmptyState />
-        ) : (
+        ) : !isEmpty ? (
           <div className="portfolio-gallery__grid">
             {filteredPhotos.map((photo, index) => (
               <button
@@ -104,6 +129,12 @@ export function PortfolioGallery() {
                 )}
               </button>
             ))}
+          </div>
+        ) : null}
+
+        {(hasVisitedEmpty || isEmpty) && (
+          <div hidden={!isEmpty}>
+            <GalleryEmptyState active={isEmpty} />
           </div>
         )}
 

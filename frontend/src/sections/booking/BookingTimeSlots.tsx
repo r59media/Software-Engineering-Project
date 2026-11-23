@@ -21,7 +21,7 @@ export interface BookingTimeSlotsProps {
 }
 
 function normalizeSlots(rawSlots?: readonly string[] | readonly TimeSlotItem[]): TimeSlotItem[] {
-  if (!rawSlots || rawSlots.length === 0) {
+  if (!rawSlots) {
     return [...previewBookingTimeSlots]
   }
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type {
   BookingCustomerInfo,
   BookingDateTimeSelection,
@@ -6,11 +6,15 @@ import type {
   BookingService,
   BookingStep,
   ConfirmedBookingSummary,
+  SquareConfig,
 } from '../../types/booking'
 import {
   computeSessionPricing,
+  fetchAddressDetails,
+  fetchAddressSuggestions,
   submitCheckout,
   validateCoupon,
+  type AddressSuggestion,
   type PricingData,
 } from '../../api/client'
 import { previewBookingDepositPercent } from '../../config/booking'
@@ -41,6 +45,116 @@ interface SquarePayments {
   card: (options?: Record<string, unknown>) => Promise<SquareCard>
 }
 
+const US_STATES: ReadonlyArray<{ code: string; name: string }> = [
+  { code: 'AL', name: 'Alabama' },
+  { code: 'AK', name: 'Alaska' },
+  { code: 'AZ', name: 'Arizona' },
+  { code: 'AR', name: 'Arkansas' },
+  { code: 'CA', name: 'California' },
+  { code: 'CO', name: 'Colorado' },
+  { code: 'CT', name: 'Connecticut' },
+  { code: 'DE', name: 'Delaware' },
+  { code: 'DC', name: 'District of Columbia' },
+  { code: 'FL', name: 'Florida' },
+  { code: 'GA', name: 'Georgia' },
+  { code: 'HI', name: 'Hawaii' },
+  { code: 'ID', name: 'Idaho' },
+  { code: 'IL', name: 'Illinois' },
+  { code: 'IN', name: 'Indiana' },
+  { code: 'IA', name: 'Iowa' },
+  { code: 'KS', name: 'Kansas' },
+  { code: 'KY', name: 'Kentucky' },
+  { code: 'LA', name: 'Louisiana' },
+  { code: 'ME', name: 'Maine' },
+  { code: 'MD', name: 'Maryland' },
+  { code: 'MA', name: 'Massachusetts' },
+  { code: 'MI', name: 'Michigan' },
+  { code: 'MN', name: 'Minnesota' },
+  { code: 'MS', name: 'Mississippi' },
+  { code: 'MO', name: 'Missouri' },
+  { code: 'MT', name: 'Montana' },
+  { code: 'NE', name: 'Nebraska' },
+  { code: 'NV', name: 'Nevada' },
+  { code: 'NH', name: 'New Hampshire' },
+  { code: 'NJ', name: 'New Jersey' },
+  { code: 'NM', name: 'New Mexico' },
+  { code: 'NY', name: 'New York' },
+  { code: 'NC', name: 'North Carolina' },
+  { code: 'ND', name: 'North Dakota' },
+  { code: 'OH', name: 'Ohio' },
+  { code: 'OK', name: 'Oklahoma' },
+  { code: 'OR', name: 'Oregon' },
+  { code: 'PA', name: 'Pennsylvania' },
+  { code: 'RI', name: 'Rhode Island' },
+  { code: 'SC', name: 'South Carolina' },
+  { code: 'SD', name: 'South Dakota' },
+  { code: 'TN', name: 'Tennessee' },
+  { code: 'TX', name: 'Texas' },
+  { code: 'UT', name: 'Utah' },
+  { code: 'VT', name: 'Vermont' },
+  { code: 'VA', name: 'Virginia' },
+  { code: 'WA', name: 'Washington' },
+  { code: 'WV', name: 'West Virginia' },
+  { code: 'WI', name: 'Wisconsin' },
+  { code: 'WY', name: 'Wyoming' },
+]
+
+const cachedSquarePayments = new Map<string, SquarePayments>()
+const SQUARE_ATTACH_TIMEOUT_MS = 12000
+
+function resolveSquareCredentials(squareConfig?: PricingData['squareConfig'] | null) {
+  const rawAppId =
+    squareConfig?.applicationId ||
+    import.meta.env.VITE_SQUARE_APPLICATION_ID ||
+    import.meta.env.VITE_SQUARE_APP_ID ||
+    ''
+  const rawLocationId =
+    squareConfig?.locationId || import.meta.env.VITE_SQUARE_LOCATION_ID || ''
+  const isSquareConfigured = Boolean(
+    rawAppId &&
+      rawLocationId &&
+      !rawAppId.includes('placeholder') &&
+      !rawLocationId.includes('placeholder'),
+  )
+  const isProductionSquare =
+    squareConfig?.environment === 'production' ||
+    import.meta.env.VITE_SQUARE_ENVIRONMENT === 'production'
+
+  return { rawAppId, rawLocationId, isSquareConfigured, isProductionSquare }
+}
+
+function getSquareCdnOrigin(isProductionEnvironment: boolean): string {
+  return isProductionEnvironment
+    ? 'https://web.squarecdn.com'
+    : 'https://sandbox.web.squarecdn.com'
+}
+
+function ensureHeadLink(rel: string, href: string, asType?: string) {
+  if (typeof document === 'undefined') return
+  const existing = document.head.querySelector(`link[rel="${rel}"][href="${href}"]`)
+  if (existing) return
+  const link = document.createElement('link')
+  link.rel = rel
+  link.href = href
+  if (asType) link.as = asType
+  link.crossOrigin = 'anonymous'
+  document.head.appendChild(link)
+}
+
+function getOrCreateSquarePayments(
+  appId: string,
+  locationId: string,
+  isProduction: boolean,
+): SquarePayments | null {
+  if (typeof window === 'undefined' || !window.Square) return null
+  const cacheKey = `${appId}:${locationId}:${isProduction ? 'prod' : 'sandbox'}`
+  const cached = cachedSquarePayments.get(cacheKey)
+  if (cached) return cached
+  const instance = window.Square.payments(appId, locationId)
+  cachedSquarePayments.set(cacheKey, instance)
+  return instance
+}
+
 function loadSquareSdk(isProductionEnvironment?: boolean): Promise<void> {
   if (typeof window === 'undefined') return Promise.resolve()
   if (window.Square) return Promise.resolve()
@@ -49,9 +163,7 @@ function loadSquareSdk(isProductionEnvironment?: boolean): Promise<void> {
     typeof isProductionEnvironment === 'boolean'
       ? isProductionEnvironment
       : import.meta.env.VITE_SQUARE_ENVIRONMENT === 'production'
-  const scriptUrl = isProduction
-    ? 'https://web.squarecdn.com/v1/square.js'
-    : 'https://sandbox.web.squarecdn.com/v1/square.js'
+  const scriptUrl = `${getSquareCdnOrigin(isProduction)}/v1/square.js`
 
   const existing = document.querySelector<HTMLScriptElement>('script[src*="squarecdn.com"]')
   if (existing) {
@@ -78,10 +190,32 @@ function loadSquareSdk(isProductionEnvironment?: boolean): Promise<void> {
   })
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
+export function warmSquarePaymentSdk(squareConfig?: PricingData['squareConfig'] | null): void {
+  if (typeof window === 'undefined') return
+  const { rawAppId, rawLocationId, isSquareConfigured, isProductionSquare } =
+    resolveSquareCredentials(squareConfig)
+  if (!isSquareConfigured) return
+
+  const cdnOrigin = getSquareCdnOrigin(isProductionSquare)
+  ensureHeadLink('preconnect', cdnOrigin)
+  ensureHeadLink('preconnect', 'https://pci-connect.squareup.com')
+  ensureHeadLink('preload', `${cdnOrigin}/v1/square.js`, 'script')
+
+  void loadSquareSdk(isProductionSquare)
+    .then(() => {
+      getOrCreateSquarePayments(rawAppId, rawLocationId, isProductionSquare)
+    })
+    .catch(() => {
+      // Warmup is best-effort; Step 5 handles and surfaces load errors with retry.
+    })
+}
+
 export interface BookingDepositProps {
   service: BookingService
   people: number
   pricing?: PricingData | null
+  squareConfig?: SquareConfig | null
   dateTime: BookingDateTimeSelection
   customerInfo: BookingCustomerInfo
   photoPermissions: BookingPhotoPermissions
@@ -95,6 +229,7 @@ export function BookingDeposit({
   service,
   people,
   pricing = null,
+  squareConfig: squareConfigProp = null,
   dateTime,
   customerInfo,
   photoPermissions,
@@ -107,11 +242,25 @@ export function BookingDeposit({
   const [error, setError] = useState<string | null>(null)
   const [cardLoading, setCardLoading] = useState(true)
   const [cardError, setCardError] = useState<string | null>(null)
+  const [cardRetryKey, setCardRetryKey] = useState(0)
   const [isSandboxMode, setIsSandboxMode] = useState(false)
 
-  // Location selection
+  // Location selection & structured address state
   const [locationMode, setLocationMode] = useState<'studio' | 'on_location'>('studio')
-  const [eventLocation, setEventLocation] = useState('')
+  const [street, setStreet] = useState('')
+  const [apt, setApt] = useState('')
+  const [city, setCity] = useState('')
+  const [stateCode, setStateCode] = useState('')
+  const [postalCode, setPostalCode] = useState('')
+  const [verifiedAddress, setVerifiedAddress] = useState(false)
+  const [googleMapsUrl, setGoogleMapsUrl] = useState<string | null>(null)
+  const [addressSuggestions, setAddressSuggestions] = useState<AddressSuggestion[]>([])
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false)
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false)
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1)
+  const sessionTokenRef = useRef<string>(crypto.randomUUID())
+  const suppressNextAutocompleteRef = useRef(false)
+  const addressComboboxWrapRef = useRef<HTMLDivElement | null>(null)
 
   // Agreement & electronic signature
   const [agreementExpanded, setAgreementExpanded] = useState(false)
@@ -128,32 +277,29 @@ export function BookingDeposit({
   } | null>(null)
 
   const cardRef = useRef<SquareCard | null>(null)
+  const cardContainerRef = useRef<HTMLDivElement | null>(null)
 
-  const squareConfig = pricing?.squareConfig
-  const rawAppId =
-    squareConfig?.applicationId ||
-    import.meta.env.VITE_SQUARE_APPLICATION_ID ||
-    import.meta.env.VITE_SQUARE_APP_ID ||
-    ''
-  const rawLocationId =
-    squareConfig?.locationId || import.meta.env.VITE_SQUARE_LOCATION_ID || ''
-  const isSquareConfigured = Boolean(
-    rawAppId &&
-      rawLocationId &&
-      !rawAppId.includes('placeholder') &&
-      !rawLocationId.includes('placeholder')
-  )
-  const isProductionSquare =
-    squareConfig?.environment === 'production' ||
-    import.meta.env.VITE_SQUARE_ENVIRONMENT === 'production'
+  const squareConfig = squareConfigProp ?? pricing?.squareConfig ?? null
+  const { rawAppId, rawLocationId, isSquareConfigured, isProductionSquare } =
+    resolveSquareCredentials(squareConfig)
 
   const currency = pricing?.currency || service?.currency || 'USD'
   const formatCurrency = (val: number) =>
     new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(val)
 
   const isOnLocation = locationMode === 'on_location'
+  const composedStreet = apt.trim() ? `${street.trim()}, ${apt.trim()}` : street.trim()
+  const composedCityStateZip = [
+    city.trim(),
+    [stateCode.trim(), postalCode.trim()].filter(Boolean).join(' '),
+  ]
+    .filter(Boolean)
+    .join(', ')
+  const composedEventLocation = [composedStreet, composedCityStateZip]
+    .filter(Boolean)
+    .join(', ')
   const resolvedEventLocation = isOnLocation
-    ? eventLocation.trim()
+    ? composedEventLocation || 'On-Location (Address Pending)'
     : 'R59 Media Studio'
 
   const breakdown = computeSessionPricing(
@@ -167,6 +313,13 @@ export function BookingDeposit({
       selectedFeeIds,
       isOnLocation,
     }
+  )
+  const onLocationFees = isOnLocation
+    ? breakdown.appliedFees.filter(fee => fee.trigger === 'on_location')
+    : []
+  const onLocationFeeDollars = onLocationFees.reduce(
+    (sum, fee) => sum + fee.amountDollars,
+    0,
   )
   const depositPercent = breakdown.depositPercent
   const subtotalDollars = (breakdown.subtotalMinor ?? 0) / 100
@@ -209,6 +362,61 @@ export function BookingDeposit({
     timeZone: 'UTC',
   }).format(new Date(`${dateTime.date}T12:00:00Z`))
 
+  // Debounced address autocomplete for on-location sessions
+  useEffect(() => {
+    if (!isOnLocation) return
+    if (suppressNextAutocompleteRef.current) {
+      suppressNextAutocompleteRef.current = false
+      return
+    }
+    const query = street.trim()
+    if (query.length < 3) return
+
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => {
+      setSuggestionsLoading(true)
+      void fetchAddressSuggestions(query, sessionTokenRef.current, controller.signal)
+        .then(results => {
+          if (controller.signal.aborted) return
+          setAddressSuggestions(results)
+          setSuggestionsOpen(results.length > 0)
+          setActiveSuggestionIndex(-1)
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setAddressSuggestions([])
+            setSuggestionsOpen(false)
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) {
+            setSuggestionsLoading(false)
+          }
+        })
+    }, 250)
+
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [isOnLocation, street])
+
+  // Close address suggestions dropdown on outside click
+  useEffect(() => {
+    if (!suggestionsOpen) return
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        addressComboboxWrapRef.current &&
+        !addressComboboxWrapRef.current.contains(event.target as Node)
+      ) {
+        setSuggestionsOpen(false)
+        setActiveSuggestionIndex(-1)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [suggestionsOpen])
+
   // Initialize Square Card or Sandbox simulator
   useEffect(() => {
     let isMounted = true
@@ -220,36 +428,55 @@ export function BookingDeposit({
         return
       }
 
+      setIsSandboxMode(false)
       setCardLoading(true)
       setCardError(null)
 
+      let timeoutId: number | null = null
+
       try {
-        await loadSquareSdk(isProductionSquare)
-        if (!isMounted) return
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = window.setTimeout(() => {
+            reject(new Error('Payment form timed out while loading. Please retry.'))
+          }, SQUARE_ATTACH_TIMEOUT_MS)
+        })
 
-        if (!window.Square) {
-          throw new Error('Square Web Payments SDK is not available.')
-        }
+        await Promise.race([
+          (async () => {
+            await loadSquareSdk(isProductionSquare)
+            if (!isMounted) return
 
-        const payments = window.Square.payments(rawAppId, rawLocationId)
-        const card = await payments.card()
-        if (!isMounted) {
-          await card.destroy()
-          return
-        }
+            const payments = getOrCreateSquarePayments(
+              rawAppId,
+              rawLocationId,
+              isProductionSquare,
+            )
+            if (!payments) {
+              throw new Error('Square Web Payments SDK is not available.')
+            }
 
-        const container = document.getElementById('sq-card-container')
-        if (container) {
-          await card.attach('#sq-card-container')
-          if (!isMounted) {
-            await card.destroy()
-            return
-          }
-          cardRef.current = card
-          setCardLoading(false)
-        } else {
-          setCardError('Payment form container not found.')
-        }
+            const card = await payments.card()
+            if (!isMounted) {
+              await card.destroy()
+              return
+            }
+
+            const container = cardContainerRef.current
+            if (!container) {
+              await card.destroy()
+              throw new Error('Payment form container not found.')
+            }
+
+            await card.attach(container)
+            if (!isMounted) {
+              await card.destroy()
+              return
+            }
+            cardRef.current = card
+            setCardLoading(false)
+          })(),
+          timeoutPromise,
+        ])
       } catch (err: unknown) {
         if (!isMounted) return
         setCardLoading(false)
@@ -258,6 +485,10 @@ export function BookingDeposit({
             ? err.message
             : 'Failed to initialize payment form.'
         setCardError(msg)
+      } finally {
+        if (timeoutId !== null) {
+          window.clearTimeout(timeoutId)
+        }
       }
     }
 
@@ -270,7 +501,7 @@ export function BookingDeposit({
         cardRef.current = null
       }
     }
-  }, [rawAppId, rawLocationId, isProductionSquare, isSquareConfigured])
+  }, [rawAppId, rawLocationId, isProductionSquare, isSquareConfigured, cardRetryKey])
 
   const handleApplyCoupon = async () => {
     const code = couponCodeInput.trim()
@@ -298,14 +529,99 @@ export function BookingDeposit({
     }
   }
 
+  const handleSelectSuggestion = async (suggestion: AddressSuggestion) => {
+    suppressNextAutocompleteRef.current = true
+    setSuggestionsOpen(false)
+    setActiveSuggestionIndex(-1)
+    setError(null)
+
+    if (suggestion.provider === 'google') {
+      setStreet(suggestion.mainText || suggestion.label)
+      const details = await fetchAddressDetails(
+        suggestion.placeId,
+        sessionTokenRef.current,
+      )
+      sessionTokenRef.current = crypto.randomUUID()
+      if (details) {
+        suppressNextAutocompleteRef.current = true
+        setStreet(details.street || suggestion.mainText || '')
+        setCity(details.city || '')
+        setStateCode(details.state || '')
+        setPostalCode(details.postalCode || '')
+        setVerifiedAddress(Boolean(details.verified))
+        setGoogleMapsUrl(details.googleMapsUrl || null)
+        return
+      }
+    }
+
+    const nextStreet = suggestion.street || suggestion.mainText || ''
+    const nextCity = suggestion.city || ''
+    const nextState = suggestion.state || ''
+    const nextZip = suggestion.postalCode || ''
+    const fallbackMapsQuery = [nextStreet, nextCity, nextState, nextZip]
+      .filter(Boolean)
+      .join(', ')
+
+    setStreet(nextStreet)
+    setCity(nextCity)
+    setStateCode(nextState)
+    setPostalCode(nextZip)
+    setVerifiedAddress(Boolean(nextStreet && nextCity && nextState))
+    setGoogleMapsUrl(
+      suggestion.googleMapsUrl ||
+        (fallbackMapsQuery
+          ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(fallbackMapsQuery)}`
+          : null),
+    )
+    sessionTokenRef.current = crypto.randomUUID()
+  }
+
+  const handleStreetKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (!suggestionsOpen || addressSuggestions.length === 0) return
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setActiveSuggestionIndex(prev =>
+        prev < addressSuggestions.length - 1 ? prev + 1 : 0,
+      )
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setActiveSuggestionIndex(prev =>
+        prev > 0 ? prev - 1 : addressSuggestions.length - 1,
+      )
+    } else if (e.key === 'Enter' && activeSuggestionIndex >= 0) {
+      e.preventDefault()
+      const selected = addressSuggestions[activeSuggestionIndex]
+      if (selected) {
+        void handleSelectSuggestion(selected)
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault()
+      setSuggestionsOpen(false)
+      setActiveSuggestionIndex(-1)
+    }
+  }
+
   const handlePayDeposit = async () => {
     setError(null)
 
-    if (isOnLocation && !eventLocation.trim()) {
-      setError(
-        'Please enter the venue name and street address for your on-location session.'
-      )
-      return
+    if (isOnLocation) {
+      if (!street.trim()) {
+        setError('Please enter the street address for your on-location session.')
+        return
+      }
+      if (!city.trim()) {
+        setError('Please enter the city for your on-location session.')
+        return
+      }
+      if (!stateCode.trim()) {
+        setError('Please select the state for your on-location session.')
+        return
+      }
+      if (!/^\d{5}(?:-\d{4})?$/.test(postalCode.trim())) {
+        setError('Please enter a valid 5-digit or ZIP+4 postal code (e.g. 10001).')
+        return
+      }
     }
 
     if (requireSignature && !agreementSignatureName.trim()) {
@@ -497,6 +813,9 @@ export function BookingDeposit({
                 disabled={busy}
                 onClick={() => {
                   setLocationMode('studio')
+                  setAddressSuggestions([])
+                  setSuggestionsOpen(false)
+                  setSuggestionsLoading(false)
                   setError(null)
                 }}
               >
@@ -516,33 +835,216 @@ export function BookingDeposit({
               </button>
             </div>
             {locationMode === 'on_location' && (
-              <div className="booking-deposit__location-input-wrap">
-                <label
-                  htmlFor="deposit-location-input"
-                  style={{
-                    display: 'block',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    marginBottom: '6px',
-                    color: 'var(--color-brand-black)',
-                  }}
-                >
-                  Venue / Street Address{' '}
-                  <span style={{ color: 'var(--color-brand-red)' }}>*</span>
-                </label>
-                <input
-                  id="deposit-location-input"
-                  type="text"
-                  required
-                  className="booking-deposit__location-input"
-                  placeholder="Enter venue name and street address"
-                  value={eventLocation}
-                  onChange={e => {
-                    setEventLocation(e.target.value)
-                    setError(null)
-                  }}
-                  disabled={busy}
-                />
+              <div
+                className="booking-deposit__address-fields"
+                ref={addressComboboxWrapRef}
+              >
+                <div className="booking-deposit__address-field booking-deposit__address-combobox">
+                  <label
+                    htmlFor="deposit-street-input"
+                    className="booking-deposit__field-label"
+                  >
+                    Street Address{' '}
+                    <span style={{ color: 'var(--color-brand-red)' }}>*</span>
+                  </label>
+                  <input
+                    id="deposit-street-input"
+                    type="text"
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-expanded={suggestionsOpen}
+                    aria-controls="deposit-address-listbox"
+                    aria-activedescendant={
+                      activeSuggestionIndex >= 0
+                        ? `deposit-address-option-${activeSuggestionIndex}`
+                        : undefined
+                    }
+                    autoComplete="address-line1"
+                    required
+                    className="booking-deposit__location-input"
+                    placeholder="Start typing street address (e.g. 350 5th Ave)"
+                    value={street}
+                    onChange={e => {
+                      const nextStreet = e.target.value
+                      setStreet(nextStreet)
+                      setVerifiedAddress(false)
+                      setGoogleMapsUrl(null)
+                      if (nextStreet.trim().length < 3) {
+                        setAddressSuggestions([])
+                        setSuggestionsOpen(false)
+                        setSuggestionsLoading(false)
+                      }
+                      setError(null)
+                    }}
+                    onFocus={() => {
+                      if (addressSuggestions.length > 0 && !verifiedAddress) {
+                        setSuggestionsOpen(true)
+                      }
+                    }}
+                    onKeyDown={handleStreetKeyDown}
+                    disabled={busy}
+                  />
+                  {suggestionsLoading && (
+                    <span className="booking-deposit__address-hint">
+                      Searching addresses…
+                    </span>
+                  )}
+                  {suggestionsOpen && addressSuggestions.length > 0 && (
+                    <ul
+                      id="deposit-address-listbox"
+                      role="listbox"
+                      aria-label="Address suggestions"
+                      className="booking-deposit__address-listbox"
+                    >
+                      {addressSuggestions.map((suggestion, idx) => (
+                        <li
+                          key={suggestion.id}
+                          id={`deposit-address-option-${idx}`}
+                          role="option"
+                          aria-selected={idx === activeSuggestionIndex}
+                          className={`booking-deposit__address-option${
+                            idx === activeSuggestionIndex ? ' is-active' : ''
+                          }`}
+                          onMouseDown={e => {
+                            e.preventDefault()
+                            void handleSelectSuggestion(suggestion)
+                          }}
+                        >
+                          <span className="booking-deposit__address-main">
+                            {suggestion.mainText}
+                          </span>
+                          {suggestion.secondaryText && (
+                            <span className="booking-deposit__address-sub">
+                              {suggestion.secondaryText}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="booking-deposit__address-field">
+                  <label
+                    htmlFor="deposit-apt-input"
+                    className="booking-deposit__field-label"
+                  >
+                    Apt / Suite <span className="booking-deposit__optional">(optional)</span>
+                  </label>
+                  <input
+                    id="deposit-apt-input"
+                    type="text"
+                    autoComplete="address-line2"
+                    className="booking-deposit__location-input"
+                    placeholder="Apt, Suite, Unit, Floor"
+                    value={apt}
+                    onChange={e => {
+                      setApt(e.target.value)
+                      setError(null)
+                    }}
+                    disabled={busy}
+                  />
+                </div>
+
+                <div className="booking-deposit__address-row">
+                  <div className="booking-deposit__address-field">
+                    <label
+                      htmlFor="deposit-city-input"
+                      className="booking-deposit__field-label"
+                    >
+                      City <span style={{ color: 'var(--color-brand-red)' }}>*</span>
+                    </label>
+                    <input
+                      id="deposit-city-input"
+                      type="text"
+                      autoComplete="address-level2"
+                      required
+                      className="booking-deposit__location-input"
+                      placeholder="City"
+                      value={city}
+                      onChange={e => {
+                        setCity(e.target.value)
+                        setVerifiedAddress(false)
+                        setGoogleMapsUrl(null)
+                        setError(null)
+                      }}
+                      disabled={busy}
+                    />
+                  </div>
+
+                  <div className="booking-deposit__address-field">
+                    <label
+                      htmlFor="deposit-state-select"
+                      className="booking-deposit__field-label"
+                    >
+                      State <span style={{ color: 'var(--color-brand-red)' }}>*</span>
+                    </label>
+                    <select
+                      id="deposit-state-select"
+                      autoComplete="address-level1"
+                      required
+                      className="booking-deposit__location-input booking-deposit__location-select"
+                      value={stateCode}
+                      onChange={e => {
+                        setStateCode(e.target.value)
+                        setVerifiedAddress(false)
+                        setGoogleMapsUrl(null)
+                        setError(null)
+                      }}
+                      disabled={busy}
+                    >
+                      <option value="">State</option>
+                      {US_STATES.map(s => (
+                        <option key={s.code} value={s.code}>
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="booking-deposit__address-field">
+                    <label
+                      htmlFor="deposit-zip-input"
+                      className="booking-deposit__field-label"
+                    >
+                      ZIP Code <span style={{ color: 'var(--color-brand-red)' }}>*</span>
+                    </label>
+                    <input
+                      id="deposit-zip-input"
+                      type="text"
+                      inputMode="numeric"
+                      autoComplete="postal-code"
+                      maxLength={10}
+                      required
+                      className="booking-deposit__location-input"
+                      placeholder="10001"
+                      value={postalCode}
+                      onChange={e => {
+                        setPostalCode(e.target.value)
+                        setVerifiedAddress(false)
+                        setGoogleMapsUrl(null)
+                        setError(null)
+                      }}
+                      disabled={busy}
+                    />
+                  </div>
+                </div>
+
+                {verifiedAddress && googleMapsUrl && (
+                  <div className="booking-deposit__verified-row">
+                    <span className="booking-deposit__verified-badge">
+                      ✓ Verified Address
+                    </span>
+                    <a
+                      href={googleMapsUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="booking-deposit__maps-link"
+                    >
+                      Verified Address — View on Google Maps ↗
+                    </a>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -792,7 +1294,7 @@ export function BookingDeposit({
             ) : (
               <div>
                 <div
-                  id="sq-card-container"
+                  ref={cardContainerRef}
                   className="booking-deposit__card-container"
                 />
                 {cardLoading && (
@@ -801,9 +1303,18 @@ export function BookingDeposit({
                   </p>
                 )}
                 {cardError && (
-                  <p className="booking-deposit__error" role="alert">
-                    {cardError}
-                  </p>
+                  <div className="booking-deposit__card-error-wrap">
+                    <p className="booking-deposit__error" role="alert">
+                      {cardError}
+                    </p>
+                    <button
+                      type="button"
+                      className="booking-deposit__retry-btn"
+                      onClick={() => setCardRetryKey(k => k + 1)}
+                    >
+                      Retry Payment Form
+                    </button>
+                  </div>
                 )}
               </div>
             )}
@@ -951,6 +1462,13 @@ export function BookingDeposit({
           </div>
 
           <div className="booking-deposit__pricing-card">
+            {isOnLocation && onLocationFeeDollars > 0 && (
+              <div className="booking-deposit__pricing-row">
+                <span>On-Location Fee:</span>
+                <span>+{formatCurrency(onLocationFeeDollars)}</span>
+              </div>
+            )}
+
             <div className="booking-deposit__pricing-row booking-deposit__pricing-row--total">
               <span>Session Total:</span>
               <span>{formatCurrency(finalTotalDollars)}</span>

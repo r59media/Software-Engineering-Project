@@ -104,7 +104,10 @@ export class SquareNotConfiguredError extends BillingError {
 let squareSdkPromise: Promise<SquareSdk> | null = null
 function getSquareSdk(): Promise<SquareSdk> {
   if (!squareSdkPromise) {
-    squareSdkPromise = import('square')
+    squareSdkPromise = import('square').catch((err) => {
+      squareSdkPromise = null
+      throw err
+    })
   }
   return squareSdkPromise
 }

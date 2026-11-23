@@ -72,7 +72,8 @@ export async function sendEmail(env: Bindings, message: EmailMessageInput): Prom
         to: [message.to],
         subject: message.subject,
         text: message.text
-      })
+      }),
+      signal: AbortSignal.timeout(10000)
     })
     return { sent: res.ok, reason: res.ok ? undefined : `http_${res.status}` }
   } catch {

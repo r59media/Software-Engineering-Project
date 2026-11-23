@@ -151,7 +151,7 @@ export function ContactSection({ photos = contactPhotos, onSendInquiry }: Contac
       <header className="contact-section__header"><p className="contact-section__eyebrow"><span />Get in touch</p><h2 id="contact-title">READY TO CREATE<br />SOMETHING?</h2></header>
       <div className="contact-section__body">
         <div className="contact-section__collage" aria-hidden="true">
-          {photos.slice(0, 3).map((photo, index) => <div className={`contact-section__photo contact-section__photo--${index + 1}`} key={photo.id}><ProtectedCanvasImage src={photo.imageUrl} alt="" className="contact-section__photo-image" containerClassName="contact-section__photo-container" width={300} height={400} objectPosition={photo.objectPosition} /></div>)}
+          {photos.slice(0, 3).map((photo, index) => <div className={`contact-section__photo contact-section__photo--${index + 1}`} key={photo.id}><ProtectedCanvasImage src={photo.imageUrl} alt="" className="contact-section__photo-image" containerClassName="contact-section__photo-container" width={300} height={400} minDpr={2} objectPosition={photo.objectPosition} /></div>)}
         </div>
         <div className="contact-section__flow">
           <AnimatePresence initial={false}>

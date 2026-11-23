@@ -121,7 +121,7 @@ export function BookingDateTime({
       })
     }
 
-    if (!slotsLoadedFromApi || scheduleSlots.length === 0) {
+    if (!slotsLoadedFromApi) {
       return [...previewBookingTimeSlots]
     }
 

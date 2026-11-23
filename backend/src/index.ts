@@ -13,6 +13,7 @@ import { adminRouter, DEFAULT_PROFILE, replaceMediaStorageChunks, ensurePhotoPer
 import { squareWebhookRouter } from './routes/squareWebhook'
 import { pricingRouter, couponsRouter } from './routes/pricing'
 import { rescheduleRoutes } from './routes/reschedule'
+import { addressRouter } from './routes/address'
 import { extractSessionToken, verifySessionToken, isTokenRevokedInDb, adminAuth, getSigningSecret, getMediaSigningSecret, getSessionsValidAfter, timingSafeEqual } from './middleware/auth'
 import { signMediaKey, verifyMediaSignature, parseRangeHeader, parseMediaVariantWidth } from './utils/signedUrl'
 import {
@@ -26,6 +27,7 @@ import {
   shouldBypassPublicEdgeCache,
   tryEdgeCacheMatch
 } from './lib/edgeCache'
+import { runDailyMaintenance } from './lib/scheduleSync'
 
 export { replaceMediaStorageChunks, ensurePhotoPermissionsColumns, ensureSchemaReady }
 
@@ -52,6 +54,7 @@ export type Bindings = {
   EMAIL_FROM?: string
   SQUARE_TERMINAL_DEVICE_ID?: string
   MEDIA_SIGNING_SECRET?: string
+  GOOGLE_MAPS_API_KEY?: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
@@ -663,6 +666,7 @@ app.route('/api/leads', contactRouter)
 app.route('/api/schedule', scheduleRouter)
 app.route('/api/upload-url', uploadRouter)
 app.route('/api/checkout', checkoutRouter)
+app.route('/api/address-autocomplete', addressRouter)
 app.route('/api/bookings', rescheduleRoutes)
 app.route('/api/portfolio', portfolioRouter)
 app.route('/api/services', servicesRouter)
@@ -1079,7 +1083,8 @@ function extractEarlyHintLinks(html: string): string[] {
 
     if (relTokens.includes('stylesheet') && (/\.css(?:$|[?#])/i.test(href) || !href.includes('.'))) {
       seenHrefs.add(href)
-      styleHints.push(`<${href}>; rel=preload; as=style`)
+      const crossoriginAttr = /\bcrossorigin\b/i.test(tag) ? '; crossorigin' : ''
+      styleHints.push(`<${href}>; rel=preload; as=style${crossoriginAttr}`)
     } else if (relTokens.includes('preload')) {
       const asAttr = (getHtmlAttr(tag, 'as') || '').trim().toLowerCase()
       if ((asAttr === 'font' || /\.woff2(?:$|[?#])/i.test(href)) && /\.woff2(?:$|[?#])/i.test(href)) {
@@ -1246,4 +1251,11 @@ app.notFound((c) => {
   return c.text('Not Found', 404)
 })
 
-export default app
+export { app }
+
+export default {
+  fetch: app.fetch,
+  async scheduled(_controller: ScheduledController, env: Bindings, ctx: ExecutionContext) {
+    ctx.waitUntil(runDailyMaintenance(env.DB))
+  }
+}

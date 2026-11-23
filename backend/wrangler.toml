@@ -30,4 +30,7 @@ binding = "DB"
 database_name = "r59_db"
 database_id = "a774e6aa-39ec-4a9c-8206-48c57aeead87"
 
+[triggers]
+crons = ["0 6 * * *"]
+
 

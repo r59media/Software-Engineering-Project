@@ -879,3 +879,71 @@ export async function validateCoupon(code: string, signal?: AbortSignal): Promis
   }
 }
 
+export interface AddressSuggestion {
+  id: string
+  placeId: string
+  label: string
+  mainText: string
+  secondaryText: string
+  provider: 'google' | 'osm'
+  street?: string
+  city?: string
+  state?: string
+  postalCode?: string
+  formattedAddress?: string
+  googleMapsUrl?: string
+}
+
+export interface ResolvedAddressDetails {
+  street: string
+  city: string
+  state: string
+  postalCode: string
+  formattedAddress: string
+  googleMapsUrl: string
+  verified: boolean
+}
+
+export async function fetchAddressSuggestions(
+  query: string,
+  sessionToken?: string,
+  signal?: AbortSignal,
+): Promise<AddressSuggestion[]> {
+  const trimmed = query.trim()
+  if (trimmed.length < 3) return []
+  try {
+    const params = new URLSearchParams({ q: trimmed })
+    if (sessionToken) params.set('sessionToken', sessionToken)
+    const res = await fetch(`${API_BASE}/address-autocomplete?${params.toString()}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      credentials: 'omit',
+      signal,
+    })
+    if (!res.ok) return []
+    const json = (await res.json()) as {
+      status?: string
+      suggestions?: AddressSuggestion[]
+      data?: AddressSuggestion[]
+    }
+    if (json.status === 'error') return []
+    if (Array.isArray(json.suggestions)) return json.suggestions
+    if (Array.isArray(json.data)) return json.data
+    return []
+  } catch {
+    return []
+  }
+}
+
+export async function fetchAddressDetails(
+  placeId: string,
+  sessionToken?: string,
+  signal?: AbortSignal,
+): Promise<ResolvedAddressDetails | null> {
+  const trimmed = placeId.trim()
+  if (!trimmed) return null
+  const params = new URLSearchParams({ placeId: trimmed })
+  if (sessionToken) params.set('sessionToken', sessionToken)
+  return apiGet<ResolvedAddressDetails>(`/address-autocomplete/details?${params.toString()}`, signal)
+}
+

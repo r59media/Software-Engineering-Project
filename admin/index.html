@@ -925,16 +925,21 @@
                     <div class="block-form" id="blockForm">
                       <div class="field-row">
                         <div class="field">
-                          <label class="field__label" for="blockDateInput">Date</label>
+                          <label class="field__label" for="blockDateInput">Start Date</label>
                           <div class="field__control"><input class="field__input" type="date" id="blockDateInput" aria-describedby="blockDateInput-error"></div>
                           <p class="field__error" id="blockDateInput-error" hidden><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-alert"/></svg><span></span></p>
+                        </div>
+                        <div class="field">
+                          <label class="field__label" for="blockEndDateInput">End Date (optional, for vacations)</label>
+                          <div class="field__control"><input class="field__input" type="date" id="blockEndDateInput" aria-describedby="blockEndDateInput-error"></div>
+                          <p class="field__error" id="blockEndDateInput-error" hidden><svg class="ico" aria-hidden="true" focusable="false"><use href="#i-alert"/></svg><span></span></p>
                         </div>
                         <div class="field">
                           <label class="field__label" for="blockReasonInput">Reason (optional)</label>
                           <div class="field__control"><input class="field__input" type="text" id="blockReasonInput" maxlength="200"></div>
                         </div>
                       </div>
-                      <div><button type="button" class="btn btn--primary" id="btnBlockDate">Block Date</button></div>
+                      <div><button type="button" class="btn btn--primary" id="btnBlockDate">Block Date(s)</button></div>
                     </div>
 
                     <h4 class="caps list-cap" id="sc-blocked-list-title">Blocked Dates List</h4>

@@ -165,6 +165,8 @@
 
         const script = document.createElement('script');
         script.src = 'https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js';
+        script.crossOrigin = 'anonymous';
+        script.referrerPolicy = 'no-referrer';
         script.setAttribute('data-lib', 'heic2any');
         script.async = true;
         script.onload = () => {

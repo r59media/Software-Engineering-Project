@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono'
 import type { Bindings } from '../index'
 import { ensureSchemaReady } from './admin'
 import { isSlotInWeeklyAvailability } from './schedule'
+import { ensureRollingSlotsUpToDate } from '../lib/scheduleSync'
 import { getMediaSigningSecret, getSigningSecret, getTrustedClientIp, normalizeIpBucket } from '../middleware/auth'
 import {
   signRescheduleToken,
@@ -41,6 +42,7 @@ export { signRescheduleToken, verifyRescheduleToken, signCalendarFeedToken, veri
 
 const RESCHEDULE_RATE_WINDOW_MS = 60_000
 const RESCHEDULE_RATE_MAX_ATTEMPTS = 15
+const MAX_RESCHEDULE_RATE_ENTRIES = 1000
 const rescheduleRateAttempts = new Map<string, { count: number; windowStart: number }>()
 
 function checkRescheduleRateLimit(c: Context<{ Bindings: Bindings }>): { allowed: boolean; retryAfterSeconds: number } {
@@ -55,6 +57,10 @@ function checkRescheduleRateLimit(c: Context<{ Bindings: Bindings }>): { allowed
   const bucket = normalizeIpBucket(getTrustedClientIp(c))
   const existing = rescheduleRateAttempts.get(bucket)
   if (!existing || now - existing.windowStart > RESCHEDULE_RATE_WINDOW_MS) {
+    if (!existing && rescheduleRateAttempts.size >= MAX_RESCHEDULE_RATE_ENTRIES) {
+      const oldest = rescheduleRateAttempts.keys().next().value
+      if (oldest !== undefined) rescheduleRateAttempts.delete(oldest)
+    }
     rescheduleRateAttempts.set(bucket, { count: 1, windowStart: now })
     return { allowed: true, retryAfterSeconds: 0 }
   }
@@ -140,6 +146,7 @@ async function loadPricingConfig(db: D1Database): Promise<{ policy: BookingPolic
 
 async function loadAvailableSlots(db: D1Database, timeZone: string): Promise<any[]> {
   const { currentDate, currentTime } = getStudioCurrentDateTime(timeZone)
+  await ensureRollingSlotsUpToDate(db, currentDate)
   const weeklyAvailability = await loadWeeklyAvailability(db)
   const { results } = await db
     .prepare(
@@ -148,7 +155,7 @@ async function loadAvailableSlots(db: D1Database, timeZone: string): Promise<any
          AND (date > ? OR (date = ? AND start_time > ?))
          AND date NOT IN (SELECT date FROM Blocked_Dates)
        ORDER BY date ASC, start_time ASC
-       LIMIT 1000`
+       LIMIT 2500`
     )
     .bind(currentDate, currentDate, currentTime)
     .all()
