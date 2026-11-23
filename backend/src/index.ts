@@ -425,7 +425,7 @@ app.get('/admin/assets/js/utils/webpEncoder.worker.js', async (c) => {
   })
 })
 
-const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb|wasm)$/i
+const STATIC_EXT_REGEX = /\.(css|js|svg|png|jpg|jpeg|webp|ico|woff2?|ttf|json|glb|wasm|txt|xml)$/i
 
 app.get('/admin/*', async (c) => {
   if (!c.env.ASSETS) {
