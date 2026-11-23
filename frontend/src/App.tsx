@@ -3,12 +3,11 @@ import './styles/global.css'
 import { fetchBookingServices, fetchHeroSlides, fetchPricing, submitContactLead, type PricingData } from './api/client'
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
-import { previewBookingServices } from './config/booking'
 import { Hero } from './sections/hero/Hero'
-import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
 import type { BookingService, ConfirmedBookingSummary } from './types/booking'
 import type { ContactInquiry } from './types/contact'
+const SiteFooter = lazy(() => import('./sections/footer/SiteFooter').then(m => ({ default: m.SiteFooter })))
 const PortfolioGallery = lazy(() => import('./sections/portfolio/PortfolioGallery').then(m => ({ default: m.PortfolioGallery })))
 const RescheduleModal = lazy(() => import('./sections/booking/RescheduleModal').then(m => ({ default: m.RescheduleModal })))
 
@@ -151,7 +150,7 @@ function App() {
   const engagedRef = useRef(engaged)
   const bookingLoadedOnceRef = useRef(false)
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
-  const [bookingServices, setBookingServices] = useState<readonly BookingService[]>(previewBookingServices)
+  const [bookingServices, setBookingServices] = useState<readonly BookingService[]>([])
   const [pricing, setPricing] = useState<PricingData | null>(null)
   const [bookingStatus, setBookingStatus] = useState<'ready' | 'loading' | 'error'>('loading')
   const [confirmedBooking, setConfirmedBooking] = useState<ConfirmedBookingSummary | null>(null)
@@ -189,7 +188,8 @@ function App() {
   const isFaqPage = normalizedPath === `${cleanBase}/faq`
   const loadBookingServices = useCallback(async () => {
     try {
-      const [services, livePricing] = await Promise.all([
+      const [{ previewBookingServices }, services, livePricing] = await Promise.all([
+        import('./config/booking'),
         fetchBookingServices(),
         fetchPricing(),
       ])
@@ -203,6 +203,7 @@ function App() {
       }
       setBookingStatus('ready')
     } catch {
+      const { previewBookingServices } = await import('./config/booking')
       setBookingServices(previewBookingServices)
       setBookingStatus('ready')
     }
@@ -452,7 +453,9 @@ function App() {
           />
         </Suspense>
       </main>
-      <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+      <Suspense fallback={null}>
+        <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+      </Suspense>
     </div>
   }
 
@@ -466,7 +469,9 @@ function App() {
       <Suspense fallback={null}>
         <LegalPage page={legalPage} />
       </Suspense>
-      <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+      <Suspense fallback={null}>
+        <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+      </Suspense>
     </div>
   }
 
@@ -480,7 +485,9 @@ function App() {
       <Suspense fallback={null}>
         <FaqPage />
       </Suspense>
-      <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+      <Suspense fallback={null}>
+        <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+      </Suspense>
     </div>
   }
 
@@ -556,7 +563,13 @@ function App() {
         <ContactSection onSendInquiry={handleSendInquiry} />
       </DeferredSection>
     </main>
-    <SiteFooter />
+    {engaged ? (
+      <Suspense fallback={<footer style={{ minHeight: '280px' }} />}>
+        <SiteFooter />
+      </Suspense>
+    ) : (
+      <footer style={{ minHeight: '280px' }} />
+    )}
   </div>
 }
 
