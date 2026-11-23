@@ -48,7 +48,7 @@ export function AboutToRecent() {
     fail: () => setFailed(true),
   }), [url])
   const canReserve = !failed && !reduced && fits
-  const canAnimate = loaded && canReserve
+  const canAnimate = canReserve
   const enabled = canAnimate && readyUrl === url
 
   useEffect(() => {

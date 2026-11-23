@@ -51,11 +51,7 @@ export function AboutLens() {
         })
         .catch(() => {})
     }
-    if (typeof window.requestIdleCallback === 'function') {
-      const id = window.requestIdleCallback(warm, { timeout: 1500 })
-      return () => { cancelled = true; window.cancelIdleCallback(id) }
-    }
-    const timer = window.setTimeout(warm, 200)
+    const timer = window.setTimeout(warm, 50)
     return () => { cancelled = true; window.clearTimeout(timer) }
   }, [url])
 
