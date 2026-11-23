@@ -3,9 +3,55 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>R59 Media</title>
+    <title>Kevin D Gonzalez · Professional Photography & Visual Stories | R59 Media</title>
+    <meta
+      name="description"
+      content="Official portfolio of Kevin D Gonzalez, professional photographer at R59 Media. Portraits, events, and visual stories crafted with intention."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="theme-color" content="#111111" />
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="R59 Media" />
+    <meta property="og:title" content="Kevin D Gonzalez · Professional Photography | R59 Media" />
+    <meta
+      property="og:description"
+      content="Portraits, events, and visual stories crafted with intention. Book your session or explore the portfolio."
+    />
+    <meta property="og:image" content="/favicon-dark.png" />
+
+    <!-- Twitter Cards -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Kevin D Gonzalez · Professional Photography | R59 Media" />
+    <meta
+      name="twitter:description"
+      content="Portraits, events, and visual stories crafted with intention. Book your session or explore the portfolio."
+    />
+    <meta name="twitter:image" content="/favicon-dark.png" />
+
     <link rel="icon" type="image/png" href="/favicon-dark.png" media="(prefers-color-scheme: light)" />
     <link rel="icon" type="image/png" href="/favicon-light.png" media="(prefers-color-scheme: dark)" />
+
+    <!-- Structured Data (JSON-LD) for SEO and Agentic Browsing -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "ProfessionalService",
+        "name": "R59 Media",
+        "url": "https://software-engineering-project.r59mediatesting.workers.dev/",
+        "logo": "https://software-engineering-project.r59mediatesting.workers.dev/favicon-dark.png",
+        "image": "https://software-engineering-project.r59mediatesting.workers.dev/favicon-dark.png",
+        "description": "Portraits, events, and visual stories crafted with intention by professional photographer Kevin D Gonzalez.",
+        "founder": {
+          "@type": "Person",
+          "name": "Kevin D Gonzalez",
+          "jobTitle": "Professional Photographer"
+        },
+        "knowsAbout": ["Portrait Photography", "Event Photography", "Lifestyle Photography"],
+        "priceRange": "$$"
+      }
+    </script>
 
     <!-- Critical Web Font Preloads (Inter 400 body & Jost 700 headings) -->
     <link rel="preload" href="/src/assets/fonts/jost-700.woff2" as="font" type="font/woff2" crossorigin />
