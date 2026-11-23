@@ -105,7 +105,7 @@
 @media (max-width: 767px) {
   .booking__services { padding-top: 1.25rem; padding-bottom: .75rem; }
   .booking__mobile-controls { padding-bottom: .5rem; }
-  .booking__dots button { min-width: 24px; width: 24px; min-height: 32px; padding: 0; }
+  .booking__dots button { min-width: 44px; width: 44px; min-height: 44px; height: 44px; padding: 0; }
   .booking__dots button > span { width: 8px; height: 8px; }
   .booking__browse { margin-top: 0; }
 }
@@ -113,11 +113,11 @@
 .booking__gooey-filter { position: absolute; width: 0; height: 0; pointer-events: none; }
 .booking__dots { position: relative; width: max-content; max-width: 100%; margin-inline: auto; flex-wrap: nowrap; }
 .booking__dots .booking__dots-liquid { position: absolute; inset: 0; display: flex; pointer-events: none; }
-.booking__dots-liquid .booking__dot-slot { position: relative; display: grid; place-items: center; width: 28px; height: 32px; flex: 0 0 28px; }
+.booking__dots-liquid .booking__dot-slot { position: relative; display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; }
 .booking__dots-liquid .booking__dot-base, .booking__dots-liquid .booking__dot-pill { position: absolute; display: block; height: 10px; border-radius: 999px; background: var(--color-brand-black); }
 .booking__dots-liquid .booking__dot-base { width: 10px; background: var(--color-text-muted); }
 .booking__dots-liquid .booking__dot-pill { width: 20px; background: var(--color-gray); }
-@media (max-width: 767px) { .booking__dots button { position: relative; width: 28px; min-width: 28px; height: 32px; padding: 0; } }
+@media (max-width: 767px) { .booking__dots button { position: relative; width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 0; } }
 
 @media (max-width: 767px) {
   .booking__service, .booking__service:last-child { border: 0; background: var(--color-brand-white); box-shadow: 0 4px 12px var(--color-black-10); }

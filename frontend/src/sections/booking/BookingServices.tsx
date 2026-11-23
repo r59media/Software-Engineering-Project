@@ -112,7 +112,7 @@ export function BookingServices({
             <a
               href={`${import.meta.env.BASE_URL}reschedule`}
               style={{
-                color: 'var(--color-gold, #d4af37)',
+                color: '#7a5b00',
                 textDecoration: 'underline',
                 textUnderlineOffset: '3px',
                 whiteSpace: 'nowrap',
@@ -142,7 +142,7 @@ export function BookingServices({
             <div className="booking__message" role="alert">
               <p>We couldn’t load the services. Please try again.</p>
               {onRetry && (
-                <button className="booking__button" onClick={onRetry}>
+                <button type="button" className="booking__button" onClick={onRetry}>
                   Try again
                 </button>
               )}
@@ -218,6 +218,7 @@ export function BookingServices({
                         {active && extra && (
                           <div className="booking__people">
                             <button
+                              type="button"
                               aria-label={`Fewer people for ${service.name}`}
                               disabled={people <= extra.includedPeople}
                               onClick={() => updateSelection({ serviceId: service.id, people: people - 1 })}
@@ -226,6 +227,7 @@ export function BookingServices({
                             </button>
                             <output aria-label="Number of people">{people}</output>
                             <button
+                              type="button"
                               aria-label={`More people for ${service.name}`}
                               disabled={people >= (extra.maxPeople ?? Number.MAX_SAFE_INTEGER)}
                               onClick={() => updateSelection({ serviceId: service.id, people: people + 1 })}
@@ -253,13 +255,14 @@ export function BookingServices({
                               Request inquiry
                             </a>
                           ) : (
-                            <button className="booking__button" disabled aria-describedby="booking-inquiry-note">
+                            <button type="button" className="booking__button" disabled aria-describedby="booking-inquiry-note">
                               Request inquiry
                             </button>
                           )}
                         </div>
                       ) : (
                         <button
+                          type="button"
                           className="booking__button booking__select"
                           aria-pressed={active}
                           aria-label={`${active ? 'Selected' : 'Select'} ${service.name}`}
@@ -283,6 +286,7 @@ export function BookingServices({
                   </div>
                   {services.map((service, index) => (
                     <button
+                      type="button"
                       key={service.id}
                       aria-label={`Show ${service.name}`}
                       aria-current={index === Math.min(visibleIndex, services.length - 1) ? 'true' : undefined}
@@ -293,6 +297,7 @@ export function BookingServices({
                 </div>
                 <div className="booking__browse">
                   <button
+                    type="button"
                     aria-label="Previous service"
                     disabled={visibleIndex <= 0}
                     onClick={() => showCard(visibleIndex - 1)}
@@ -301,6 +306,7 @@ export function BookingServices({
                   </button>
                   <span>Swipe to explore</span>
                   <button
+                    type="button"
                     aria-label="Next service"
                     disabled={visibleIndex >= services.length - 1}
                     onClick={() => showCard(visibleIndex + 1)}
@@ -321,6 +327,7 @@ export function BookingServices({
           </div>
           <div className="booking__next">
             <button
+              type="button"
               className="booking__button"
               disabled={!validSelection}
               onClick={() => {

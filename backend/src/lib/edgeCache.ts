@@ -1,6 +1,8 @@
 export const PUBLIC_CACHE_VERSION_KEY = 'public_cache_version'
 export const PUBLIC_READ_CACHE_CONTROL = 'public, max-age=30, s-maxage=300, stale-while-revalidate=600'
-export const MEDIA_CACHE_CONTROL = 'public, max-age=300, s-maxage=3600'
+export const MEDIA_CACHE_CONTROL = 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800'
+export const MEDIA_VERSIONED_CACHE_CONTROL = 'public, max-age=31536000, immutable'
+export const MEDIA_PRIVATE_CACHE_CONTROL = 'private, no-store'
 
 function getDefaultEdgeCache(): Cache | undefined {
   try {

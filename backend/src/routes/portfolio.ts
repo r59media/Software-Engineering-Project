@@ -44,16 +44,24 @@ function optionalText(value: unknown, maxLength: number): string | null {
   return String(value).slice(0, maxLength)
 }
 
-export function resolveMediaUrl(key: string): string {
+export function resolveMediaUrl(key: string, version?: string): string {
   if (!key) return ''
+  let resolved: string
   if (key.startsWith('https://') || key.startsWith('http://') || key.startsWith('/') || key.startsWith('data:image/')) {
-    return key
+    resolved = key
+  } else {
+    resolved = `/api/media/${key.replace(/^\/+/, '')}`
   }
-  return `/api/media/${key.replace(/^\/+/, '')}`
+
+  if (version && resolved.startsWith('/api/media/') && !/[?&](?:v|exp|sig)=/.test(resolved)) {
+    const sep = resolved.includes('?') ? '&' : '?'
+    return `${resolved}${sep}v=${encodeURIComponent(version)}`
+  }
+  return resolved
 }
 
-function withUrls<T extends { media_key: string }>(row: T) {
-  const url = resolveMediaUrl(row.media_key)
+function withUrls<T extends { media_key: string }>(row: T, mediaVersion?: string) {
+  const url = resolveMediaUrl(row.media_key, mediaVersion)
   return { ...row, url, public_url: url }
 }
 
@@ -348,7 +356,7 @@ export type PortfolioListResult =
 export async function listPortfolio(
   db: D1Database,
   query: PortfolioListQuery,
-  { includeInactive = false }: { includeInactive?: boolean } = {}
+  { includeInactive = false, mediaVersion }: { includeInactive?: boolean; mediaVersion?: string } = {}
 ): Promise<PortfolioListResult> {
   await ensurePortfolioSchema(db)
 
@@ -392,7 +400,8 @@ export async function listPortfolio(
   ).bind(...params, limit, offset).all<any>()
 
   // is_active is always 1 or 0 (the public list only ever holds 1)
-  const images = (queryRes.results || []).map((row: any) => withUrls({ ...row, is_active: row.is_active ? 1 : 0 }))
+  const resolvedVersion = !includeInactive ? (mediaVersion ?? await getPublicContentVersion(db)) : undefined
+  const images = (queryRes.results || []).map((row: any) => withUrls({ ...row, is_active: row.is_active ? 1 : 0 }, resolvedVersion))
   return { ok: true, body: { images, limit, offset, status: 'success', data: images } }
 }
 
@@ -412,9 +421,10 @@ portfolioRouter.get('/', async (c) => {
     const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
     let cacheKeyUrl: string | null = null
 
+    let mediaVersion: string | undefined
     if (!bypassEdgeCache) {
-      const version = await getPublicContentVersion(c.env.DB)
-      cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
+      mediaVersion = await getPublicContentVersion(c.env.DB)
+      cacheKeyUrl = buildEdgeCacheKey(c.req.url, mediaVersion)
       const cached = await tryEdgeCacheMatch(cacheKeyUrl)
       if (cached) {
         return new Response(cached.body, {
@@ -425,7 +435,7 @@ portfolioRouter.get('/', async (c) => {
       }
     }
 
-    const result = await listPortfolio(c.env.DB, portfolioListQuery(c.req))
+    const result = await listPortfolio(c.env.DB, portfolioListQuery(c.req), { mediaVersion })
     if (!result.ok) return c.json(result.body, result.status)
 
     c.header('Cache-Control', bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL)

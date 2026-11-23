@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { GalleryEmptyState } from './GalleryEmptyState'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import { PhotoLightbox } from '../recent/PhotoLightbox'
@@ -13,32 +13,13 @@ declare module '../../components/ProtectedCanvasImage' {
 
 // Filters shown in the design; they match the categories the admin can assign
 const STANDARD_CATEGORIES = ['Portrait', 'Lifestyle', 'Events', 'Extras']
+const tabId = (category: string) => `portfolio-tab-${category.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
 
 export function PortfolioGallery() {
   const { photos, loading } = useGalleryPhotos()
   const [activeCategory, setActiveCategory] = useState('All')
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [hasVisitedEmpty, setHasVisitedEmpty] = useState(false)
-  const sectionRef = useRef<HTMLElement>(null)
-
-  useEffect(() => {
-    const el = sectionRef.current
-    if (!el || typeof IntersectionObserver === 'undefined') {
-      void import('./MemoryCardScene')
-      return
-    }
-    const observer = new IntersectionObserver(
-      entries => {
-        if (entries.some(entry => entry.isIntersecting)) {
-          void import('./MemoryCardScene')
-          observer.disconnect()
-        }
-      },
-      { rootMargin: '400px' },
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [])
 
   const categories = useMemo(() => {
     const found = new Set<string>(STANDARD_CATEGORIES)
@@ -65,6 +46,23 @@ export function PortfolioGallery() {
     return photos.filter(p => p.category.toLowerCase() === activeCategory.toLowerCase())
   }, [photos, activeCategory])
 
+  useEffect(() => {
+    if (!loading && filteredPhotos.length === 0) {
+      void import('./MemoryCardScene')
+    }
+  }, [loading, filteredPhotos.length])
+
+  const preloadMemoryCardIfEmpty = (category: string) => {
+    if (loading && photos.length === 0) return
+    const count =
+      category === 'All'
+        ? photos.length
+        : photos.filter(p => p.category.toLowerCase() === category.toLowerCase()).length
+    if (count === 0) {
+      void import('./MemoryCardScene')
+    }
+  }
+
   const isEmpty = !(loading && photos.length === 0) && filteredPhotos.length === 0
 
   if (isEmpty && !hasVisitedEmpty) {
@@ -72,7 +70,7 @@ export function PortfolioGallery() {
   }
 
   return (
-    <section ref={sectionRef} id="portfolio" className="portfolio-gallery" aria-labelledby="portfolio-heading">
+    <section id="portfolio" className="portfolio-gallery" aria-labelledby="portfolio-heading">
       <div className="portfolio-gallery__inner">
         <header className="portfolio-gallery__header">
           <p className="portfolio-gallery__eyebrow">
@@ -86,12 +84,16 @@ export function PortfolioGallery() {
               {categories.map(category => (
                 <button
                   key={category}
+                  id={tabId(category)}
                   type="button"
                   role="tab"
                   aria-selected={activeCategory === category}
+                  aria-controls="portfolio-tabpanel"
                   data-active={activeCategory === category ? 'true' : 'false'}
                   className="portfolio-gallery__filter-btn"
                   onClick={() => setActiveCategory(category)}
+                  onMouseEnter={() => preloadMemoryCardIfEmpty(category)}
+                  onFocus={() => preloadMemoryCardIfEmpty(category)}
                 >
                   {category}
                 </button>
@@ -105,7 +107,12 @@ export function PortfolioGallery() {
             <span>Loading gallery...</span>
           </div>
         ) : !isEmpty ? (
-          <div className="portfolio-gallery__grid">
+          <div
+            id="portfolio-tabpanel"
+            role="tabpanel"
+            aria-labelledby={tabId(activeCategory)}
+            className="portfolio-gallery__grid"
+          >
             {filteredPhotos.map((photo, index) => (
               <button
                 key={photo.id || index}
@@ -133,7 +140,12 @@ export function PortfolioGallery() {
         ) : null}
 
         {(hasVisitedEmpty || isEmpty) && (
-          <div hidden={!isEmpty}>
+          <div
+            id={isEmpty ? 'portfolio-tabpanel' : undefined}
+            role={isEmpty ? 'tabpanel' : undefined}
+            aria-labelledby={isEmpty ? tabId(activeCategory) : undefined}
+            hidden={!isEmpty}
+          >
             <GalleryEmptyState active={isEmpty} />
           </div>
         )}

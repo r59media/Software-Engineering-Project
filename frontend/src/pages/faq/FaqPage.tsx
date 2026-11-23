@@ -9,10 +9,12 @@ import './FaqPage.css'
 interface FaqAccordionProps {
   contactHref: string
   contactLabel: string
+  questionHeading?: 'h2' | 'h3'
 }
 
-function FaqAccordion({ contactHref, contactLabel }: FaqAccordionProps) {
+function FaqAccordion({ contactHref, contactLabel, questionHeading = 'h2' }: FaqAccordionProps) {
   const [openIds, setOpenIds] = useState<Set<string>>(() => new Set<string>())
+  const QuestionHeading = questionHeading
 
   const toggleItem = (id: string) => {
     setOpenIds((prev) => {
@@ -39,7 +41,7 @@ function FaqAccordion({ contactHref, contactLabel }: FaqAccordionProps) {
               className={`faq-page__item ${isOpen ? 'faq-page__item--open' : ''}`}
               key={item.id}
             >
-              <h2 className="faq-page__question-heading">
+              <QuestionHeading className="faq-page__question-heading">
                 <button
                   type="button"
                   id={questionId}
@@ -72,7 +74,7 @@ function FaqAccordion({ contactHref, contactLabel }: FaqAccordionProps) {
                     </svg>
                   </span>
                 </button>
-              </h2>
+              </QuestionHeading>
               <div
                 id={answerId}
                 role="region"
@@ -114,7 +116,11 @@ export function FaqSection() {
           <h2 id="faq-heading" className="faq-page__title">FAQ</h2>
         </header>
 
-        <FaqAccordion contactHref="#contact" contactLabel="Get in touch →" />
+        <FaqAccordion
+          contactHref="#contact"
+          contactLabel="Get in touch →"
+          questionHeading="h3"
+        />
       </div>
     </section>
   )

@@ -612,7 +612,10 @@ test('Media Fast-Path, ETag/304, and Chunk-Bounded Range Requests preserve secur
   assert.equal(res304.headers.get('ETag'), etag)
   assert.equal(res304.headers.get('X-Content-Type-Options'), 'nosniff')
   assert.equal(res304.headers.get('Cross-Origin-Resource-Policy'), 'cross-origin')
-  assert.ok(res304.headers.get('Cache-Control')?.includes('max-age=31536000'))
+  assert.equal(
+    res304.headers.get('Cache-Control'),
+    'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800'
+  )
 
   // 3. Cross-chunk Range request returns exact 206 slice
   const res206 = await realApp.fetch(
@@ -1073,4 +1076,189 @@ test('HTML responses on / set bfcache-safe Cache-Control and emit up to 3 Link r
   assert.equal(resFaq.headers.get('Cache-Control'), 'public, max-age=0, must-revalidate')
   assert.equal(resFaq.headers.get('Link'), linkHeader)
   assert.equal(await resFaq.text(), mockHtml)
+})
+
+test('Media edge cache security: non-public/auth-gated media uses private, no-store and never leaks to unauthenticated cache hits', async () => {
+  const { sqlite, env } = setupTestEnv()
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS Services (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      image_url TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
+  `)
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    'hidden-secret.webp', 0, 'image/webp', Buffer.from('0123456789abcdefghij'), '2026-01-01T00:00:00Z'
+  )
+  sqlite.prepare('INSERT INTO Portfolio_Images (media_key, is_active) VALUES (?, ?)').run('hidden-secret.webp', 0)
+
+  const originalCachesDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'caches')
+  const cacheStore = new Map<string, Response>()
+  let cachePutCount = 0
+  let cacheMatchCount = 0
+  Object.defineProperty(globalThis, 'caches', {
+    configurable: true,
+    value: {
+      default: {
+        match: async (req: Request) => {
+          cacheMatchCount++
+          const hit = cacheStore.get(req.url)
+          return hit ? hit.clone() : undefined
+        },
+        put: async (req: Request, res: Response) => {
+          cachePutCount++
+          cacheStore.set(req.url, res.clone())
+        }
+      }
+    }
+  })
+
+  try {
+    const realApp = loadRealBackendApp()
+    const secret = await getMediaSigningSecret(env)
+    const { exp, sig } = await signMediaKey('hidden-secret.webp', secret!, 60)
+
+    // 1. Signed URL access for is_active = 0 returns 200/206/304 with private, no-store and never touches caches.default
+    const signed200 = await realApp.fetch(
+      new Request(`http://localhost/api/media/hidden-secret.webp?exp=${exp}&sig=${sig}`),
+      env
+    )
+    assert.equal(signed200.status, 200)
+    assert.equal(signed200.headers.get('Cache-Control'), 'private, no-store')
+    const etag = signed200.headers.get('ETag')!
+
+    const signed206 = await realApp.fetch(
+      new Request(`http://localhost/api/media/hidden-secret.webp?exp=${exp}&sig=${sig}`, {
+        headers: { Range: 'bytes=0-4' }
+      }),
+      env
+    )
+    assert.equal(signed206.status, 206)
+    assert.equal(signed206.headers.get('Cache-Control'), 'private, no-store')
+
+    const signed304 = await realApp.fetch(
+      new Request(`http://localhost/api/media/hidden-secret.webp?exp=${exp}&sig=${sig}`, {
+        headers: { 'If-None-Match': etag }
+      }),
+      env
+    )
+    assert.equal(signed304.status, 304)
+    assert.equal(signed304.headers.get('Cache-Control'), 'private, no-store')
+
+    // 2. Admin Bearer / Cookie access for is_active = 0 returns private, no-store and never populates caches.default
+    const adminToken = await createSessionToken(getSigningSecret(env)!, env.ADMIN_EMAIL!)
+    const adminRes = await realApp.fetch(
+      new Request('http://localhost/api/media/hidden-secret.webp', {
+        headers: {
+          Authorization: `Bearer ${adminToken}`,
+          Cookie: `admin_session=${adminToken}`
+        }
+      }),
+      env
+    )
+    assert.equal(adminRes.status, 200)
+    assert.equal(adminRes.headers.get('Cache-Control'), 'private, no-store')
+    assert.equal(cachePutCount, 0, 'Non-public/auth-gated media must never write to caches.default')
+    assert.equal(cacheMatchCount, 0, 'Non-public/auth-gated media must never read from caches.default')
+
+    // 3. Subsequent unauthenticated request for is_active = 0 is still rejected (302)
+    const unauthRes = await realApp.fetch(
+      new Request('http://localhost/api/media/hidden-secret.webp'),
+      env
+    )
+    assert.equal(unauthRes.status, 302)
+  } finally {
+    if (originalCachesDescriptor) {
+      Object.defineProperty(globalThis, 'caches', originalCachesDescriptor)
+    } else {
+      delete (globalThis as any).caches
+    }
+  }
+})
+
+test('Public is_active = 1 media with ?v= serves immutable Cache-Control, preserves v+w in cache key, and /api/portfolio appends ?v=', async () => {
+  const { sqlite, env } = setupTestEnv()
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS Services (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      image_url TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
+  `)
+  sqlite.prepare("INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('public_cache_version', '7')").run()
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    'public-photo.webp', 0, 'image/webp', Buffer.from('public-original'), '2026-01-01T00:00:00Z'
+  )
+  sqlite.prepare('INSERT INTO Media_Storage (file_key, chunk_index, content_type, data, created_at) VALUES (?, ?, ?, ?, ?)').run(
+    'public-photo.webp__w640', 0, 'image/webp', Buffer.from('public-w640'), '2026-01-01T00:00:00Z'
+  )
+  sqlite.prepare('INSERT INTO Portfolio_Images (media_key, section, category, display_order, is_active) VALUES (?, ?, ?, ?, ?)').run(
+    'public-photo.webp', 'gallery', 'Portrait', 1, 1
+  )
+  sqlite.prepare('INSERT INTO Portfolio_Images (media_key, section, category, display_order, is_active) VALUES (?, ?, ?, ?, ?)').run(
+    'https://cdn.example.com/external.webp', 'gallery', 'Portrait', 2, 1
+  )
+
+  const originalCachesDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'caches')
+  const cacheStore = new Map<string, Response>()
+  Object.defineProperty(globalThis, 'caches', {
+    configurable: true,
+    value: {
+      default: {
+        match: async (req: Request) => {
+          const hit = cacheStore.get(req.url)
+          return hit ? hit.clone() : undefined
+        },
+        put: async (req: Request, res: Response) => {
+          cacheStore.set(req.url, res.clone())
+        }
+      }
+    }
+  })
+
+  try {
+    const realApp = loadRealBackendApp()
+
+    // 1. /api/portfolio appends ?v=7 to internal /api/media/ URLs and leaves external URLs untouched
+    const portfolioRes = await realApp.fetch(new Request('http://localhost/api/portfolio'), env)
+    assert.equal(portfolioRes.status, 200)
+    const portfolioJson = (await portfolioRes.json()) as { images: Array<{ media_key: string; url: string }> }
+    const internalImg = portfolioJson.images.find((i) => i.media_key === 'public-photo.webp')
+    const externalImg = portfolioJson.images.find((i) => i.media_key === 'https://cdn.example.com/external.webp')
+    assert.equal(internalImg?.url, '/api/media/public-photo.webp?v=7')
+    assert.equal(externalImg?.url, 'https://cdn.example.com/external.webp')
+
+    // 2. Public ?v=7&w=640 media serves immutable Cache-Control and preserves v and w in cache key
+    const resVersioned = await realApp.fetch(
+      new Request('http://localhost/api/media/public-photo.webp?v=7&w=640'),
+      env
+    )
+    assert.equal(resVersioned.status, 200)
+    assert.equal(resVersioned.headers.get('Cache-Control'), 'public, max-age=31536000, immutable')
+    assert.equal(await resVersioned.text(), 'public-w640')
+
+    const mediaCacheKeys = Array.from(cacheStore.keys()).filter((k) => k.includes('/api/media/public-photo.webp'))
+    assert.equal(mediaCacheKeys.length, 1)
+    const parsedKey = new URL(mediaCacheKeys[0])
+    assert.equal(parsedKey.searchParams.get('v'), '7')
+    assert.equal(parsedKey.searchParams.get('w'), '640')
+    assert.equal(parsedKey.searchParams.get('__cv'), '7')
+
+    // 3. Unversioned public media keeps safe 1h/24h SWR Cache-Control
+    const resUnversioned = await realApp.fetch(
+      new Request('http://localhost/api/media/public-photo.webp'),
+      env
+    )
+    assert.equal(resUnversioned.status, 200)
+    assert.equal(
+      resUnversioned.headers.get('Cache-Control'),
+      'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800'
+    )
+  } finally {
+    if (originalCachesDescriptor) {
+      Object.defineProperty(globalThis, 'caches', originalCachesDescriptor)
+    } else {
+      delete (globalThis as any).caches
+    }
+  }
 })

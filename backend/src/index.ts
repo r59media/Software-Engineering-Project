@@ -22,6 +22,8 @@ import {
   getExecutionCtx,
   getPublicContentVersion,
   MEDIA_CACHE_CONTROL,
+  MEDIA_PRIVATE_CACHE_CONTROL,
+  MEDIA_VERSIONED_CACHE_CONTROL,
   PUBLIC_READ_CACHE_CONTROL,
   scheduleEdgeCachePut,
   shouldBypassPublicEdgeCache,
@@ -796,10 +798,11 @@ function matchesIfNoneMatch(headerValue: string | undefined, etag: string): bool
 
 function buildMediaSecurityHeaders(
   c: Context<{ Bindings: Bindings }>,
+  cacheControl: string,
   extra: Record<string, string> = {}
 ): Record<string, string> {
   return {
-    'Cache-Control': 'public, max-age=31536000, immutable',
+    'Cache-Control': cacheControl,
     'Cross-Origin-Resource-Policy': getCorpPolicy(c),
     'Content-Disposition': 'inline',
     'X-Content-Type-Options': 'nosniff',
@@ -843,67 +846,79 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
 
   const rangeHeader = c.req.header('Range')
   const ifNoneMatch = c.req.header('If-None-Match')
-  const version = await getPublicContentVersion(c.env.DB)
-  const cacheKeyUrl = buildEdgeCacheKey(c.req.url, version, { stripAuthParams: true })
+  const hasAuthCredentials = hasSignedParams || shouldBypassPublicEdgeCache(c)
+  const isPublicAsset = c.env.DB ? await isActivePublicMediaKey(c.env.DB, fileKey) : false
 
-  // Check Cloudflare Worker Edge Cache BEFORE querying D1 Portfolio_Images / Services / Media_Storage
-  const cachedRes = await tryEdgeCacheMatch(cacheKeyUrl)
-  if (cachedRes) {
-    const cachedEtag = cachedRes.headers.get('ETag') || ''
-    if (cachedEtag && matchesIfNoneMatch(ifNoneMatch, cachedEtag)) {
-      return new Response(null, {
-        status: 304,
-        headers: buildMediaSecurityHeaders(c, { ETag: cachedEtag })
-      })
-    }
-
-    if (rangeHeader) {
-      const cachedBuf = new Uint8Array(await cachedRes.arrayBuffer())
-      const parsedRange = parseRangeHeader(rangeHeader, cachedBuf.byteLength)
-      if (parsedRange === 'unsatisfiable') {
-        return new Response(null, {
-          status: 416,
-          headers: {
-            'Content-Range': `bytes */${cachedBuf.byteLength}`,
-            'Accept-Ranges': 'bytes'
-          }
-        })
-      }
-      if (parsedRange) {
-        const { start, end } = parsedRange
-        const slice = cachedBuf.subarray(start, end + 1)
-        return new Response(slice, {
-          status: 206,
-          headers: buildMediaSecurityHeaders(c, {
-            'Content-Type': cachedRes.headers.get('Content-Type') || 'image/webp',
-            'Content-Range': `bytes ${start}-${end}/${cachedBuf.byteLength}`,
-            'Content-Length': String(slice.byteLength),
-            'Accept-Ranges': 'bytes',
-            ...(cachedEtag ? { ETag: cachedEtag } : {})
-          })
-        })
-      }
-    }
-
-    return new Response(cachedRes.body, {
-      status: 200,
-      headers: buildMediaSecurityHeaders(c, {
-        'Cache-Control': MEDIA_CACHE_CONTROL,
-        'Content-Type': cachedRes.headers.get('Content-Type') || 'image/webp',
-        ...(cachedRes.headers.get('Content-Length')
-          ? { 'Content-Length': cachedRes.headers.get('Content-Length')! }
-          : {}),
-        'Accept-Ranges': 'bytes',
-        ...(cachedEtag ? { ETag: cachedEtag } : {})
-      })
-    })
-  }
-
-  // On cache miss, run D1 authorization for unsigned requests
-  if (!hasSignedParams) {
+  // Verify authorization for non-public or unsigned requests before touching caches.default
+  if (!hasSignedParams && !isPublicAsset) {
     const isAuthorizedClient = await isAuthorizedMediaRequest(c, fileKey)
     if (!isAuthorizedClient) {
       return c.redirect('/', 302)
+    }
+  }
+
+  // Only verified public (is_active = 1) media without admin cookies or signed-URL params may use caches.default
+  const isPublicCacheable = !hasAuthCredentials && isPublicAsset
+  const versionParam = (c.req.query('v') || '').trim()
+  const mediaCacheControl = isPublicCacheable
+    ? (versionParam ? MEDIA_VERSIONED_CACHE_CONTROL : MEDIA_CACHE_CONTROL)
+    : MEDIA_PRIVATE_CACHE_CONTROL
+
+  let cacheKeyUrl: string | null = null
+  if (isPublicCacheable) {
+    const version = await getPublicContentVersion(c.env.DB)
+    cacheKeyUrl = buildEdgeCacheKey(c.req.url, version, { stripAuthParams: true })
+
+    // Check Cloudflare Worker Edge Cache only for verified public media
+    const cachedRes = await tryEdgeCacheMatch(cacheKeyUrl)
+    if (cachedRes) {
+      const cachedEtag = cachedRes.headers.get('ETag') || ''
+      if (cachedEtag && matchesIfNoneMatch(ifNoneMatch, cachedEtag)) {
+        return new Response(null, {
+          status: 304,
+          headers: buildMediaSecurityHeaders(c, mediaCacheControl, { ETag: cachedEtag })
+        })
+      }
+
+      if (rangeHeader) {
+        const cachedBuf = new Uint8Array(await cachedRes.arrayBuffer())
+        const parsedRange = parseRangeHeader(rangeHeader, cachedBuf.byteLength)
+        if (parsedRange === 'unsatisfiable') {
+          return new Response(null, {
+            status: 416,
+            headers: {
+              'Content-Range': `bytes */${cachedBuf.byteLength}`,
+              'Accept-Ranges': 'bytes'
+            }
+          })
+        }
+        if (parsedRange) {
+          const { start, end } = parsedRange
+          const slice = cachedBuf.subarray(start, end + 1)
+          return new Response(slice, {
+            status: 206,
+            headers: buildMediaSecurityHeaders(c, mediaCacheControl, {
+              'Content-Type': cachedRes.headers.get('Content-Type') || 'image/webp',
+              'Content-Range': `bytes ${start}-${end}/${cachedBuf.byteLength}`,
+              'Content-Length': String(slice.byteLength),
+              'Accept-Ranges': 'bytes',
+              ...(cachedEtag ? { ETag: cachedEtag } : {})
+            })
+          })
+        }
+      }
+
+      return new Response(cachedRes.body, {
+        status: 200,
+        headers: buildMediaSecurityHeaders(c, mediaCacheControl, {
+          'Content-Type': cachedRes.headers.get('Content-Type') || 'image/webp',
+          ...(cachedRes.headers.get('Content-Length')
+            ? { 'Content-Length': cachedRes.headers.get('Content-Length')! }
+            : {}),
+          'Accept-Ranges': 'bytes',
+          ...(cachedEtag ? { ETag: cachedEtag } : {})
+        })
+      })
     }
   }
 
@@ -957,7 +972,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
       if (matchesIfNoneMatch(ifNoneMatch, etag)) {
         return new Response(null, {
           status: 304,
-          headers: buildMediaSecurityHeaders(c, { ETag: etag })
+          headers: buildMediaSecurityHeaders(c, mediaCacheControl, { ETag: etag })
         })
       }
 
@@ -995,7 +1010,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
           const slice = neededCombined.subarray(start - firstChunkStart, end - firstChunkStart + 1)
           return new Response(slice, {
             status: 206,
-            headers: buildMediaSecurityHeaders(c, {
+            headers: buildMediaSecurityHeaders(c, mediaCacheControl, {
               'Content-Type': contentType,
               'Content-Range': `bytes ${start}-${end}/${totalLength}`,
               'Content-Length': String(slice.byteLength),
@@ -1017,8 +1032,7 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
       const combined = assembleChunks(dataRows.results, totalLength)
       const res200 = new Response(combined, {
         status: 200,
-        headers: buildMediaSecurityHeaders(c, {
-          'Cache-Control': MEDIA_CACHE_CONTROL,
+        headers: buildMediaSecurityHeaders(c, mediaCacheControl, {
           'Content-Type': contentType,
           'Content-Length': String(totalLength),
           'Accept-Ranges': 'bytes',
@@ -1026,7 +1040,9 @@ const mediaGetHandler = async (c: Context<{ Bindings: Bindings }>) => {
         })
       })
 
-      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res200)
+      if (isPublicCacheable && cacheKeyUrl) {
+        scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res200)
+      }
 
       return res200
     }

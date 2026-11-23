@@ -24,16 +24,16 @@ export function AboutToRecent() {
   const [mobile, setMobile] = useState(() => matchMedia(aboutLens.mobileQuery).matches)
   const [readyUrl, setReadyUrl] = useState('')
   const url = mobile ? aboutLens.mobileUrl : aboutLens.desktopUrl
-  const [loaded, setLoaded] = useState(false)
   const [fits, setFits] = useState(false)
   const [failed, setFailed] = useState(false)
   const [reduced, setReduced] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const [engaged, setEngaged] = useState(() => window.scrollY > 10 || Boolean(window.location.hash))
   const listeners = useRef(new Set<LensApertureListener>())
   const wasLensVisibleRef = useRef(false)
   const controller = useMemo<LensTransitionController>(() => ({
     subscribe: () => () => {},
     setAperture: () => {},
-    ready: () => setLoaded(true),
+    ready: () => {},
     fail: () => setFailed(true),
   }), [])
   const overlayController = useMemo(() => ({
@@ -48,8 +48,35 @@ export function AboutToRecent() {
     fail: () => setFailed(true),
   }), [url])
   const canReserve = !failed && !reduced && fits
-  const canAnimate = canReserve
+  const canAnimate = canReserve && engaged
   const enabled = canAnimate && readyUrl === url
+
+  useEffect(() => {
+    if (engaged) return
+    const engage = () => setEngaged(true)
+    const opts: AddEventListenerOptions = { passive: true, once: true }
+    window.addEventListener('scroll', engage, opts)
+    window.addEventListener('wheel', engage, opts)
+    window.addEventListener('touchstart', engage, opts)
+    window.addEventListener('pointerdown', engage, opts)
+    window.addEventListener('keydown', engage, opts)
+    let observer: IntersectionObserver | undefined
+    if (root.current && typeof IntersectionObserver !== 'undefined') {
+      observer = new IntersectionObserver(
+        ([entry]) => { if (entry?.isIntersecting) engage() },
+        { rootMargin: '0px' },
+      )
+      observer.observe(root.current)
+    }
+    return () => {
+      window.removeEventListener('scroll', engage)
+      window.removeEventListener('wheel', engage)
+      window.removeEventListener('touchstart', engage)
+      window.removeEventListener('pointerdown', engage)
+      window.removeEventListener('keydown', engage)
+      observer?.disconnect()
+    }
+  }, [engaged])
 
   useEffect(() => {
     const host = root.current

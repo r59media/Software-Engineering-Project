@@ -1,5 +1,12 @@
 User-agent: *
 Allow: /
+Disallow: /admin
+Disallow: /admin/
+Disallow: /api/admin/
+Disallow: /api/checkout
+Disallow: /api/contact
+Disallow: /api/reschedule
+Disallow: /api/bookings
 
 Sitemap: https://software-engineering-project.r59mediatesting.workers.dev/sitemap.xml
 # LLMs.txt: https://software-engineering-project.r59mediatesting.workers.dev/llms.txt

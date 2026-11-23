@@ -38,9 +38,6 @@ export function AboutArtwork({
     mountedArtworkCount += 1
 
     if (mountedArtworkCount === 1 && !prewarmStarted && !isSlowConnection && typeof window !== 'undefined') {
-      let idleId: number | null = null
-      let timeoutId: number | null = null
-
       const startPrewarm = () => {
         if (prewarmStarted) return
         prewarmStarted = true
@@ -51,29 +48,25 @@ export function AboutArtwork({
         void prewarmProtectedImages(ABOUT_ARTWORK_URLS, { signal: controller.signal })
       }
 
-      const onScroll = () => {
-        if (window.scrollY > 32) {
-          startPrewarm()
-        }
-      }
-
-      cancelPrewarmTrigger = () => {
-        window.removeEventListener('scroll', onScroll)
-        if (idleId !== null && typeof window.cancelIdleCallback === 'function') {
-          window.cancelIdleCallback(idleId)
-          idleId = null
-        }
-        if (timeoutId !== null) {
-          window.clearTimeout(timeoutId)
-          timeoutId = null
-        }
-      }
-
-      window.addEventListener('scroll', onScroll, { passive: true })
-      if (typeof window.requestIdleCallback === 'function') {
-        idleId = window.requestIdleCallback(() => startPrewarm(), { timeout: 1400 })
+      if (window.scrollY > 20) {
+        startPrewarm()
       } else {
-        timeoutId = window.setTimeout(() => startPrewarm(), 900)
+        const onScroll = () => {
+          if (window.scrollY > 20) {
+            startPrewarm()
+          }
+        }
+        const interactionEvents: Array<keyof WindowEventMap> = ['wheel', 'touchstart', 'pointerdown', 'keydown']
+
+        cancelPrewarmTrigger = () => {
+          window.removeEventListener('scroll', onScroll)
+          interactionEvents.forEach(eventName => window.removeEventListener(eventName, startPrewarm))
+        }
+
+        window.addEventListener('scroll', onScroll, { passive: true })
+        interactionEvents.forEach(eventName =>
+          window.addEventListener(eventName, startPrewarm, { passive: true, once: true }),
+        )
       }
     }
 
@@ -108,7 +101,7 @@ export function AboutArtwork({
           containerClassName="about__art-container"
           width={image.width}
           height={image.height}
-          rootMargin="900px"
+          rootMargin="200px"
         />
       </div>
     </div>

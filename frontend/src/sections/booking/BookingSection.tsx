@@ -100,6 +100,7 @@ function BookingFlow({
   const [internalConfirmed, setInternalConfirmed] = useState<ConfirmedBookingSummary | null>(null)
   const activeConfirmed = confirmedBooking || internalConfirmed
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [bookingInteracted, setBookingInteracted] = useState(false)
 
   // Find the selected service
   const selectedService = useMemo(() => {
@@ -124,18 +125,34 @@ function BookingFlow({
   }
 
   useEffect(() => {
+    if (!effectiveSquareConfig || bookingInteracted || effectiveStep !== 'services') return
+    const bookingEl = document.getElementById('booking')
+    if (!bookingEl) return
+    const markInteracted = () => setBookingInteracted(true)
+    bookingEl.addEventListener('pointerdown', markInteracted, { passive: true, once: true })
+    bookingEl.addEventListener('focusin', markInteracted, { once: true })
+    bookingEl.addEventListener('click', markInteracted, { passive: true, once: true })
+    return () => {
+      bookingEl.removeEventListener('pointerdown', markInteracted)
+      bookingEl.removeEventListener('focusin', markInteracted)
+      bookingEl.removeEventListener('click', markInteracted)
+    }
+  }, [effectiveSquareConfig, bookingInteracted, effectiveStep])
+
+  useEffect(() => {
     if (!effectiveSquareConfig) return
     if (
-      effectiveStep === 'services' ||
+      (effectiveStep === 'services' && bookingInteracted) ||
       effectiveStep === 'datetime' ||
       effectiveStep === 'info' ||
       effectiveStep === 'summary'
     ) {
       warmSquarePaymentSdk(effectiveSquareConfig)
     }
-  }, [effectiveSquareConfig, effectiveStep])
+  }, [effectiveSquareConfig, effectiveStep, bookingInteracted])
 
   const handleServicesContinue = (selection: ServiceSelection) => {
+    setBookingInteracted(true)
     if (selection.serviceId !== selectedServiceId || selection.people !== attendees) setDateTime(null)
     setSelectedServiceId(selection.serviceId)
     setAttendees(selection.people)

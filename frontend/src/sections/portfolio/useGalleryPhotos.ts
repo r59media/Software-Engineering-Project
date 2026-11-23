@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { fetchGalleryPhotos, type GalleryPhoto } from '../../api/client'
-import { preloadProtectedImage } from '../../components/ProtectedCanvasImage'
 import { recentPhotos } from '../../config/recentPhotoshoot'
 import type { PhotoshootPhoto } from '../../types/recentPhotoshoot'
 
@@ -36,11 +35,6 @@ export function useGalleryPhotos(fallbackPhotos?: readonly PhotoshootPhoto[]): {
           if (current.signal.aborted) return
           setPhotos(prev => (signature(prev) === signature(next) ? prev : next))
           setLoading(false)
-          next.slice(0, 4).forEach(photo => {
-            if (photo.src) {
-              void preloadProtectedImage(photo.src)
-            }
-          })
         })
         .catch(() => {
           if (!current.signal.aborted) {
