@@ -1,0 +1,17 @@
+# Kevin D Gonzalez · Professional Photography | R59 Media
+
+> Official photography portfolio and creative services by Kevin D Gonzalez at R59 Media. Specializing in studio portraits, on-location portraiture, private and corporate event coverage, and editorial visual storytelling.
+
+## Core Navigation
+- [Home](https://software-engineering-project.r59mediatesting.workers.dev/): Introduction, hero visual reel, and main portfolio highlights.
+- [About Me](https://software-engineering-project.r59mediatesting.workers.dev/#about): Biography, artistic philosophy, camera gear, and background of photographer Kevin D Gonzalez.
+- [Most Recent Photoshoot](https://software-engineering-project.r59mediatesting.workers.dev/#recent-photoshoot): Featured latest editorial photo session with high-resolution imagery.
+- [Portfolio](https://software-engineering-project.r59mediatesting.workers.dev/#portfolio): Curated portfolio collections including Portraits, Events, and Editorial shoots with interactive 3D viewer.
+- [Services](https://software-engineering-project.r59mediatesting.workers.dev/#services): Photography offerings, including Studio Portraits, On-Location Shoots, Event Coverage, and Commercial Photography.
+- [Pricing](https://software-engineering-project.r59mediatesting.workers.dev/#pricing): Transparent session packages, investment options, and instant booking estimate calculator.
+- [FAQ](https://software-engineering-project.r59mediatesting.workers.dev/#faq): Frequently asked questions on session preparation, turnaround times, usage rights, and booking policies.
+- [Contact & Booking](https://software-engineering-project.r59mediatesting.workers.dev/#contact): Direct booking inquiry form and studio contact information.
+
+## Discoverability & Feeds
+- [XML Sitemap](https://software-engineering-project.r59mediatesting.workers.dev/sitemap.xml): Complete sitemap of public routes and resources.
+- [Robots Directive](https://software-engineering-project.r59mediatesting.workers.dev/robots.txt): Machine crawler access rules and sitemap location.

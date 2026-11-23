@@ -2,3 +2,4 @@ User-agent: *
 Allow: /
 
 Sitemap: https://software-engineering-project.r59mediatesting.workers.dev/sitemap.xml
+# LLMs.txt: https://software-engineering-project.r59mediatesting.workers.dev/llms.txt
