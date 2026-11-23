@@ -7,7 +7,6 @@ import { inquiryTypes } from '../../types/contact'
 import type { ContactInquiry, ContactSectionProps, InquiryType } from '../../types/contact'
 import camera from '../../assets/aboutMeImages/r59media-dslr.webp'
 import lens from '../../assets/aboutMeImages/r59media-large-lens.webp'
-import seal from '../../assets/aboutMeImages/kevin_Logo_IMG.webp'
 import { FormField, FormHeader } from '../../components/FormField'
 import '../../components/FormField.css'
 import './ContactSection.css'
@@ -129,9 +128,6 @@ export function ContactSection({ photos = contactPhotos, onSendInquiry }: Contac
       </div>
       <div className="contact-section__lens">
         <ProtectedCanvasImage src={lens} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={640} height={1038} />
-      </div>
-      <div className="contact-section__seal">
-        <ProtectedCanvasImage src={seal} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={700} height={703} />
       </div>
     </div>
     <AnimatePresence>

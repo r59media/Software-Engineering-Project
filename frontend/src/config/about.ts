@@ -2,7 +2,6 @@ import yellowCard from '../assets/aboutMeImages/yellowCard_img.webp'
 import redCard from '../assets/aboutMeImages/redCard_img.webp'
 import portrait from "../assets/aboutMeImages/kevin'sPortrait.webp"
 import portraitFrame from '../assets/aboutMeImages/aboutMe_portraitFrame_img.webp'
-import signature from '../assets/aboutMeImages/kevin_Logo_IMG.webp'
 import topLens from '../assets/aboutMeImages/r59media-large-lens.webp'
 import rightLens from '../assets/aboutMeImages/r59media-medium-lens.webp'
 import camera from '../assets/aboutMeImages/r59media-dslr.webp'
@@ -26,7 +25,6 @@ export const aboutImages = {
   redCard: { id: 'red-card', imageUrl: redCard, alt: '', width: 717, height: 1121 },
   portrait: { id: 'portrait', imageUrl: portrait, alt: 'Kevin D Gonzalez holding his camera at an event.', width: 1199, height: 1318 },
   portraitFrame: { id: 'portrait-frame', imageUrl: portraitFrame, alt: '', width: 1158, height: 1358 },
-  signature: { id: 'signature-seal', imageUrl: signature, alt: '', width: 700, height: 703 },
   paper: { id: 'paper-background', imageUrl: paper, alt: '', width: 1829, height: 2560 },
 } satisfies Record<string, AboutImage>
 

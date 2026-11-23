@@ -10,7 +10,6 @@ const ABOUT_ARTWORK_URLS = Array.from(
     aboutImages.yellowCard.imageUrl,
     aboutImages.redCard.imageUrl,
     aboutImages.portraitFrame.imageUrl,
-    aboutImages.signature.imageUrl,
     ...aboutDecorations.map((d) => d.imageUrl),
   ]),
 )

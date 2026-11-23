@@ -97,15 +97,6 @@
   z-index: 1;
 }
 
-.contact-section__seal {
-  width: clamp(150px, 15cqw, 216px);
-  aspect-ratio: 700 / 703;
-  left: calc(100cqw - clamp(110px, 10.7cqw, 154px));
-  top: calc(100% - clamp(100px, 9.4cqw, 136px));
-  transform: rotate(20deg);
-  z-index: 4;
-}
-
 .contact-section__body {
   display: grid;
   grid-template-columns: 44% minmax(0, 1fr);
@@ -360,14 +351,6 @@
   top: clamp(150px, 13.5cqw, 195px);
   transform: rotate(-180deg);
   z-index: 2;
-  opacity: 1;
-}
-
-.contact-section[data-step='details'] .contact-section__seal,
-.contact-section[data-step='success'] .contact-section__seal {
-  left: clamp(-70px, -4.3cqw, -38px);
-  transform: rotate(-14deg);
-  z-index: 4;
   opacity: 1;
 }
 
@@ -740,21 +723,10 @@
     display: none;
   }
 
-  .contact-section__seal {
-    width: 96px;
-    left: auto;
-    top: auto;
-    right: -18px;
-    bottom: 8px;
-    z-index: 4;
-  }
-
   .contact-section[data-step='details'] .contact-section__camera,
   .contact-section[data-step='success'] .contact-section__camera,
   .contact-section[data-step='details'] .contact-section__lens,
   .contact-section[data-step='success'] .contact-section__lens,
-  .contact-section[data-step='details'] .contact-section__seal,
-  .contact-section[data-step='success'] .contact-section__seal,
   .contact-section .contact-section__brand-badge {
     display: none;
   }

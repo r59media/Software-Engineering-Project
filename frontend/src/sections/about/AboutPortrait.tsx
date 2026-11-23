@@ -42,8 +42,6 @@ export function AboutPortrait({ portrait = defaultPortrait }: AboutPortraitProps
       rot = normX * 3.8 - normY * 1.5
     } else if (part === 'portrait-group') {
       rot = normX * 2.8 + normY * 1.2
-    } else if (part === 'signature-seal') {
-      rot = normX * 5.0 - normY * 3.0
     }
 
     const tx = normX * 4
@@ -71,12 +69,6 @@ export function AboutPortrait({ portrait = defaultPortrait }: AboutPortraitProps
       />
       <AboutArtwork
         image={aboutImages.redCard}
-        onPointerMove={handleCardPointerMove}
-        onPointerLeave={handleCardPointerLeave}
-        onPointerCancel={handleCardPointerLeave}
-      />
-      <AboutArtwork
-        image={aboutImages.signature}
         onPointerMove={handleCardPointerMove}
         onPointerLeave={handleCardPointerLeave}
         onPointerCancel={handleCardPointerLeave}

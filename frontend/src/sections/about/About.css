@@ -30,14 +30,6 @@
   transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
   will-change: transform;
 }
-.about__collage [data-about-part="signature-seal"] { left: 70.9%; top: 10.7%; width: 28.27%; cursor: pointer; }
-.about__collage [data-about-part="signature-seal"] .about__art {
-  transform: scale(1.25) rotate(var(--local-rot, 0deg))
-             translate3d(var(--local-tx, 0px), var(--local-ty, 0px), 0);
-  filter: drop-shadow(4px 6px 5px var(--color-black-30));
-  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
-  will-change: transform;
-}
 .about__portrait { left: 17.75%; top: 16%; width: 65.35%; aspect-ratio: 464 / 552; cursor: pointer; }
 .about__portrait > .about__motion { position: absolute; inset: 0; width: 100%; height: 100%; }
 .about__portrait-pose {
@@ -70,7 +62,7 @@
   filter: drop-shadow(8px 12px 9px var(--color-black-30));
   backface-visibility: hidden;
 }
-.about__decorations [data-about-part="top-lens"] { width: 15%; left: 35%; top: -11cqw; }
+.about__decorations [data-about-part="top-lens"] { width: 15%; left: 35%; top: -6cqw; }
 .about__decorations [data-about-part="top-lens"] .about__art { transform: rotate(78.1deg); }
 .about__decorations [data-about-part="top-right-lens"] { width: 18%; right: -3.4%; top: -2.4cqw; }
 .about__decorations [data-about-part="top-right-lens"] .about__art { transform: rotate(-12.73deg); }
@@ -99,7 +91,7 @@
   .about__biography { margin-top: 1.75rem; max-width: 42rem; }
   .about__lens { width: clamp(7.7rem, 18.7vw, 10.45rem); margin: 2.5rem 0 0 10%; }
   .about__decorations [data-about-part="top-lens"] { width: 20%; left: 30.2%; top: -7cqw; }
-  .about__decorations [data-about-part="top-right-lens"] { width: 22.5%; top: -1cqw; }
+  .about__decorations [data-about-part="top-right-lens"] { width: 26%; right: 3%; top: 18cqw; }
   .about__decorations [data-about-part="left-flash"] { width: 15%; bottom: auto; top: calc(55cqw + clamp(3rem, 8vw, 5rem)); }
   .about__decorations [data-about-part="left-memory-card"] { width: clamp(2rem, 5vw, 3rem); left: -.625rem; top: 1.25rem; }
   .about__decorations [data-about-part="top-memory-card"] { width: clamp(2.25rem, 5.5vw, 3.5rem); top: 1rem; }
@@ -153,13 +145,6 @@
     transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
   }
 
-  .about__collage [data-about-part="signature-seal"]:hover .about__art {
-    transform: scale(1.3) rotate(calc(var(--local-rot, 6deg)))
-               translate3d(var(--local-tx, 0px), calc(var(--local-ty, 0px) - 6px), 0);
-    filter: drop-shadow(6px 10px 8px var(--color-black-30));
-    transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
-  }
-
   .about__portrait:hover .about__portrait-pose {
     transform: rotate(calc(-2deg + var(--local-rot, 1.2deg)))
                translate3d(var(--local-tx, 0px), calc(var(--local-ty, 0px) - 10px), 0)
@@ -173,7 +158,6 @@
 @media (prefers-reduced-motion: reduce) {
   .about__collage [data-about-part="yellow-card"] .about__art,
   .about__collage [data-about-part="red-card"] .about__art,
-  .about__collage [data-about-part="signature-seal"] .about__art,
   .about__portrait-pose {
     transition: none !important;
     transform: none !important;
@@ -186,8 +170,5 @@
   }
   .about__portrait-pose {
     transform: rotate(-2deg) !important;
-  }
-  .about__collage [data-about-part="signature-seal"] .about__art {
-    transform: scale(1.25) !important;
   }
 }
