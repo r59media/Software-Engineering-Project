@@ -14,14 +14,14 @@ export default defineConfig({
   build: {
     sourcemap: false,
     modulePreload: {
-      resolveDependencies: (_filename, deps) => deps.filter(dep => !dep.includes('vendor-three') && !dep.includes('vendor-motion')),
+      resolveDependencies: (_filename: string, deps: string[]) => deps.filter(dep => !dep.includes('vendor-three') && !dep.includes('vendor-motion')),
     },
     rollupOptions: {
       output: {
         entryFileNames: 'assets/[hash].js',
-        chunkFileNames: (chunkInfo) => chunkInfo.name?.startsWith('vendor-') ? 'assets/[name]-[hash].js' : 'assets/[hash].js',
+        chunkFileNames: (chunkInfo: { name?: string }) => chunkInfo.name?.startsWith('vendor-') ? 'assets/[name]-[hash].js' : 'assets/[hash].js',
         assetFileNames: 'assets/[hash][extname]',
-        manualChunks(id) {
+        manualChunks(id: string) {
           if (!id.includes('node_modules')) return
           if (
             id.includes('node_modules/react/') ||
