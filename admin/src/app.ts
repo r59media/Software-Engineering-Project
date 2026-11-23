@@ -764,9 +764,12 @@
   }
 
   // --- Google Identity Services & Auth State ---
+  const GSI_SCRIPT_SRC = 'https://accounts.google.com/gsi/client?onload=__gsiReady&hl=en';
   let currentNonce: string | null = null;
   let cachedGoogleClientId = '';
   let gsiReady = typeof google !== 'undefined' && Boolean(google?.accounts?.id);
+  let gsiInitPromise: Promise<void> | null = null;
+  let cleanupGsiTriggers: (() => void) | null = null;
   const gsiReadyCallbacks: Array<() => void> = [];
 
   function onGsiReady() {
@@ -784,10 +787,22 @@
     onGsiReady();
   };
 
-  // Fallback: also listen to script load event
-  const gsiScriptEl = document.querySelector('script[src*="accounts.google.com/gsi/client"]');
-  if (gsiScriptEl) {
-    gsiScriptEl.addEventListener('load', onGsiReady, { once: true });
+  function ensureGsiScriptLoaded(): void {
+    if (typeof google !== 'undefined' && google?.accounts?.id) {
+      gsiReady = true;
+      return;
+    }
+    const existing = document.querySelector('script[src*="accounts.google.com/gsi/client"]');
+    if (existing) {
+      existing.addEventListener('load', onGsiReady, { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = GSI_SCRIPT_SRC;
+    script.async = true;
+    script.defer = true;
+    script.addEventListener('load', onGsiReady, { once: true });
+    document.head.appendChild(script);
   }
 
   function whenGsiReady(timeoutMs = 8000): Promise<void> {
@@ -920,19 +935,91 @@
   async function initGoogleSignIn() {
     const btn = document.getElementById('googleSignInBtn');
     if (!btn) return;
-    try {
-      const clientId = await resolveGoogleClientId();
-      if (!clientId) {
-        console.error('[R59 Admin] Google client ID not found in auth config');
-        setLoginStatus('Google Sign-In is not configured on the server.');
-        return;
+    if (gsiInitPromise) return gsiInitPromise;
+    gsiInitPromise = (async () => {
+      try {
+        ensureGsiScriptLoaded();
+        const clientId = await resolveGoogleClientId();
+        if (!clientId) {
+          console.error('[R59 Admin] Google client ID not found in auth config');
+          setLoginStatus('Google Sign-In is not configured on the server.');
+          return;
+        }
+        await whenGsiReady();
+        renderGsiButton(clientId);
+      } catch (err) {
+        console.error('[R59 Admin] Failed to initialize Google Sign-In:', err);
+        setLoginStatus('Google Sign-In failed to load. Check your connection or ad blocker and refresh.');
+        const placeholder = document.getElementById('gsiPlaceholderBtn') as HTMLButtonElement | null;
+        if (placeholder) {
+          placeholder.disabled = false;
+          const label = placeholder.querySelector('span');
+          if (label) {
+            label.textContent = 'Sign in with Google';
+          } else {
+            placeholder.textContent = 'Sign in with Google';
+          }
+        }
+      } finally {
+        gsiInitPromise = null;
       }
-      await whenGsiReady();
-      renderGsiButton(clientId);
-    } catch (err) {
-      console.error('[R59 Admin] Failed to initialize Google Sign-In:', err);
-      setLoginStatus('Google Sign-In failed to load. Check your connection or ad blocker and refresh.');
+    })();
+    return gsiInitPromise;
+  }
+
+  function bindDeferredGsiTriggers() {
+    if (gsiReady || (typeof google !== 'undefined' && Boolean(google?.accounts?.id))) {
+      void initGoogleSignIn();
+      return;
     }
+    cleanupGsiTriggers?.();
+    const docEvents = ['pointermove', 'pointerdown', 'touchstart', 'keydown', 'focusin'] as const;
+    const placeholderBtn = document.getElementById('gsiPlaceholderBtn') as HTMLButtonElement | null;
+
+    const removeDocListeners = () => {
+      for (const evt of docEvents) {
+        document.removeEventListener(evt, onDocTrigger, { capture: true });
+      }
+    };
+
+    const cleanupAll = () => {
+      removeDocListeners();
+      placeholderBtn?.removeEventListener('click', onPlaceholderClick);
+      if (cleanupGsiTriggers === cleanupAll) {
+        cleanupGsiTriggers = null;
+      }
+    };
+
+    const onDocTrigger = () => {
+      removeDocListeners();
+      ensureGsiScriptLoaded();
+      void initGoogleSignIn();
+    };
+
+    const onPlaceholderClick = () => {
+      cleanupAll();
+      if (placeholderBtn && !gsiReady) {
+        placeholderBtn.disabled = true;
+        const label = placeholderBtn.querySelector('span');
+        if (label) {
+          label.textContent = 'Loading Google Sign-In...';
+        } else {
+          placeholderBtn.textContent = 'Loading Google Sign-In...';
+        }
+      }
+      ensureGsiScriptLoaded();
+      void initGoogleSignIn().then(() => {
+        if (gsiReady) {
+          (window as any).google?.accounts?.id?.prompt?.();
+        }
+      });
+    };
+
+    for (const evt of docEvents) {
+      document.addEventListener(evt, onDocTrigger, { once: true, passive: true, capture: true });
+    }
+    placeholderBtn?.addEventListener('click', onPlaceholderClick, { once: true });
+    cleanupGsiTriggers = cleanupAll;
   }
 
   /** Shows the login screen. In-memory edits are kept. */
@@ -951,11 +1038,12 @@
     setWorkspaceAuthenticated(false);
     $('#login')?.classList.add('open');
     setLoginStatus(message);
-    initGoogleSignIn();
+    bindDeferredGsiTriggers();
   }
 
   /** After a confirmed session: load modules, show the app, load data. */
   async function enterApp() {
+    cleanupGsiTriggers?.();
     const modulesLoaded = await ensureAdminModulesLoaded();
     if (!modulesLoaded) {
       showLogin({ message: 'Failed to load administrative modules. Please refresh and try again.' });

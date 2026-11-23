@@ -1,15 +1,15 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import './styles/global.css'
 import { fetchBookingServices, fetchHeroSlides, fetchPricing, submitContactLead, type PricingData } from './api/client'
 import { SiteHeader } from './components/SiteHeader'
 import { heroDestinations, heroSlides } from './config/hero'
 import { previewBookingServices } from './config/booking'
-import { PortfolioGallery } from './sections/portfolio/PortfolioGallery'
 import { Hero } from './sections/hero/Hero'
 import { SiteFooter } from './sections/footer/SiteFooter'
 import type { HeroSlide } from './types/hero'
 import type { BookingService, ConfirmedBookingSummary } from './types/booking'
 import type { ContactInquiry } from './types/contact'
+const PortfolioGallery = lazy(() => import('./sections/portfolio/PortfolioGallery').then(m => ({ default: m.PortfolioGallery })))
 const RescheduleModal = lazy(() => import('./sections/booking/RescheduleModal').then(m => ({ default: m.RescheduleModal })))
 
 const AboutToRecent = lazy(() => import('./sections/transition/AboutToRecent').then(m => ({ default: m.AboutToRecent })))
@@ -19,7 +19,132 @@ const LegalPage = lazy(() => import('./pages/legal/LegalPage').then(m => ({ defa
 const FaqPage = lazy(() => import('./pages/faq/FaqPage').then(m => ({ default: m.FaqPage })))
 const FaqSection = lazy(() => import('./pages/faq/FaqPage').then(m => ({ default: m.FaqSection })))
 
+const SECTION_IDS = ['about', 'portfolio', 'booking', 'faq', 'contact'] as const
+
+const HASH_TO_SECTION_INDEX: Record<string, number> = {
+  about: 0,
+  'recent-photoshoot': 0,
+  portfolio: 1,
+  booking: 2,
+  services: 2,
+  pricing: 2,
+  faq: 3,
+  contact: 4,
+}
+
+function normalizeHashId(hash: string): string | null {
+  const id = hash.replace(/^#/, '').trim().toLowerCase()
+  return id in HASH_TO_SECTION_INDEX ? id : null
+}
+
+function getSectionIndexForHash(hash: string): number {
+  const id = normalizeHashId(hash)
+  return id ? HASH_TO_SECTION_INDEX[id] : -1
+}
+
+function resolveHashTargetElement(targetId: string): HTMLElement | null {
+  return (
+    document.getElementById(targetId) ??
+    (targetId === 'services' || targetId === 'pricing'
+      ? document.getElementById('booking')
+      : null)
+  )
+}
+
+function CommittedSignal({
+  sectionId,
+  onCommitted,
+  children,
+}: {
+  sectionId: string
+  onCommitted?: (sectionId: string) => void
+  children: ReactNode
+}) {
+  useEffect(() => {
+    onCommitted?.(sectionId)
+  }, [onCommitted, sectionId])
+  return <>{children}</>
+}
+
+interface DeferredSectionProps {
+  id: string
+  secondaryId?: string
+  heading: string
+  fallbackClassName?: string
+  minHeight: string
+  rootMargin?: string
+  engaged: boolean
+  forceMount: boolean
+  onCommitted?: (sectionId: string) => void
+  children: ReactNode
+}
+
+function DeferredSection({
+  id,
+  secondaryId,
+  heading,
+  fallbackClassName,
+  minHeight,
+  rootMargin,
+  engaged,
+  forceMount,
+  onCommitted,
+  children,
+}: DeferredSectionProps) {
+  const placeholderRef = useRef<HTMLElement | null>(null)
+  const [intersected, setIntersected] = useState(false)
+  const mounted = forceMount || intersected
+
+  useEffect(() => {
+    if (mounted) return
+    const target = placeholderRef.current
+    if (!target || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries.some(entry => entry.isIntersecting)) {
+          setIntersected(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: engaged ? (rootMargin ?? '600px') : '0px' },
+    )
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [mounted, engaged, rootMargin])
+
+  const placeholder = (
+    <section
+      ref={placeholderRef}
+      id={id}
+      className={fallbackClassName}
+      style={{ minHeight }}
+      aria-label={heading}
+    >
+      <h2 className="sr-only">{heading}</h2>
+      {secondaryId ? <div id={secondaryId} /> : null}
+    </section>
+  )
+
+  if (!mounted) {
+    return placeholder
+  }
+
+  return (
+    <Suspense fallback={placeholder}>
+      <CommittedSignal sectionId={id} onCommitted={onCommitted}>
+        {children}
+      </CommittedSignal>
+    </Suspense>
+  )
+}
+
 function App() {
+  const [engaged, setEngaged] = useState(() => window.scrollY > 4 || Boolean(window.location.hash))
+  const [forcedSectionIndex, setForcedSectionIndex] = useState(() => getSectionIndexForHash(window.location.hash))
+  const pendingHashRef = useRef<string | null>(normalizeHashId(window.location.hash))
+  const committedSectionsRef = useRef<Set<string>>(new Set())
+  const engagedRef = useRef(engaged)
+  const bookingLoadedOnceRef = useRef(false)
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
   const [bookingServices, setBookingServices] = useState<readonly BookingService[]>(previewBookingServices)
   const [pricing, setPricing] = useState<PricingData | null>(null)
@@ -100,6 +225,120 @@ function App() {
     }
   }, [])
 
+  const handleSectionCommitted = useCallback((sectionId: string) => {
+    committedSectionsRef.current.add(sectionId)
+    const pendingId = pendingHashRef.current
+    if (!pendingId) return
+    const targetIndex = getSectionIndexForHash(pendingId)
+    if (targetIndex === -1 || SECTION_IDS[targetIndex] !== sectionId) return
+    pendingHashRef.current = null
+    requestAnimationFrame(() => {
+      resolveHashTargetElement(pendingId)?.scrollIntoView({ behavior: 'smooth' })
+    })
+  }, [])
+
+  useEffect(() => {
+    engagedRef.current = engaged
+  }, [engaged])
+
+  useEffect(() => {
+    if (engaged) return
+    const markEngaged = () => setEngaged(true)
+    const events: Array<keyof WindowEventMap> = [
+      'scroll',
+      'wheel',
+      'touchstart',
+      'pointerdown',
+      'keydown',
+      'hashchange',
+    ]
+    events.forEach(eventName =>
+      window.addEventListener(eventName, markEngaged, { passive: true, once: true }),
+    )
+    return () => {
+      events.forEach(eventName => window.removeEventListener(eventName, markEngaged))
+    }
+  }, [engaged])
+
+  useEffect(() => {
+    if (legalPage || isFaqPage || isRescheduleRoute || rescheduleParams) return
+
+    const navigateToHash = (rawHash: string, event?: MouseEvent) => {
+      const targetId = normalizeHashId(rawHash)
+      if (!targetId) return
+      const sectionIndex = HASH_TO_SECTION_INDEX[targetId]
+      setEngaged(true)
+      const sectionId = SECTION_IDS[sectionIndex]
+      if (committedSectionsRef.current.has(sectionId)) {
+        const targetEl = resolveHashTargetElement(targetId)
+        if (targetEl) {
+          event?.preventDefault()
+          if (window.location.hash !== `#${targetId}`) {
+            window.history.pushState(null, '', `#${targetId}`)
+          }
+          requestAnimationFrame(() => {
+            targetEl.scrollIntoView({ behavior: 'smooth' })
+          })
+        }
+        return
+      }
+      event?.preventDefault()
+      if (window.location.hash !== `#${targetId}`) {
+        window.history.pushState(null, '', `#${targetId}`)
+      }
+      pendingHashRef.current = targetId
+      setForcedSectionIndex(prev => Math.max(prev, sectionIndex))
+    }
+
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return
+      }
+      const target = event.target as HTMLElement | null
+      const anchor = target?.closest('a[href]') as HTMLAnchorElement | null
+      if (!anchor) return
+      const rawHref = anchor.getAttribute('href')
+      if (!rawHref || !rawHref.includes('#')) return
+      let parsed: URL
+      try {
+        parsed = new URL(anchor.href, window.location.href)
+      } catch {
+        return
+      }
+      if (
+        parsed.origin !== window.location.origin ||
+        parsed.pathname !== window.location.pathname
+      ) {
+        return
+      }
+      navigateToHash(parsed.hash, event)
+    }
+
+    const handleHashChange = () => {
+      navigateToHash(window.location.hash)
+    }
+
+    document.addEventListener('click', handleDocumentClick)
+    window.addEventListener('hashchange', handleHashChange)
+    return () => {
+      document.removeEventListener('click', handleDocumentClick)
+      window.removeEventListener('hashchange', handleHashChange)
+    }
+  }, [legalPage, isFaqPage, isRescheduleRoute, rescheduleParams])
+
+  useEffect(() => {
+    if (legalPage || !engaged || bookingLoadedOnceRef.current) return
+    bookingLoadedOnceRef.current = true
+    void loadBookingServices()
+  }, [legalPage, engaged, loadBookingServices])
+
   useEffect(() => {
     if (legalPage) document.title = legalPage === 'privacy' ? 'Privacy Policy | R59 Media' : 'Terms and Conditions | R59 Media'
     if (isFaqPage) document.title = 'FAQ | R59 Media'
@@ -128,21 +367,18 @@ function App() {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         load()
-        void loadBookingServices()
+        if (engagedRef.current) {
+          void loadBookingServices()
+        }
       }
     }
 
     load()
 
-    const timeoutHandle = window.setTimeout(() => {
-      void loadBookingServices()
-    }, 150)
-
     window.addEventListener('focus', handleVisibilityChange)
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => {
       controller?.abort()
-      window.clearTimeout(timeoutHandle)
       window.removeEventListener('focus', handleVisibilityChange)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
@@ -250,11 +486,36 @@ function App() {
       <div className="site-intro">
         <Hero slides={slides} destinations={heroDestinations} />
       </div>
-      <Suspense fallback={<div className="about-transition-placeholder" />}>
+      <DeferredSection
+        id="about"
+        secondaryId="recent-photoshoot"
+        heading="About Me"
+        fallbackClassName="about-transition-placeholder"
+        minHeight="100svh"
+        engaged={engaged}
+        forceMount={forcedSectionIndex >= 0}
+        onCommitted={handleSectionCommitted}
+      >
         <AboutToRecent />
-      </Suspense>
-      <PortfolioGallery />
-      <Suspense fallback={null}>
+      </DeferredSection>
+      <DeferredSection
+        id="portfolio"
+        heading="Portfolio"
+        minHeight="80vh"
+        engaged={engaged}
+        forceMount={forcedSectionIndex >= 1}
+        onCommitted={handleSectionCommitted}
+      >
+        <PortfolioGallery />
+      </DeferredSection>
+      <DeferredSection
+        id="booking"
+        heading="Book a Session"
+        minHeight="85vh"
+        engaged={engaged}
+        forceMount={forcedSectionIndex >= 2}
+        onCommitted={handleSectionCommitted}
+      >
         <BookingSection
           services={bookingServices}
           pricing={pricing}
@@ -268,13 +529,27 @@ function App() {
             setConfirmedBooking(null)
           }}
         />
-      </Suspense>
-      <Suspense fallback={null}>
+      </DeferredSection>
+      <DeferredSection
+        id="faq"
+        heading="Frequently Asked Questions"
+        minHeight="60vh"
+        engaged={engaged}
+        forceMount={forcedSectionIndex >= 3}
+        onCommitted={handleSectionCommitted}
+      >
         <FaqSection />
-      </Suspense>
-      <Suspense fallback={null}>
+      </DeferredSection>
+      <DeferredSection
+        id="contact"
+        heading="Contact"
+        minHeight="60vh"
+        engaged={engaged}
+        forceMount={forcedSectionIndex >= 4}
+        onCommitted={handleSectionCommitted}
+      >
         <ContactSection onSendInquiry={handleSendInquiry} />
-      </Suspense>
+      </DeferredSection>
     </main>
     <SiteFooter />
   </div>

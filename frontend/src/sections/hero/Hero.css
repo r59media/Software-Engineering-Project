@@ -5,6 +5,20 @@
 .hero__background { position: absolute; inset: 0; z-index: -1; overflow: hidden; background-color: var(--color-brand-black, #0c0c0c); }
 .hero__preload { position: absolute; inset: 0; visibility: hidden; }
 .hero__slide, .hero__media { position: absolute; inset: 0; }
+@keyframes heroSlideIn {
+  from { transform: translate3d(100%, 0, 0); }
+  to { transform: translate3d(0, 0, 0); }
+}
+@keyframes heroSlideOut {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(-100%, 0, 0); }
+}
+.hero__slide--entering { animation: heroSlideIn 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+.hero__slide--exiting { animation: heroSlideOut 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .hero__slide--entering,
+  .hero__slide--exiting { animation: none; }
+}
 .hero__image,
 .hero__canvas { display: block; width: 100%; height: 100%; object-fit: cover; object-position: var(--image-position); pointer-events: none; user-select: none; -webkit-user-drag: none; }
 .hero-shield { position: absolute; inset: 0; z-index: 5; pointer-events: auto; background: transparent; user-select: none; -webkit-user-drag: none; }

@@ -14,12 +14,12 @@ export default defineConfig({
   build: {
     sourcemap: false,
     modulePreload: {
-      resolveDependencies: (_filename, deps) => deps.filter(dep => !dep.includes('vendor-three')),
+      resolveDependencies: (_filename, deps) => deps.filter(dep => !dep.includes('vendor-three') && !dep.includes('vendor-motion')),
     },
     rollupOptions: {
       output: {
         entryFileNames: 'assets/[hash].js',
-        chunkFileNames: 'assets/[hash].js',
+        chunkFileNames: (chunkInfo) => chunkInfo.name?.startsWith('vendor-') ? 'assets/[name]-[hash].js' : 'assets/[hash].js',
         assetFileNames: 'assets/[hash][extname]',
         manualChunks(id) {
           if (!id.includes('node_modules')) return
@@ -29,6 +29,9 @@ export default defineConfig({
             id.includes('node_modules/scheduler/')
           ) {
             return 'vendor-react'
+          }
+          if (id.includes('node_modules/motion') || id.includes('node_modules/framer-motion')) {
+            return 'vendor-motion'
           }
           if (
             id.includes('node_modules/three/') ||

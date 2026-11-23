@@ -1262,3 +1262,64 @@ test('Public is_active = 1 media with ?v= serves immutable Cache-Control, preser
     }
   }
 })
+
+test('/admin/assets/* serves immutable Cache-Control when ?v= is present and no-store when unversioned or HTML', async () => {
+  const { env } = setupTestEnv()
+  const adminEnv: Bindings = {
+    ...env,
+    ASSETS: {
+      fetch: async (input: RequestInfo | URL) => {
+        const reqUrl = new URL(typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString())
+        if (reqUrl.pathname === '/admin/' || reqUrl.pathname === '/admin/index.html') {
+          return new Response('<!DOCTYPE html><html></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8' }
+          })
+        }
+        if (reqUrl.pathname.endsWith('.css')) {
+          return new Response('body{color:#000}', {
+            status: 200,
+            headers: { 'Content-Type': 'text/css; charset=utf-8' }
+          })
+        }
+        if (reqUrl.pathname.endsWith('.js')) {
+          return new Response('console.log(1);', {
+            status: 200,
+            headers: { 'Content-Type': 'application/javascript; charset=utf-8' }
+          })
+        }
+        return new Response('Not found', { status: 404 })
+      }
+    }
+  }
+
+  const realApp = loadRealBackendApp()
+
+  // GET /admin keeps 301 redirect to /admin/
+  const redirectRes = await realApp.fetch(new Request('http://localhost/admin'), adminEnv)
+  assert.equal(redirectRes.status, 301)
+  assert.equal(redirectRes.headers.get('Location'), '/admin/')
+
+  // /admin/ HTML keeps no-store even if ?v= is passed
+  const htmlRes = await realApp.fetch(new Request('http://localhost/admin/?v=abc12345'), adminEnv)
+  assert.equal(htmlRes.status, 200)
+  assert.equal(htmlRes.headers.get('Cache-Control'), 'no-store, no-cache, must-revalidate')
+
+  // Versioned CSS and JS assets receive immutable Cache-Control
+  const cssVersioned = await realApp.fetch(new Request('http://localhost/admin/assets/css/admin-bundle.css?v=deadbeef'), adminEnv)
+  assert.equal(cssVersioned.status, 200)
+  assert.equal(cssVersioned.headers.get('Cache-Control'), 'public, max-age=31536000, immutable')
+
+  const jsVersioned = await realApp.fetch(new Request('http://localhost/admin/assets/js/admin-boot.js?v=cafebabe'), adminEnv)
+  assert.equal(jsVersioned.status, 200)
+  assert.equal(jsVersioned.headers.get('Cache-Control'), 'public, max-age=31536000, immutable')
+
+  // Unversioned or blank ?v= CSS and JS assets keep no-store
+  const cssUnversioned = await realApp.fetch(new Request('http://localhost/admin/assets/css/admin-bundle.css'), adminEnv)
+  assert.equal(cssUnversioned.status, 200)
+  assert.equal(cssUnversioned.headers.get('Cache-Control'), 'no-store, no-cache, must-revalidate')
+
+  const jsEmptyV = await realApp.fetch(new Request('http://localhost/admin/assets/js/theme-init.js?v=%20%20'), adminEnv)
+  assert.equal(jsEmptyV.status, 200)
+  assert.equal(jsEmptyV.headers.get('Cache-Control'), 'no-store, no-cache, must-revalidate')
+})

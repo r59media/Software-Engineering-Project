@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { GalleryEmptyState } from './GalleryEmptyState'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import { PhotoLightbox } from '../recent/PhotoLightbox'
@@ -17,9 +17,27 @@ const tabId = (category: string) => `portfolio-tab-${category.toLowerCase().repl
 
 export function PortfolioGallery() {
   const { photos, loading } = useGalleryPhotos()
+  const sectionRef = useRef<HTMLElement | null>(null)
+  const [inView, setInView] = useState(false)
   const [activeCategory, setActiveCategory] = useState('All')
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [hasVisitedEmpty, setHasVisitedEmpty] = useState(false)
+
+  useEffect(() => {
+    const node = sectionRef.current
+    if (!node || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      entries => {
+        if (entries.some(entry => entry.isIntersecting)) {
+          setInView(true)
+          observer.disconnect()
+        }
+      },
+      { rootMargin: '200px' },
+    )
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
 
   const categories = useMemo(() => {
     const found = new Set<string>(STANDARD_CATEGORIES)
@@ -47,13 +65,13 @@ export function PortfolioGallery() {
   }, [photos, activeCategory])
 
   useEffect(() => {
-    if (!loading && filteredPhotos.length === 0) {
+    if (inView && !loading && filteredPhotos.length === 0) {
       void import('./MemoryCardScene')
     }
-  }, [loading, filteredPhotos.length])
+  }, [inView, loading, filteredPhotos.length])
 
   const preloadMemoryCardIfEmpty = (category: string) => {
-    if (loading && photos.length === 0) return
+    if (!inView || (loading && photos.length === 0)) return
     const count =
       category === 'All'
         ? photos.length
@@ -65,12 +83,12 @@ export function PortfolioGallery() {
 
   const isEmpty = !(loading && photos.length === 0) && filteredPhotos.length === 0
 
-  if (isEmpty && !hasVisitedEmpty) {
+  if (inView && isEmpty && !hasVisitedEmpty) {
     setHasVisitedEmpty(true)
   }
 
   return (
-    <section id="portfolio" className="portfolio-gallery" aria-labelledby="portfolio-heading">
+    <section ref={sectionRef} id="portfolio" className="portfolio-gallery" aria-labelledby="portfolio-heading">
       <div className="portfolio-gallery__inner">
         <header className="portfolio-gallery__header">
           <p className="portfolio-gallery__eyebrow">
@@ -139,7 +157,7 @@ export function PortfolioGallery() {
           </div>
         ) : null}
 
-        {(hasVisitedEmpty || isEmpty) && (
+        {inView && (hasVisitedEmpty || isEmpty) && (
           <div
             id={isEmpty ? 'portfolio-tabpanel' : undefined}
             role={isEmpty ? 'tabpanel' : undefined}

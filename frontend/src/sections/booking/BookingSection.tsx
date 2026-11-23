@@ -1,6 +1,6 @@
 import { AnimatePresence, LayoutGroup, motion, useIsPresent, useReducedMotion } from 'motion/react'
-import type { ReactNode } from 'react'
-import { forwardRef, useEffect, useMemo, useState } from 'react'
+import type { ComponentType, ReactNode } from 'react'
+import { Suspense, forwardRef, lazy, useEffect, useMemo, useState } from 'react'
 import { previewBookingServices } from '../../config/booking'
 import type {
   BookingCustomerInfo,
@@ -15,9 +15,14 @@ import { BookingDateTime } from './BookingDateTime'
 import { validateBookingInfo } from './bookingValidation'
 import { BookingYourInfo } from './BookingYourInfo'
 import { BookingSummary } from './BookingSummary'
-import { BookingDeposit, warmSquarePaymentSdk } from './BookingDeposit'
+import type { BookingDepositProps } from './BookingDeposit'
+import { warmSquarePaymentSdk } from './squareSdk'
 import type { ConfirmedBookingSummary } from '../../types/booking'
 import './BookingSection.css'
+
+const BookingDeposit = lazy<ComponentType<BookingDepositProps>>(() =>
+  import('./BookingDeposit').then(m => ({ default: m.BookingDeposit })),
+)
 
 export function BookingSection(props: BookingSectionProps) {
   return <LayoutGroup><BookingFlow {...props} /></LayoutGroup>
@@ -138,6 +143,12 @@ function BookingFlow({
       bookingEl.removeEventListener('click', markInteracted)
     }
   }, [effectiveSquareConfig, bookingInteracted, effectiveStep])
+
+  useEffect(() => {
+    if (effectiveStep === 'info' || effectiveStep === 'summary') {
+      void import('./BookingDeposit')
+    }
+  }, [effectiveStep])
 
   useEffect(() => {
     if (!effectiveSquareConfig) return
@@ -416,28 +427,30 @@ function BookingFlow({
       <BookingStage movement={movement} stage="deposit">
         <section id="booking" className="booking" aria-labelledby="booking-title">
           <div className="booking__inner">
-            <BookingDeposit
-              service={selectedService}
-              people={attendees}
-              pricing={pricing}
-              squareConfig={effectiveSquareConfig}
-              dateTime={dateTime}
-              customerInfo={customerInfo}
-              photoPermissions={photoPermissions}
-              selectedFeeIds={selectedFeeIds}
-              onBack={() => {
-                setStep('summary')
-                document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
-              }}
-              onEdit={nextStep => {
-                setStep(nextStep)
-                document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
-              }}
-              onSuccess={summary => {
-                setInternalConfirmed(summary)
-                document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
-              }}
-            />
+            <Suspense fallback={<div className="booking-panel__loading">Loading secure checkout...</div>}>
+              <BookingDeposit
+                service={selectedService}
+                people={attendees}
+                pricing={pricing}
+                squareConfig={effectiveSquareConfig}
+                dateTime={dateTime}
+                customerInfo={customerInfo}
+                photoPermissions={photoPermissions}
+                selectedFeeIds={selectedFeeIds}
+                onBack={() => {
+                  setStep('summary')
+                  document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+                }}
+                onEdit={nextStep => {
+                  setStep(nextStep)
+                  document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+                }}
+                onSuccess={summary => {
+                  setInternalConfirmed(summary)
+                  document.getElementById('booking')?.scrollIntoView({ behavior: 'smooth' })
+                }}
+              />
+            </Suspense>
           </div>
         </section>
       </BookingStage>

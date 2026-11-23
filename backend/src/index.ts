@@ -490,12 +490,19 @@ app.get('/admin/*', async (c) => {
 
   // Clone with mutable headers so global security header middleware attaches headers cleanly
   const headers = new Headers(assetRes.headers)
+  const isVersionedAdminAsset =
+    (url.pathname.startsWith('/admin/assets/css/') || url.pathname.startsWith('/admin/assets/js/')) &&
+    Boolean(url.searchParams.get('v')?.trim())
   const isCacheableStatic =
     /\.wasm$/i.test(url.pathname) ||
     (url.pathname.startsWith('/admin/assets/fonts/') && /\.(woff2|woff|ttf)$/i.test(url.pathname))
   headers.set(
     'Cache-Control',
-    isCacheableStatic ? 'public, max-age=86400, stale-while-revalidate=604800' : 'no-store, no-cache, must-revalidate'
+    isVersionedAdminAsset
+      ? 'public, max-age=31536000, immutable'
+      : isCacheableStatic
+        ? 'public, max-age=86400, stale-while-revalidate=604800'
+        : 'no-store, no-cache, must-revalidate'
   )
   headers.set('Cross-Origin-Opener-Policy', 'same-origin-allow-popups')
   if (url.pathname.endsWith('.wasm')) {

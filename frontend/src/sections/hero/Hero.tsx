@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
 import type { HeroDestinations, HeroSlide } from '../../types/hero'
 import { ActionLink } from '../../components/ActionLink'
 import { ProtectedCanvasImage, preloadProtectedImage } from '../../components/ProtectedCanvasImage'
@@ -86,9 +85,75 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
     : (currentId && availableSlides.some(s => s.id === currentId) ? currentId : availableSlides[0]?.id)
   const activeIndex = Math.max(0, availableSlides.findIndex(slide => slide.id === effectiveId))
   const activeSlide = availableSlides[activeIndex]
+  const activeKey = activeSlide ? `${activeSlide.id}:${activeSlide.imageUrl}` : ''
+
+  const [preloadUnlocked, setPreloadUnlocked] = useState(false)
+  const [slideTransition, setSlideTransition] = useState<{
+    activeKey: string
+    activeIndex: number
+    activeId: string
+    currentSlide: HeroSlide | undefined
+    exitingSlide: HeroSlide | undefined
+    exitingIndex: number
+    enteringKey: string | null
+  }>(() => ({
+    activeKey,
+    activeIndex,
+    activeId: activeSlide?.id ?? '',
+    currentSlide: activeSlide,
+    exitingSlide: undefined,
+    exitingIndex: 0,
+    enteringKey: null,
+  }))
+
+  if (activeKey !== slideTransition.activeKey) {
+    const isInitialHydration =
+      !slideTransition.currentSlide ||
+      (slideTransition.activeId.startsWith('hero-') &&
+        Boolean(activeSlide?.id.startsWith('api-hero-')) &&
+        slideTransition.activeIndex === activeIndex)
+
+    setSlideTransition({
+      activeKey,
+      activeIndex,
+      activeId: activeSlide?.id ?? '',
+      currentSlide: activeSlide,
+      exitingSlide: isInitialHydration ? undefined : slideTransition.currentSlide,
+      exitingIndex: slideTransition.activeIndex,
+      enteringKey: isInitialHydration ? null : activeKey,
+    })
+  }
 
   useEffect(() => {
-    if (availableSlides.length === 0) return
+    if (!slideTransition.exitingSlide && !slideTransition.enteringKey) return
+    const timer = window.setTimeout(() => {
+      setSlideTransition(prev =>
+        prev.exitingSlide || prev.enteringKey
+          ? { ...prev, exitingSlide: undefined, enteringKey: null }
+          : prev,
+      )
+    }, 700)
+    return () => window.clearTimeout(timer)
+  }, [slideTransition.exitingSlide, slideTransition.enteringKey])
+
+  useEffect(() => {
+    if (preloadUnlocked) return
+    const unlock = () => setPreloadUnlocked(true)
+    const timer = window.setTimeout(unlock, 4500)
+    const events = ['scroll', 'wheel', 'touchstart', 'pointerdown', 'keydown'] as const
+    for (const event of events) {
+      window.addEventListener(event, unlock, { passive: true })
+    }
+    return () => {
+      window.clearTimeout(timer)
+      for (const event of events) {
+        window.removeEventListener(event, unlock)
+      }
+    }
+  }, [preloadUnlocked])
+
+  useEffect(() => {
+    if (!preloadUnlocked || availableSlides.length === 0) return
     const indices = new Set([
       activeIndex,
       (activeIndex + 1) % availableSlides.length,
@@ -98,7 +163,7 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
       const url = availableSlides[idx]?.imageUrl
       if (url) void preloadProtectedImage(url)
     }
-  }, [availableSlides, activeIndex])
+  }, [preloadUnlocked, availableSlides, activeIndex])
 
   useEffect(() => {
     const onVisibility = () => setHidden(document.hidden)
@@ -135,23 +200,28 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
     <section ref={sectionRef} id="hero" className="hero" aria-labelledby="hero-title" tabIndex={-1}>
       <div className="hero__stage">
         <div className="hero__background">
-          <AnimatePresence initial={false}>
-            {activeSlide && (
-              <motion.div
-                className="hero__slide"
-                key={`${activeSlide.id}:${activeSlide.imageUrl}`}
-                initial={{ x: '100%' }}
-                animate={{ x: '0%' }}
-                exit={{ x: '-100%' }}
-                transition={{
-                  duration: 0.7,
-                  ease: [0.16, 1, 0.3, 1],
-                }}
+          {slideTransition.exitingSlide &&
+            `${slideTransition.exitingSlide.id}:${slideTransition.exitingSlide.imageUrl}` !== activeKey && (
+              <div
+                className="hero__slide hero__slide--exiting"
+                key={`${slideTransition.exitingSlide.id}:${slideTransition.exitingSlide.imageUrl}`}
+                aria-hidden="true"
               >
-                <HeroImage slide={activeSlide} fallbackImageUrl={slides[0]?.imageUrl} isFirst={activeIndex === 0} />
-              </motion.div>
-            )}
-          </AnimatePresence>
+                <HeroImage
+                  slide={slideTransition.exitingSlide}
+                  fallbackImageUrl={slides[0]?.imageUrl}
+                  isFirst={slideTransition.exitingIndex === 0}
+                />
+              </div>
+          )}
+          {activeSlide && (
+            <div
+              className={slideTransition.enteringKey === activeKey ? 'hero__slide hero__slide--entering' : 'hero__slide'}
+              key={activeKey}
+            >
+              <HeroImage slide={activeSlide} fallbackImageUrl={slides[0]?.imageUrl} isFirst={activeIndex === 0} />
+            </div>
+          )}
         </div>
         <div className="hero__content">
           <div className="hero__title-group">
