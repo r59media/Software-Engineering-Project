@@ -11,6 +11,8 @@
 .site-header__cta { width: 15.25rem; min-height: 4rem; font-size: var(--text-base); }
 .site-header__toggle { display: none; }
 .mobile-navigation { position: fixed; inset: 0; width: 100%; max-width: none; height: 100%; max-height: none; padding: 0; border: 0; margin: 0; background: transparent; color: var(--color-brand-black); overflow: auto; overscroll-behavior: contain; }
+.mobile-navigation:focus,
+.mobile-navigation:focus-visible { outline: none; }
 .mobile-navigation::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px); }
 .mobile-navigation__panel { position: relative; width: min(84vw, 340px); height: 100dvh; min-height: 40rem; margin-left: auto; container-type: size; isolation: isolate; overflow: clip; }
 .mobile-navigation__dismiss { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; border: 0; background: transparent; cursor: default; clip-path: polygon(0 0, 26% 0, 0 85%); }
@@ -67,6 +69,12 @@
   outline: 2px solid var(--color-brand-red);
   outline-offset: 2px;
   border-radius: 4px;
+}
+@media (hover: none) and (pointer: coarse) {
+  .mobile-navigation__close:focus,
+  .mobile-navigation__close:focus-visible {
+    outline: none;
+  }
 }
 .mobile-navigation__close-icon {
   position: relative;

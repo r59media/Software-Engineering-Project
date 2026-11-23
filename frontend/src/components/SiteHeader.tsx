@@ -137,7 +137,7 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
     }
     body.style.overflow = 'hidden'
     node.showModal()
-    closeButton.current?.focus({ preventScroll: true })
+    node.focus({ preventScroll: true })
     const desktop = matchMedia('(min-width: 851px)')
     const onResize = () => { if (desktop.matches) { unlock.current(); node.close(); setOpen(false) } }
     desktop.addEventListener('change', onResize)
@@ -194,7 +194,7 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
         <img src={menuIcon} alt="" width="24" height="24" />
       </button>
     </header>
-    {createPortal(<dialog ref={dialog} id="mobile-navigation" className="mobile-navigation" aria-label="Navigation menu"
+    {createPortal(<dialog ref={dialog} id="mobile-navigation" className="mobile-navigation" tabIndex={-1} aria-label="Navigation menu"
       onCancel={event => { event.preventDefault(); closeMenu() }} onClick={event => { if (event.target === event.currentTarget) closeMenu() }}>
       <div className="mobile-navigation__panel"
         onPointerDown={event => {
