@@ -29,7 +29,6 @@ interface R59Global {
   confirmation?: any
   formValidation?: any
   headerFold?: any
-  passwordReset?: any
   reviewChanges?: any
   settings?: any
   dashboard?: any

@@ -5,7 +5,7 @@ import { verifySquareSignature } from '../lib/squareWebhookAuth.ts'
 import { fetchAndSyncInvoice, fetchAndSyncTerminalCheckout, isSquareNotFound } from '../lib/squareBilling.ts'
 import { ensureSchemaReady } from './admin'
 
-// Flow 6 of docs/designs/square-deposits-and-invoices.md.
+// Square webhook sync for invoices and terminal checkouts.
 // Logs carry the event id only — never the body, headers or signature.
 
 const MAX_WEBHOOK_BYTES = 65536

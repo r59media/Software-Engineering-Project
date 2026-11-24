@@ -43,13 +43,18 @@ A high-performance, full-stack photography portfolio and studio management platf
   * Rendered directly into HTML5 canvas contexts behind invisible DOM interaction shields (`.media-shield`).
   * Right-click context menus, image dragging, and casual direct hotlinking are deterred.
   * Media endpoints require legitimate application headers (`X-R59-Client: media-viewer`) or an active authenticated session to prevent casual downloading (while recognizing that no client-rendered web asset can offer a 100% bulletproof anti-scraping guarantee against automated headless browsers).
-* **Dynamic Hero Showcase:** Responsive hero slider displaying curated automotive and portrait photography with support for remote updates.
+* **Dynamic Hero Showcase:** Responsive hero slider displaying curated automotive and portrait photography with support for remote updates and GPU-composited CSS transitions.
 * **Photographer Story & About Me:** Live biography paragraphs and dynamic photographer portrait synchronized with admin profile settings.
 * **Most Recent Photoshoot Strip:** Carousel highlighting recent lookbook frames with animated aperture transitions.
 * **Selected Works & Portfolio Gallery (`#portfolio`):**
   * Dynamic category filter pills (`All`, `Portrait`, `Editorial`, `Commercial`, `Events`, `Weddings`, `Product`).
-  * Responsive studio grid with hover metadata overlays.
+  * Responsive studio grid with hover metadata overlays and a 3D SD Card empty state (`MemoryCardScene`) when a category has no photos yet.
   * Full-screen modal lightbox (`<PhotoLightbox />`) with keyboard arrow navigation and responsive canvas rendering.
+* **Online Booking & Rescheduling (`#booking`, `/reschedule`):**
+  * Multi-step booking flow with duration-aware consecutive time-slot availability, Google Places / Photon address autocomplete, coupon codes, and tokenized Square deposit checkout.
+  * Self-service client rescheduling (`/reschedule`) with `.ics` and Google Calendar links.
+* **FAQ, Contact & Custom 3D 404:** Dedicated FAQ section/page (`/faq`), interactive multi-step Contact inquiry flow with Polaroid collage (`#contact`), legal pages (`/privacy-policy`, `/terms`), and an interactive 3D studio 404 page (`NotFoundScene`).
+* **Performance & SEO:** Progressive below-the-fold `<DeferredSection>` hydration, isolated `vendor-three` / `vendor-motion` chunks, Brotli/Zstd compression, Early Hints, `robots.txt`, `sitemap.xml`, `llms.txt`, and Schema.org JSON-LD.
 * **Live Two-Way Synchronization:** Automatic tab-focus and visibility revalidation — when images, biographies, or studio settings are updated in Admin, the public website refreshes automatically when switching back.
 * **Interactive Studio Footer:** Live contact links (`mailto:`, `tel:`) and validated social links (Instagram, Threads, X, Facebook, Pinterest) powered by dynamic settings.
 
@@ -68,58 +73,57 @@ A high-performance, full-stack photography portfolio and studio management platf
 * **Studio Profile & Settings:** Editable biography, location, travel availability, phone, email, and social platform URLs.
 * **Packages & Pricing:** CRUD management for photography packages, hourly rates, base fees, per-person rates, and deposit percentages.
 * **Coupons & Promotions:** Percentage-based or flat-rate coupon codes with active toggles.
-* **Schedule & Calendar:** Weekly recurring timeframes, single-day availability adjustments, and blocked dates management.
-* **Bookings & Inquiries:** Client tracking, appointment scheduling, notes, and cancellation workflows with reimbursement warnings.
+* **Schedule & Calendar:** Weekly recurring timeframes, rolling 90-day slot generation, single-day availability adjustments, and multi-day vacation / blocked dates management.
+* **Bookings & Inquiries:** Client tracking, atomic multi-slot booking & rescheduling, notes, and cancellation/deletion workflows with automatic multi-slot release and reimbursement warnings.
 
-### 3. Serverless Backend & Storage (`/backend`)
+### 3. Serverless Backend & Zero-Maintenance Automation (`/backend`)
 * **100% Cloudflare D1 (Zero R2):** All metadata, bookings, and images are stored entirely in Cloudflare D1 SQLite database (`r59_db`).
-* **Chunked Binary Media Storage:** Uploaded WebP images are sliced into 512 KB binary `BLOB` chunks and stored directly inside the `Media_Storage` table.
-* **Edge Asset & Worker Integration:** Uses Cloudflare Workers static asset bindings to serve pre-compiled frontend and admin bundles with single-digit millisecond latency.
-* **Automatic Seed & Asset Hash Synchronization:** `backend/scripts/sync-defaults.mjs` maps pre-bundled static assets into `defaultPortfolioSeed.json`, automatically seeding missing sections on first run.
+* **Chunked Binary Media Storage & Edge Caching:** Uploaded WebP images are sliced into 512 KB binary `BLOB` chunks inside `Media_Storage`, served via HMAC-signed URLs (`?w=640|1280`) and versioned `?v=` immutable edge caching for public media (`private, no-store` for inactive/auth-gated media).
+* **Atomic Multi-Slot Scheduling & Rolling Cron:** Shared `scheduleSync.ts` engine enforces service durations, consecutive slot locking, buffer times, and a daily Cloudflare Cron (`0 6 * * *`) + lazy self-heal maintaining a rolling 90-day booking window.
+* **Edge Asset & Worker Integration:** Uses Cloudflare Workers static asset bindings (`_headers` + bundled `/admin` CSS/JS with `?v=` hashes) to serve pre-compiled frontend and admin bundles with single-digit millisecond latency.
+* **Automatic Seed & Asset Hash Synchronization:** `backend/scripts/sync-defaults.ts` maps pre-bundled static assets into `defaultPortfolioSeed.json`, automatically seeding missing sections on first run.
 * **Square Payments Integration:** Tokenized Square checkout with PCI-DSS compliance (no raw credit card numbers touch the worker or database).
-* **Enterprise Security Headers:** Configured with Content-Security-Policy (CSP), HSTS, Cross-Origin-Opener-Policy (COOP), Referrer-Policy, and anti-framing protections.
+* **Enterprise Security Headers & CI/CD:** Configured with Content-Security-Policy (CSP), HSTS, Cross-Origin-Opener-Policy (COOP), Referrer-Policy, anti-framing protections, Dependabot patch automation, and `/api/health` deployment verification.
 
 ---
 
 ## 📁 Repository Structure
 
 ```text
-├── admin/                         # Administration dashboard (Vanilla JS/CSS)
-│   ├── index.html                 # Admin portal entry point
-│   ├── assets/
-│   │   ├── css/                   # Design system tokens, layout, and page styles
-│   │   └── js/
-│   │       ├── api/               # API clients (photography, bookings, packages, schedule, payments)
-│   │       ├── pages/             # Page controllers (photography, dashboard, payments, schedule)
-│   │       └── utils/             # Client-side WebP converter (0.92 quality, 2560px max)
+├── admin/                         # Administration dashboard (TypeScript + Modular JS/CSS)
+│   ├── index.html                 # Admin portal entry point (deferred Google GIS)
+│   ├── src/                       # TypeScript sources compiled to assets/js/
+│   └── assets/
+│       ├── css/                   # Design system tokens, layout, and page styles
+│       └── js/
+│           ├── api/               # API clients (photography, bookings, packages, schedule, payments)
+│           ├── pages/             # Page controllers (photography, dashboard, payments, schedule)
+│           └── utils/             # Client-side WebP converter (0.92 quality, 2560px max)
 │
 ├── backend/                       # Cloudflare Worker API & Edge Asset Server
 │   ├── src/
-│   │   ├── index.ts               # Worker entry point, static asset routing, media streaming
-│   │   ├── routes/                # Hono API routes (portfolio, admin, services, bookings, etc.)
-│   │   ├── defaultPortfolioSeed.json # Seed catalog for 24 default Main Page images
+│   │   ├── index.ts               # Worker entry point, static asset routing, media streaming, cron
+│   │   ├── lib/                   # scheduleSync, edgeCache, signedUrl, and D1 helpers
+│   │   ├── routes/                # Hono API routes (portfolio, admin, services, bookings, checkout, reschedule, schedule)
+│   │   ├── defaultPortfolioSeed.json # Seed catalog for default Main Page images
 │   │   └── types/                 # Worker environment and database types
-│   ├── scripts/
-│   │   └── sync-defaults.mjs      # Syncs frontend Vite assets into defaultPortfolioSeed.json
+│   ├── scripts/                   # sync-frontend.ts, sync-defaults.ts, sync-admin.ts, bundle-admin-workers.ts
+│   ├── test/                      # Node test runner suite (auth, checkout, media, schedule, duration locking)
 │   ├── schema.sql                 # Canonical SQLite schema for Cloudflare D1
-│   └── wrangler.toml              # Cloudflare Worker configuration & D1 bindings
+│   └── wrangler.toml              # Cloudflare Worker configuration, Cron & D1 bindings
 │
 ├── frontend/                      # Public client application (React 19 + TypeScript + Vite)
+│   ├── public/                    # robots.txt, sitemap.xml, llms.txt, favicons, 3D .glb models
 │   ├── src/
 │   │   ├── api/                   # API client with fallback datasets and media resolvers
-│   │   ├── components/            # ProtectedCanvasImage and shared layout components
+│   │   ├── components/            # ProtectedCanvasImage, SiteHeader, and shared layout components
 │   │   ├── config/                # Default studio data, hero slides, and photoshoot lookbooks
-│   │   ├── sections/
-│   │   │   ├── header/            # Responsive navigation header
-│   │   │   ├── hero/              # Fullscreen hero carousel
-│   │   │   ├── about/             # Photographer biography, 3D lens model, portrait
-│   │   │   ├── transition/        # AboutToRecent 3D iris aperture scroll transition
-│   │   │   ├── recent/            # Most Recent Photoshoot carousel & PhotoLightbox
-│   │   │   ├── portfolio/         # Selected Works & Portfolio Gallery (#portfolio)
-│   │   │   └── footer/            # Live studio footer with contact & social links
+│   │   ├── pages/                 # FAQ, Legal (Privacy/Terms), and 3D NotFound (404) pages
+│   │   ├── sections/              # hero, about, transition, recent, portfolio, booking, contact, footer
 │   │   ├── styles/                # Global tokens, media shields, and responsive CSS
-│   │   └── App.tsx                # Main single-page application composition
+│   │   └── App.tsx                # Progressive DeferredSection single-page composition
 │
+├── docs/                          # Client & Admin User Manuals (MD + PDF) and handoff guides
 └── README.md                      # This documentation
 ```
 
@@ -235,18 +239,33 @@ pnpm --dir backend run build
 ```
 
 This executes:
-1. `sync-frontend`: Builds the React Vite application (`frontend/dist`) and copies it to `backend/public`.
-2. `sync-defaults`: Hashes compiled assets and generates `defaultPortfolioSeed.json`.
-3. `sync-admin`: Copies and minifies `admin/` assets with esbuild into `backend/public/admin`.
+1. `build:admin`: Typechecks and compiles `admin/src/` TypeScript sources.
+2. `sync-frontend`: Builds the React Vite application (`frontend/dist`), copies it to `backend/public`, and writes Cloudflare `_headers`.
+3. `sync-defaults`: Hashes compiled assets and generates `defaultPortfolioSeed.json`.
+4. `sync-admin`: Minifies `admin/` assets, bundles CSS/boot JS with content hashes (`?v=`), and writes `backend/public/admin`.
+5. `bundle:admin-worker`: Bundles `authWorker.ts`, `webpEncoder.worker.ts`, and `.wasm` assets.
 
 ### Verification Commands
 ```bash
-# Typecheck backend
-pnpm --dir backend run typecheck
-
-# Lint & typecheck frontend
+# Lint, typecheck & build frontend
 pnpm --dir frontend run check
+
+# Strict typecheck admin
+pnpm --dir admin run typecheck
+
+# Typecheck, build & test backend
+pnpm --dir backend run typecheck
+pnpm --dir backend run build
+pnpm --dir backend test
 ```
+
+---
+
+## 📚 Documentation & Client Manuals
+
+* **Client User Manual:** [`docs/USER_MANUAL_CLIENT.md`](docs/USER_MANUAL_CLIENT.md) ([PDF](docs/USER_MANUAL_CLIENT.pdf))
+* **Admin User Manual:** [`docs/USER_MANUAL_ADMIN.md`](docs/USER_MANUAL_ADMIN.md) ([PDF](docs/USER_MANUAL_ADMIN.pdf))
+* **Zero-Maintenance Handoff Guide:** [`docs/CLIENT_HANDOFF_ZERO_MAINTENANCE.md`](docs/CLIENT_HANDOFF_ZERO_MAINTENANCE.md)
 
 ### Deploy to Cloudflare Workers
 ```bash

@@ -145,10 +145,12 @@ function DeferredSection({
 
 function App() {
   const [engaged, setEngaged] = useState(() => window.scrollY > 4 || Boolean(window.location.hash))
+  const [staggerIndex, setStaggerIndex] = useState(-1)
   const [forcedSectionIndex, setForcedSectionIndex] = useState(() => getSectionIndexForHash(window.location.hash))
   const pendingHashRef = useRef<string | null>(normalizeHashId(window.location.hash))
   const committedSectionsRef = useRef<Set<string>>(new Set())
   const engagedRef = useRef(engaged)
+  const lastHeroFetchAtRef = useRef(0)
   const bookingLoadedOnceRef = useRef(false)
   const [slides, setSlides] = useState<readonly HeroSlide[]>(heroSlides)
   const [bookingServices, setBookingServices] = useState<readonly BookingService[]>([])
@@ -261,6 +263,7 @@ function App() {
       'wheel',
       'touchstart',
       'pointerdown',
+      'pointermove',
       'keydown',
       'hashchange',
     ]
@@ -269,6 +272,24 @@ function App() {
     )
     return () => {
       events.forEach(eventName => window.removeEventListener(eventName, markEngaged))
+    }
+  }, [engaged])
+
+  useEffect(() => {
+    if (!engaged) return
+    const schedule: Array<[number, number]> = [
+      [1, 150],
+      [2, 300],
+      [3, 450],
+      [4, 600],
+    ]
+    const timers = schedule.map(([idx, delay]) =>
+      window.setTimeout(() => {
+        setStaggerIndex(prev => (prev < idx ? idx : prev))
+      }, delay),
+    )
+    return () => {
+      timers.forEach(timerId => window.clearTimeout(timerId))
     }
   }, [engaged])
 
@@ -361,6 +382,7 @@ function App() {
     let controller: AbortController | null = null
 
     const load = () => {
+      lastHeroFetchAtRef.current = Date.now()
       controller?.abort()
       const current = new AbortController()
       controller = current
@@ -378,6 +400,7 @@ function App() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
+        if (Date.now() - lastHeroFetchAtRef.current < 3000) return
         load()
         if (engagedRef.current) {
           void loadBookingServices()
@@ -527,7 +550,7 @@ function App() {
         fallbackClassName="about-transition-placeholder"
         minHeight="100svh"
         engaged={engaged}
-        forceMount={forcedSectionIndex >= 0}
+        forceMount={engaged || forcedSectionIndex >= 0}
         onCommitted={handleSectionCommitted}
       >
         <AboutToRecent />
@@ -536,8 +559,9 @@ function App() {
         id="portfolio"
         heading="Portfolio"
         minHeight="80vh"
+        rootMargin="2000px"
         engaged={engaged}
-        forceMount={forcedSectionIndex >= 1}
+        forceMount={forcedSectionIndex >= 1 || staggerIndex >= 1}
         onCommitted={handleSectionCommitted}
       >
         <PortfolioGallery />
@@ -546,8 +570,9 @@ function App() {
         id="booking"
         heading="Book a Session"
         minHeight="85vh"
+        rootMargin="2000px"
         engaged={engaged}
-        forceMount={forcedSectionIndex >= 2}
+        forceMount={forcedSectionIndex >= 2 || staggerIndex >= 2}
         onCommitted={handleSectionCommitted}
       >
         <BookingSection
@@ -568,8 +593,9 @@ function App() {
         id="faq"
         heading="Frequently Asked Questions"
         minHeight="60vh"
+        rootMargin="2000px"
         engaged={engaged}
-        forceMount={forcedSectionIndex >= 3}
+        forceMount={forcedSectionIndex >= 3 || staggerIndex >= 3}
         onCommitted={handleSectionCommitted}
       >
         <FaqSection />
@@ -578,8 +604,9 @@ function App() {
         id="contact"
         heading="Contact"
         minHeight="60vh"
+        rootMargin="2000px"
         engaged={engaged}
-        forceMount={forcedSectionIndex >= 4}
+        forceMount={forcedSectionIndex >= 4 || staggerIndex >= 4}
         onCommitted={handleSectionCommitted}
       >
         <ContactSection onSendInquiry={handleSendInquiry} />

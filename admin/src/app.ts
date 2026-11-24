@@ -4,7 +4,7 @@
  *
  * Startup session check, gated module loading, per-area data loading with load status,
  * the save bar (Review & save / Discard), login and logout. The Settings dialog lives in
- * components/settings.js (R59.account); Forgot password and #reset= links in components/passwordReset.js.
+ * components/settings.js (R59.account).
  */
 
 (function () {

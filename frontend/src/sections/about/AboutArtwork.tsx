@@ -17,7 +17,6 @@ const ABOUT_ARTWORK_URLS = Array.from(
 let mountedArtworkCount = 0
 let prewarmStarted = false
 let activePrewarmController: AbortController | null = null
-let cancelPrewarmTrigger: (() => void) | null = null
 
 export interface AboutArtworkProps {
   image: AboutImage
@@ -38,43 +37,15 @@ export function AboutArtwork({
     mountedArtworkCount += 1
 
     if (mountedArtworkCount === 1 && !prewarmStarted && !isSlowConnection && typeof window !== 'undefined') {
-      const startPrewarm = () => {
-        if (prewarmStarted) return
-        prewarmStarted = true
-        cancelPrewarmTrigger?.()
-        cancelPrewarmTrigger = null
-        const controller = new AbortController()
-        activePrewarmController = controller
-        void prewarmProtectedImages(ABOUT_ARTWORK_URLS, { signal: controller.signal })
-      }
-
-      if (window.scrollY > 20) {
-        startPrewarm()
-      } else {
-        const onScroll = () => {
-          if (window.scrollY > 20) {
-            startPrewarm()
-          }
-        }
-        const interactionEvents: Array<keyof WindowEventMap> = ['wheel', 'touchstart', 'pointerdown', 'keydown']
-
-        cancelPrewarmTrigger = () => {
-          window.removeEventListener('scroll', onScroll)
-          interactionEvents.forEach(eventName => window.removeEventListener(eventName, startPrewarm))
-        }
-
-        window.addEventListener('scroll', onScroll, { passive: true })
-        interactionEvents.forEach(eventName =>
-          window.addEventListener(eventName, startPrewarm, { passive: true, once: true }),
-        )
-      }
+      prewarmStarted = true
+      const controller = new AbortController()
+      activePrewarmController = controller
+      void prewarmProtectedImages(ABOUT_ARTWORK_URLS, { signal: controller.signal })
     }
 
     return () => {
       mountedArtworkCount = Math.max(0, mountedArtworkCount - 1)
       if (mountedArtworkCount === 0) {
-        cancelPrewarmTrigger?.()
-        cancelPrewarmTrigger = null
         if (activePrewarmController) {
           activePrewarmController.abort()
           activePrewarmController = null
@@ -101,7 +72,7 @@ export function AboutArtwork({
           containerClassName="about__art-container"
           width={image.width}
           height={image.height}
-          rootMargin="200px"
+          rootMargin="600px"
         />
       </div>
     </div>

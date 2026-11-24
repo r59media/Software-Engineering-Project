@@ -19,7 +19,16 @@ import {
 } from '../middleware/auth'
 import { DEFAULT_PROFILE, ensurePortfolioDefaults, listPortfolio, portfolioListQuery } from './portfolio'
 import { bumpPublicContentVersion } from '../lib/edgeCache'
-import { releaseBookingSlots, syncRollingScheduleSlots } from '../lib/scheduleSync'
+import {
+  getBufferMinutesFromRules,
+  lockSlotsAtomically,
+  parseTimeToMinutes,
+  releaseBookingSlots,
+  resolveBookingSlotIds,
+  resolveSlotWindow,
+  syncRollingScheduleSlots,
+  type SlotRowLike
+} from '../lib/scheduleSync'
 import { isEmailConfigured, sendEmail } from '../email'
 import {
   addDaysISO,
@@ -1021,6 +1030,96 @@ adminRouter.get('/bookings', async (c) => {
   }
 })
 
+function normalizeSlotRow(row: SlotRowLike): SlotRowLike {
+  return {
+    ...row,
+    is_booked: Number(row.is_booked) === 1 || (row.is_booked as unknown) === true ? 1 : 0
+  }
+}
+
+async function validateAndLockBookingSlotWindow(
+  db: D1Database,
+  params: {
+    slotId: number | string
+    durationMinutes: number | null
+    fullDay: boolean
+    overrideDate?: string | null
+    overrideStartTime?: string | null
+    overrideEndTime?: string | null
+  }
+): Promise<{ ok: true; newlyLockedIds: number[] } | { ok: false; message: string }> {
+  const rawSlot = await db
+    .prepare('SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots WHERE id = ?')
+    .bind(params.slotId)
+    .first<SlotRowLike>()
+  if (!rawSlot) {
+    return { ok: false, message: 'The selected slot is already booked or does not exist.' }
+  }
+
+  const startSlot: SlotRowLike = normalizeSlotRow({
+    ...rawSlot,
+    date: params.overrideDate || rawSlot.date,
+    start_time: params.overrideStartTime || rawSlot.start_time,
+    end_time: params.overrideEndTime || rawSlot.end_time
+  })
+
+  const daySlotsRes = await db
+    .prepare(
+      'SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots WHERE date = ? ORDER BY start_time ASC, id ASC'
+    )
+    .bind(startSlot.date)
+    .all<SlotRowLike>()
+  const daySlots = (daySlotsRes.results || []).map((row) =>
+    row.id === startSlot.id ? startSlot : normalizeSlotRow(row)
+  )
+  if (!daySlots.some((row) => row.id === startSlot.id)) {
+    daySlots.push(startSlot)
+  }
+
+  let effectiveDuration = Number(params.durationMinutes) > 0 ? Number(params.durationMinutes) : 0
+  if (!effectiveDuration) {
+    const sStart = parseTimeToMinutes(startSlot.start_time)
+    const sEnd = parseTimeToMinutes(startSlot.end_time)
+    if (sStart !== null && sEnd !== null && sEnd > sStart) {
+      effectiveDuration = (sEnd === 1439 ? 1440 : sEnd) - sStart
+    } else {
+      effectiveDuration = 60
+    }
+  }
+
+  const bufferMinutes = await getBufferMinutesFromRules(db)
+  const windowRes = resolveSlotWindow({
+    daySlots,
+    startSlot,
+    durationMinutes: effectiveDuration,
+    fullDay: params.fullDay,
+    bufferMinutes
+  })
+  if (!windowRes.ok) {
+    const message =
+      windowRes.reason === 'SLOT_OVERLAPS_BOOKED'
+        ? 'The selected slot overlaps an existing booking.'
+        : 'The selected slot does not have enough continuous availability for this service duration.'
+    return { ok: false, message }
+  }
+
+  const lockRes = await lockSlotsAtomically(db, windowRes.slotIds)
+  if (!lockRes.ok) {
+    return { ok: false, message: 'The selected slot is already booked or unavailable.' }
+  }
+  return { ok: true, newlyLockedIds: lockRes.newlyLockedIds }
+}
+
+async function rollbackLockedSlots(db: D1Database, slotIds: readonly number[]): Promise<void> {
+  if (slotIds.length === 0) return
+  const ph = slotIds.map(() => '?').join(', ')
+  await db
+    .prepare(`UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${ph})`)
+    .bind(...slotIds)
+    .run()
+    .catch(() => {})
+}
+
 // POST: Create a manual booking (admin)
 adminRouter.post('/bookings', async (c) => {
   try {
@@ -1087,6 +1186,8 @@ adminRouter.post('/bookings', async (c) => {
     // Resolve the package before touching any slot. No package -> service_id NULL and a custom
     // price is required; a numeric id must point at a real service (foreign key).
     let targetServiceId: number | null = null
+    let serviceDurationMinutes: number | null = null
+    let serviceFullDay = false
     let finalPrice =
       body.price_at_booking !== undefined && body.price_at_booking !== null
         ? Math.max(0, Math.round(Number(body.price_at_booking) || 0))
@@ -1116,33 +1217,37 @@ adminRouter.post('/bookings', async (c) => {
       if (body.price_at_booking === undefined || body.price_at_booking === null) finalPrice = noPackageCents
     } else {
       const svc = packageInput.kind === 'id'
-        ? await c.env.DB.prepare('SELECT id, price FROM Services WHERE id = ?').bind(packageInput.id).first<any>()
+        ? await c.env.DB.prepare('SELECT id, price, duration_minutes, full_day FROM Services WHERE id = ?').bind(packageInput.id).first<any>()
         : null
       if (!svc) {
         return c.json(PACKAGE_MISSING_RESPONSE, 400)
       }
       targetServiceId = Number(svc.id)
+      serviceDurationMinutes = Number(svc.duration_minutes) > 0 ? Number(svc.duration_minutes) : null
+      serviceFullDay = Number(svc.full_day) === 1
       if (finalPrice == null) finalPrice = svc.price
     }
 
     let targetSlotId = slot_id
     let slotWasCreated = false
+    let lockedSlotIds: number[] = []
 
     if (targetSlotId) {
-      // Atomically lock existing slot only if not already booked
-      const lockRes = await c.env.DB.prepare(
-        'UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ? AND is_booked = 0'
-      ).bind(targetSlotId).run()
-
-      if (!lockRes.success || lockRes.meta.changes === 0) {
+      const lockRes = await validateAndLockBookingSlotWindow(c.env.DB, {
+        slotId: targetSlotId,
+        durationMinutes: serviceDurationMinutes,
+        fullDay: serviceFullDay
+      })
+      if (!lockRes.ok) {
         return c.json({
           error: {
             code: 'SLOT_ALREADY_BOOKED',
-            message: 'The selected slot is already booked or does not exist.',
+            message: lockRes.message,
             details: []
           }
         }, 409)
       }
+      lockedSlotIds = lockRes.newlyLockedIds
     } else if (date) {
       // Reuse an open slot the weekly availability already created at this time; only add a new one when none exists
       const existingSlot = await c.env.DB.prepare(
@@ -1159,6 +1264,7 @@ adminRouter.post('/bookings', async (c) => {
           }, 409)
         }
         targetSlotId = existingSlot.id
+        lockedSlotIds = [existingSlot.id]
       } else {
         const slotResult = await c.env.DB.prepare(
           'INSERT INTO Schedule_Slots (date, start_time, end_time, is_booked) VALUES (?, ?, ?, 1)'
@@ -1203,6 +1309,8 @@ adminRouter.post('/bookings', async (c) => {
       // Undo the slot work so the time doesn't stay blocked by a booking that was never saved
       if (slotWasCreated) {
         await c.env.DB.prepare('DELETE FROM Schedule_Slots WHERE id = ?').bind(targetSlotId).run().catch(() => {})
+      } else if (lockedSlotIds.length > 0) {
+        await rollbackLockedSlots(c.env.DB, lockedSlotIds)
       } else {
         await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(targetSlotId).run().catch(() => {})
       }
@@ -1244,7 +1352,7 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
 
     // service_price feeds bookingTotalCents for the invoice lock below
     const existing = await c.env.DB.prepare(
-      'SELECT b.*, s.price AS service_price FROM Bookings b LEFT JOIN Services s ON s.id = b.service_id WHERE b.id = ?'
+      'SELECT b.*, s.price AS service_price, s.duration_minutes AS service_duration_minutes, s.full_day AS service_full_day FROM Bookings b LEFT JOIN Services s ON s.id = b.service_id WHERE b.id = ?'
     ).bind(id).first<any>()
     if (!existing) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
@@ -1323,6 +1431,8 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
     // a numeric id must point at an existing service.
     let service_id: number | null = existing.service_id ?? null
     let service_price: unknown = existing.service_price
+    let service_duration_minutes: number | null = existing.service_duration_minutes ?? null
+    let service_full_day: number | null = existing.service_full_day ?? null
     const packageSent = body.service_id !== undefined || body.packageId !== undefined
     if (packageSent) {
       const packageInput = normalizePackageInput(body.service_id !== undefined ? body.service_id : body.packageId)
@@ -1332,15 +1442,19 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
         }
         service_id = null
         service_price = null
+        service_duration_minutes = null
+        service_full_day = null
       } else {
         const svc = packageInput.kind === 'id'
-          ? await c.env.DB.prepare('SELECT id, price FROM Services WHERE id = ?').bind(packageInput.id).first<{ id: number; price: unknown }>()
+          ? await c.env.DB.prepare('SELECT id, price, duration_minutes, full_day FROM Services WHERE id = ?').bind(packageInput.id).first<{ id: number; price: unknown; duration_minutes: number | null; full_day: number | null }>()
           : null
         if (!svc) {
           return c.json(PACKAGE_MISSING_RESPONSE, 400)
         }
         service_id = Number(svc.id)
         service_price = svc.price
+        service_duration_minutes = svc.duration_minutes ?? null
+        service_full_day = svc.full_day ?? null
       }
     }
 
@@ -1373,9 +1487,36 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
         : null
     const photo_permission_version = existing.photo_permission_version || 'v1'
 
+    const newStartTime = body.start_time ?? body.startTime
+    const newEndTime = body.end_time ?? body.endTime
+
     // Cancelling withdraws the open invoice first; if Square refuses, nothing is changed
     if (statusLower === 'cancelled' && existingStatus !== 'cancelled') {
       await cancelOpenInvoice(c.env.DB, c.env, id)
+    }
+
+    // Reactivating a cancelled booking must validate & atomically lock all consecutive slots first
+    const reactivating = statusLower !== 'cancelled' && existingStatus === 'cancelled' && Boolean(existing.slot_id)
+    let reactivatedSlotIds: number[] = []
+    if (reactivating) {
+      const lockRes = await validateAndLockBookingSlotWindow(c.env.DB, {
+        slotId: existing.slot_id,
+        durationMinutes: Number(service_duration_minutes) > 0 ? Number(service_duration_minutes) : null,
+        fullDay: Number(service_full_day) === 1,
+        overrideDate: newDate ? String(newDate).trim() : null,
+        overrideStartTime: newStartTime ? String(newStartTime).trim() : null,
+        overrideEndTime: newEndTime ? String(newEndTime).trim() : null
+      })
+      if (!lockRes.ok) {
+        return c.json({
+          error: {
+            code: 'SLOT_ALREADY_BOOKED',
+            message: lockRes.message,
+            details: []
+          }
+        }, 409)
+      }
+      reactivatedSlotIds = lockRes.newlyLockedIds
     }
 
     // Invoice lock: only when the effective base, deposit_paid or service_id actually changes
@@ -1393,48 +1534,59 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
     const lockSql = guarded ? ` AND NOT ${OPEN_INVOICE_EXISTS_SQL}` : ''
     const lockBinds: unknown[] = guarded ? [id] : []
 
-    const update = await c.env.DB.prepare(
-      `UPDATE Bookings
-       SET client_name = ?,
-           client_email = ?,
-           customer_phone = ?,
-           location = ?,
-           event_location = ?,
-           notes = ?,
-           attendees = ?,
-           deposit_paid = ?,
-           coupon_code = ?,
-           custom_price = ?,
-           price_at_booking = ?,
-           service_id = ?,
-           status = ?,
-           photo_permission_portfolio = ?,
-           photo_permission_social = ?,
-           photo_permission_accepted_at = ?,
-           photo_permission_version = ?
-       WHERE id = ?${lockSql}`
-    ).bind(
-      client_name,
-      client_email,
-      customer_phone,
-      location,
-      location,
-      notes,
-      attendees,
-      deposit_paid,
-      coupon_code,
-      custom_price,
-      price_at_booking,
-      service_id,
-      status,
-      photo_permission_portfolio,
-      photo_permission_social,
-      photo_permission_accepted_at,
-      photo_permission_version,
-      id,
-      ...lockBinds
-    ).run()
+    let update: D1Result
+    try {
+      update = await c.env.DB.prepare(
+        `UPDATE Bookings
+         SET client_name = ?,
+             client_email = ?,
+             customer_phone = ?,
+             location = ?,
+             event_location = ?,
+             notes = ?,
+             attendees = ?,
+             deposit_paid = ?,
+             coupon_code = ?,
+             custom_price = ?,
+             price_at_booking = ?,
+             service_id = ?,
+             status = ?,
+             photo_permission_portfolio = ?,
+             photo_permission_social = ?,
+             photo_permission_accepted_at = ?,
+             photo_permission_version = ?
+         WHERE id = ?${lockSql}`
+      ).bind(
+        client_name,
+        client_email,
+        customer_phone,
+        location,
+        location,
+        notes,
+        attendees,
+        deposit_paid,
+        coupon_code,
+        custom_price,
+        price_at_booking,
+        service_id,
+        status,
+        photo_permission_portfolio,
+        photo_permission_social,
+        photo_permission_accepted_at,
+        photo_permission_version,
+        id,
+        ...lockBinds
+      ).run()
+    } catch (updateErr) {
+      if (reactivatedSlotIds.length > 0) {
+        await rollbackLockedSlots(c.env.DB, reactivatedSlotIds)
+      }
+      throw updateErr
+    }
     if (!update.meta.changes) {
+      if (reactivatedSlotIds.length > 0) {
+        await rollbackLockedSlots(c.env.DB, reactivatedSlotIds)
+      }
       if ((await bookingStatusFor(c.env.DB, id)) === null) {
         return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
       }
@@ -1442,8 +1594,6 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
     }
 
     // Update associated Schedule_Slots row if date/startTime/endTime changed
-    const newStartTime = body.start_time ?? body.startTime
-    const newEndTime = body.end_time ?? body.endTime
     if (existing.slot_id && (newDate !== undefined || newStartTime !== undefined || newEndTime !== undefined)) {
       await c.env.DB.prepare(
         `UPDATE Schedule_Slots
@@ -1456,8 +1606,6 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
 
     if (statusLower === 'cancelled' && existing.slot_id) {
       await releaseBookingSlots(c.env.DB, id, existing.slot_id)
-    } else if (statusLower !== 'cancelled' && existingStatus === 'cancelled' && existing.slot_id) {
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ?').bind(existing.slot_id).run()
     }
 
     scheduleGoogleCalendarSync(c, id, 'upsert')
@@ -1579,13 +1727,26 @@ adminRouter.delete('/bookings/:id', async (c) => {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
 
-    const booking = await c.env.DB.prepare('SELECT slot_id FROM Bookings WHERE id = ?').bind(id).first<{ slot_id: number }>()
+    const booking = await c.env.DB.prepare('SELECT slot_id, service_id FROM Bookings WHERE id = ?')
+      .bind(id)
+      .first<{ slot_id: number | null; service_id: number | null }>()
     if (!booking) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
     }
 
     // Withdraw any open invoice first; a BillingError leaves the booking unchanged
     await cancelOpenInvoice(c.env.DB, c.env, id)
+
+    let releasableSlotIds: number[] = []
+    if (booking.slot_id) {
+      const { slotIds, protectedOtherSlotIds } = await resolveBookingSlotIds(c.env.DB, {
+        bookingId: id,
+        slotId: booking.slot_id,
+        serviceId: booking.service_id
+      })
+      const protectedSet = new Set(protectedOtherSlotIds)
+      releasableSlotIds = slotIds.filter((slotId) => !protectedSet.has(slotId))
+    }
 
     // One batch (one transaction). Every statement carries the open-invoice guard, so a Send that claimed
     // the booking after the withdraw above makes the whole batch a no-op (no live Square invoice is ever
@@ -1596,10 +1757,11 @@ adminRouter.delete('/bookings/:id', async (c) => {
       c.env.DB.prepare(`DELETE FROM Booking_Charges WHERE booking_id = ? AND ${noOpenInvoice}`).bind(id, id),
       c.env.DB.prepare(`DELETE FROM Bookings WHERE id = ? AND ${noOpenInvoice}`).bind(id, id)
     ]
-    if (booking.slot_id) {
+    if (releasableSlotIds.length > 0) {
+      const ph = releasableSlotIds.map(() => '?').join(', ')
       statements.push(c.env.DB.prepare(
-        `UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ? AND ${noOpenInvoice}`
-      ).bind(booking.slot_id, id))
+        `UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${ph}) AND id NOT IN (SELECT slot_id FROM Bookings WHERE LOWER(COALESCE(status, '')) != 'cancelled' AND slot_id IS NOT NULL AND id != ?) AND ${noOpenInvoice}`
+      ).bind(...releasableSlotIds, id, id))
     }
     statements.push(c.env.DB.prepare(`DELETE FROM Booking_Invoices WHERE booking_id = ? AND ${noOpenInvoice}`).bind(id, id))
     const results = await c.env.DB.batch(statements)

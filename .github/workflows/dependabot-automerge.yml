@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  checks: read
 
 jobs:
   automerge:
@@ -18,7 +19,7 @@ jobs:
     steps:
       - name: Fetch Dependabot metadata
         id: metadata
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -27,7 +28,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: gh pr merge --auto --squash "$PR_NUMBER"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          for attempt in $(seq 1 40); do
+            result=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/check-runs" \
+              --jq '[.check_runs[] | select(.name == "verify")] | sort_by(.id) | last | if . then "\(.status):\(.conclusion // "")" else "" end')
+            case "$result" in
+              completed:success)
+                gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash --delete-branch
+                exit 0
+                ;;
+              completed:*)
+                echo "Check 'verify' finished with status: $result"
+                exit 1
+                ;;
+              *)
+                echo "Attempt $attempt/40: 'verify' status is '${result:-pending}', waiting 15s..."
+                sleep 15
+                ;;
+            esac
+          done
+          echo "Timed out waiting for 'verify' check run on $HEAD_SHA"
+          exit 1
 
   deploy:
     if: >-

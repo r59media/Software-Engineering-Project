@@ -107,20 +107,253 @@ function addDaysToIsoDate(isoDate: string, days: number): { date: string; dayOfW
 }
 
 export function parseTimeToMinutes(timeStr: string): number | null {
-  const match = String(timeStr || '').trim().match(/^(\d{1,2}):(\d{2})/)
-  if (!match) return null
-  const hours = parseInt(match[1], 10)
-  const mins = parseInt(match[2], 10)
-  if (!Number.isFinite(hours) || !Number.isFinite(mins) || hours < 0 || hours > 23 || mins < 0 || mins > 59) {
+  const trimmed = String(timeStr ?? '').trim()
+  if (!trimmed) return null
+
+  const match12 = trimmed.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i)
+  if (match12) {
+    const rawHours = parseInt(match12[1], 10)
+    const mins = parseInt(match12[2], 10)
+    if (!Number.isFinite(rawHours) || !Number.isFinite(mins) || rawHours < 1 || rawHours > 12 || mins < 0 || mins >= 60) {
+      return null
+    }
+    const period = match12[3].toUpperCase()
+    let hours = rawHours === 12 ? 0 : rawHours
+    if (period === 'PM') hours += 12
+    return hours * 60 + mins
+  }
+
+  const match24 = trimmed.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/)
+  if (!match24) return null
+
+  const hours = parseInt(match24[1], 10)
+  const mins = parseInt(match24[2], 10)
+  if (!Number.isFinite(hours) || !Number.isFinite(mins) || hours < 0 || hours > 24 || mins < 0 || mins >= 60) {
+    return null
+  }
+  if (hours === 24 && mins !== 0) {
     return null
   }
   return hours * 60 + mins
 }
 
 export function formatMinutesToTime(totalMinutes: number): string {
-  const hours = Math.floor(totalMinutes / 60)
-  const mins = totalMinutes % 60
+  if (!Number.isFinite(totalMinutes)) return '00:00'
+  const clamped = Math.max(0, Math.min(1439, Math.round(totalMinutes)))
+  const hours = Math.floor(clamped / 60)
+  const mins = clamped % 60
   return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`
+}
+
+export function computeSessionEndTime(
+  startTime: string,
+  fallbackEndTime: string,
+  durationMinutes: number
+): string {
+  const startMin = parseTimeToMinutes(startTime)
+  if (startMin === null || !Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+    return fallbackEndTime
+  }
+  return formatMinutesToTime(startMin + durationMinutes)
+}
+
+export async function getBufferMinutesFromRules(db: D1Database): Promise<number> {
+  const toNonNegInt = (raw: unknown): number | null => {
+    if (raw === null || raw === undefined || raw === '') return null
+    const n = Number(raw)
+    if (!Number.isFinite(n) || n < 0) return null
+    return Math.round(n)
+  }
+
+  try {
+    const siteRow = await db
+      .prepare("SELECT value FROM Site_Settings WHERE key = 'availability_rules'")
+      .first<{ value?: string }>()
+    if (siteRow?.value) {
+      const parsed = JSON.parse(siteRow.value)
+      const buf = toNonNegInt(parsed?.buffer_minutes)
+      if (buf !== null) return buf
+    }
+  } catch {}
+
+  try {
+    const adminRows = await db
+      .prepare(
+        "SELECT setting_key, setting_value FROM Admin_Settings WHERE setting_key IN ('buffer_minutes', 'availability_rules')"
+      )
+      .all<{ setting_key: string; setting_value: string }>()
+    const rows = adminRows.results || []
+    const rulesRow = rows.find((r) => r.setting_key === 'availability_rules')
+    if (rulesRow?.setting_value) {
+      try {
+        const parsed = JSON.parse(rulesRow.setting_value)
+        const buf = toNonNegInt(parsed?.buffer_minutes)
+        if (buf !== null) return buf
+      } catch {}
+    }
+    const bufRow = rows.find((r) => r.setting_key === 'buffer_minutes')
+    if (bufRow?.setting_value !== undefined) {
+      const buf = toNonNegInt(bufRow.setting_value)
+      if (buf !== null) return buf
+    }
+  } catch {}
+
+  return 0
+}
+
+export interface SlotRowLike {
+  id: number
+  date: string
+  start_time: string
+  end_time: string
+  is_booked: number
+}
+
+export function resolveSlotWindow(params: {
+  daySlots: SlotRowLike[]
+  startSlot: SlotRowLike
+  durationMinutes: number
+  fullDay?: boolean
+  bufferMinutes?: number
+  exemptSlotIds?: readonly number[]
+}):
+  | { ok: true; slotIds: number[]; endTime: string }
+  | {
+      ok: false
+      reason: 'INVALID_TIME' | 'EXCEEDS_MIDNIGHT' | 'SLOT_OVERLAPS_BOOKED' | 'INSUFFICIENT_COVERAGE'
+      slotIds: []
+    } {
+  const { daySlots, startSlot, durationMinutes, fullDay = false, bufferMinutes = 0, exemptSlotIds = [] } = params
+  const exemptSet = new Set<number>(exemptSlotIds)
+  const sameDaySlots = (daySlots || []).filter((s) => s.date === startSlot.date)
+
+  if (fullDay === true) {
+    if (Number(startSlot.is_booked) === 1 && !exemptSet.has(startSlot.id)) {
+      return { ok: false, reason: 'SLOT_OVERLAPS_BOOKED', slotIds: [] }
+    }
+    const sortedDay = [...sameDaySlots].sort((a, b) => {
+      const aStart = parseTimeToMinutes(a.start_time) ?? 0
+      const bStart = parseTimeToMinutes(b.start_time) ?? 0
+      if (aStart !== bStart) return aStart - bStart
+      return a.id - b.id
+    })
+    for (const s of sortedDay) {
+      if (Number(s.is_booked) === 1 && !exemptSet.has(s.id)) {
+        return { ok: false, reason: 'SLOT_OVERLAPS_BOOKED', slotIds: [] }
+      }
+    }
+    const allDaySlotIds = Array.from(
+      new Set(sortedDay.length > 0 ? sortedDay.map((s) => s.id) : [startSlot.id])
+    )
+    if (!allDaySlotIds.includes(startSlot.id)) {
+      allDaySlotIds.unshift(startSlot.id)
+    }
+    const lastSlot = sortedDay[sortedDay.length - 1] ?? startSlot
+    return {
+      ok: true,
+      slotIds: allDaySlotIds,
+      endTime: lastSlot.end_time
+    }
+  }
+
+  const startMin = parseTimeToMinutes(startSlot.start_time)
+  if (startMin === null) {
+    return { ok: false, reason: 'INVALID_TIME', slotIds: [] }
+  }
+
+  const effectiveDuration = Number.isFinite(durationMinutes) ? Math.max(1, durationMinutes) : 1
+  const endMin = startMin + effectiveDuration
+  if (endMin > 1440) {
+    return { ok: false, reason: 'EXCEEDS_MIDNIGHT', slotIds: [] }
+  }
+
+  if (Number(startSlot.is_booked) === 1 && !exemptSet.has(startSlot.id)) {
+    return { ok: false, reason: 'SLOT_OVERLAPS_BOOKED', slotIds: [] }
+  }
+
+  const overlapping: Array<{ id: number; sStart: number; sEnd: number }> = []
+  for (const s of sameDaySlots) {
+    const sStart = parseTimeToMinutes(s.start_time)
+    let sEnd = parseTimeToMinutes(s.end_time)
+    if (sStart === null || sEnd === null) continue
+    if (sEnd === 1439 && endMin === 1440) {
+      sEnd = 1440
+    }
+    if (sEnd <= sStart) continue
+
+    if (sStart < endMin && sEnd > startMin) {
+      if (Number(s.is_booked) === 1 && !exemptSet.has(s.id)) {
+        return { ok: false, reason: 'SLOT_OVERLAPS_BOOKED', slotIds: [] }
+      }
+      overlapping.push({ id: s.id, sStart, sEnd })
+    }
+  }
+
+  overlapping.sort((a, b) => {
+    if (a.sStart !== b.sStart) return a.sStart - b.sStart
+    if (a.sEnd !== b.sEnd) return a.sEnd - b.sEnd
+    return a.id - b.id
+  })
+
+  if (overlapping.length === 0 || overlapping[0].sStart > startMin) {
+    return { ok: false, reason: 'INSUFFICIENT_COVERAGE', slotIds: [] }
+  }
+
+  const allowedGap = Math.max(0, Number.isFinite(bufferMinutes) ? bufferMinutes : 0)
+  let coveredUntil = overlapping[0].sStart
+  for (const s of overlapping) {
+    if (s.sStart > coveredUntil + allowedGap) {
+      return { ok: false, reason: 'INSUFFICIENT_COVERAGE', slotIds: [] }
+    }
+    coveredUntil = Math.max(coveredUntil, s.sEnd)
+  }
+
+  if (coveredUntil < endMin && !(coveredUntil === 1439 && endMin === 1440)) {
+    return { ok: false, reason: 'INSUFFICIENT_COVERAGE', slotIds: [] }
+  }
+
+  const dedupedIds = Array.from(new Set([startSlot.id, ...overlapping.map((s) => s.id)]))
+  return {
+    ok: true,
+    slotIds: dedupedIds,
+    endTime: computeSessionEndTime(startSlot.start_time, startSlot.end_time, durationMinutes)
+  }
+}
+
+export async function lockSlotsAtomically(
+  db: D1Database,
+  slotIds: readonly number[],
+  exemptSlotIds: readonly number[] = []
+): Promise<{ ok: boolean; newlyLockedIds: number[] }> {
+  const exemptSet = new Set<number>(exemptSlotIds)
+  const toLock = Array.from(new Set(slotIds)).filter((id) => !exemptSet.has(id))
+  if (toLock.length === 0) {
+    return { ok: true, newlyLockedIds: [] }
+  }
+
+  const ph = toLock.map(() => '?').join(', ')
+  const res = await db
+    .prepare(
+      `UPDATE Schedule_Slots
+       SET is_booked = 1
+       WHERE id IN (${ph})
+         AND is_booked = 0
+         AND date NOT IN (SELECT date FROM Blocked_Dates)
+         AND (
+           SELECT COUNT(*)
+           FROM Schedule_Slots
+           WHERE id IN (${ph})
+             AND is_booked = 0
+             AND date NOT IN (SELECT date FROM Blocked_Dates)
+         ) = ?`
+    )
+    .bind(...toLock, ...toLock, toLock.length)
+    .run()
+
+  if (res.success && (res.meta?.changes ?? 0) === toLock.length) {
+    return { ok: true, newlyLockedIds: toLock }
+  }
+  return { ok: false, newlyLockedIds: [] }
 }
 
 async function runBatchInChunks(db: D1Database, statements: D1PreparedStatement[]): Promise<void> {
@@ -197,10 +430,16 @@ export async function syncRollingScheduleSlots(
 
       for (const tf of dayRule.timeframes) {
         const startMin = parseTimeToMinutes(tf.start)
-        const endMin = parseTimeToMinutes(tf.end)
-        if (startMin === null || endMin === null || startMin >= endMin) continue
+        const parsedEndMin = parseTimeToMinutes(tf.end)
+        if (startMin === null || parsedEndMin === null) continue
+        const endMin = parsedEndMin === 1439 ? 1440 : parsedEndMin
+        if (startMin >= endMin) continue
 
-        for (let cur = startMin; cur + slotDurationMinutes <= endMin; cur += slotDurationMinutes + bufferMinutes) {
+        for (
+          let cur = startMin;
+          cur + slotDurationMinutes <= endMin && cur + slotDurationMinutes <= 1440;
+          cur += slotDurationMinutes + bufferMinutes
+        ) {
           const startTime = formatMinutesToTime(cur)
           const endTime = formatMinutesToTime(cur + slotDurationMinutes)
           const key = `${date}|${startTime}`
@@ -338,68 +577,238 @@ export async function runDailyMaintenance(db: D1Database): Promise<void> {
   ])
 }
 
-export async function releaseBookingSlots(
-  db: D1Database,
-  bookingId: number | string,
-  slotId?: number | null
-): Promise<void> {
-  if (!bookingId && !slotId) return
+function computeCoveredSlotIds(
+  daySlots: SlotRowLike[],
+  startSlot: { id: number; start_time: string; end_time: string },
+  durationMinutes: number,
+  fullDay: boolean
+): number[] {
+  if (fullDay) {
+    return Array.from(new Set([startSlot.id, ...daySlots.map((s) => s.id)]))
+  }
 
-  let row: any = null
-  if (bookingId) {
+  const startMin = parseTimeToMinutes(startSlot.start_time)
+  if (startMin === null) {
+    return [startSlot.id]
+  }
+
+  const endMin = startMin + Math.max(1, Number.isFinite(durationMinutes) ? durationMinutes : 60)
+  const matchedIds: number[] = []
+
+  for (const s of daySlots) {
+    const sStart = parseTimeToMinutes(s.start_time)
+    let sEnd = parseTimeToMinutes(s.end_time)
+    if (sStart === null) continue
+    if (sEnd === null || sEnd <= sStart) {
+      sEnd = sEnd === 0 && sStart > 0 ? 1440 : sStart + 60
+    } else if (sEnd === 1439 && endMin >= 1440) {
+      sEnd = 1440
+    }
+
+    if (sStart < endMin && sEnd > startMin) {
+      matchedIds.push(s.id)
+    }
+  }
+
+  return Array.from(new Set([startSlot.id, ...matchedIds]))
+}
+
+export async function resolveBookingSlotIds(
+  db: D1Database,
+  params: {
+    bookingId?: number | string
+    slotId?: number | null
+    serviceId?: number | null
+    durationMinutes?: number
+    fullDay?: boolean
+  }
+): Promise<{ slotIds: number[]; protectedOtherSlotIds: number[] }> {
+  const hasBookingId =
+    params.bookingId !== undefined && params.bookingId !== null && params.bookingId !== ''
+  const bookingIdParam = hasBookingId ? params.bookingId! : null
+
+  let bookingRow: {
+    slot_id: number | null
+    service_id: number | null
+    duration_minutes: number | null
+    full_day: number | null
+  } | null = null
+
+  const needBookingForSlot = params.slotId === undefined
+  const needBookingForService =
+    params.serviceId === undefined &&
+    (params.durationMinutes === undefined || params.fullDay === undefined)
+
+  if (bookingIdParam !== null && (needBookingForSlot || needBookingForService)) {
     try {
-      row = await db
+      bookingRow = await db
         .prepare(
-          `SELECT b.slot_id, b.service_id, s.duration_minutes, sl.date, sl.start_time
+          `SELECT b.slot_id, b.service_id, s.duration_minutes, s.full_day
            FROM Bookings b
            LEFT JOIN Services s ON b.service_id = s.id
-           LEFT JOIN Schedule_Slots sl ON b.slot_id = sl.id
            WHERE b.id = ?`
         )
-        .bind(bookingId)
-        .first()
+        .bind(bookingIdParam)
+        .first<{
+          slot_id: number | null
+          service_id: number | null
+          duration_minutes: number | null
+          full_day: number | null
+        }>()
     } catch {}
   }
 
-  const effectiveSlotId = row?.slot_id || slotId
-  if (!effectiveSlotId) return
+  const effectiveSlotId =
+    params.slotId !== undefined ? params.slotId : (bookingRow?.slot_id ?? null)
 
-  const duration = Number(row?.duration_minutes) > 0 ? Number(row.duration_minutes) : 60
-  if (duration <= 60 || !row?.date || !row?.start_time) {
-    await db.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(effectiveSlotId).run().catch(() => {})
-    return
+  if (!effectiveSlotId) {
+    return { slotIds: [], protectedOtherSlotIds: [] }
   }
 
-  const startMin = parseTimeToMinutes(row.start_time) ?? 0
-  const endMin = startMin + duration
+  let serviceRow: { duration_minutes: number | null; full_day: number | null } | null = null
+  if (
+    params.serviceId !== undefined &&
+    params.serviceId !== null &&
+    (params.durationMinutes === undefined || params.fullDay === undefined)
+  ) {
+    try {
+      serviceRow = await db
+        .prepare('SELECT duration_minutes, full_day FROM Services WHERE id = ?')
+        .bind(params.serviceId)
+        .first<{ duration_minutes: number | null; full_day: number | null }>()
+    } catch {}
+  }
 
+  const fullDay =
+    params.fullDay !== undefined
+      ? Boolean(params.fullDay)
+      : Number(serviceRow?.full_day ?? bookingRow?.full_day ?? 0) === 1
+
+  const rawDuration =
+    params.durationMinutes !== undefined
+      ? Number(params.durationMinutes)
+      : Number(serviceRow?.duration_minutes ?? bookingRow?.duration_minutes ?? 0)
+  const durationMinutes = Number.isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 60
+
+  let startSlot: SlotRowLike | null = null
+  try {
+    startSlot = await db
+      .prepare('SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots WHERE id = ?')
+      .bind(effectiveSlotId)
+      .first<SlotRowLike>()
+  } catch {}
+
+  if (!startSlot) {
+    return { slotIds: [effectiveSlotId], protectedOtherSlotIds: [] }
+  }
+
+  let daySlots: SlotRowLike[] = [startSlot]
   try {
     const daySlotsRes = await db
-      .prepare('SELECT id, start_time, end_time FROM Schedule_Slots WHERE date = ?')
-      .bind(row.date)
-      .all<{ id: number; start_time: string; end_time: string }>()
+      .prepare(
+        'SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots WHERE date = ? ORDER BY start_time ASC, id ASC'
+      )
+      .bind(startSlot.date)
+      .all<SlotRowLike>()
+    if (daySlotsRes.results && daySlotsRes.results.length > 0) {
+      daySlots = daySlotsRes.results
+    }
+  } catch {}
 
-    const toRelease: number[] = [effectiveSlotId]
-    for (const s of daySlotsRes.results || []) {
-      const sStart = parseTimeToMinutes(s.start_time) ?? 0
-      let sEnd = s.end_time ? (parseTimeToMinutes(s.end_time) ?? sStart + 60) : sStart + 60
-      if (sEnd <= sStart) sEnd = sStart + 60
-      if (sEnd >= 1439) sEnd = 1440
+  const slotIds = computeCoveredSlotIds(daySlots, startSlot, durationMinutes, fullDay)
 
-      if (Math.max(startMin, sStart) < Math.min(endMin, sEnd)) {
-        toRelease.push(s.id)
+  const protectedSet = new Set<number>()
+  try {
+    const otherRes = await db
+      .prepare(
+        `SELECT b.id, b.slot_id, s.duration_minutes, s.full_day, sl.start_time, sl.end_time
+         FROM Bookings b
+         LEFT JOIN Services s ON b.service_id = s.id
+         INNER JOIN Schedule_Slots sl ON b.slot_id = sl.id
+         WHERE LOWER(COALESCE(b.status, '')) != 'cancelled'
+           AND b.slot_id IS NOT NULL
+           AND sl.date = ?
+           AND (? IS NULL OR b.id != ?)`
+      )
+      .bind(startSlot.date, bookingIdParam, bookingIdParam)
+      .all<{
+        id: number
+        slot_id: number
+        duration_minutes: number | null
+        full_day: number | null
+        start_time: string
+        end_time: string
+      }>()
+
+    for (const other of otherRes.results || []) {
+      const otherDuration =
+        Number(other.duration_minutes) > 0 ? Number(other.duration_minutes) : 60
+      const otherFullDay = Number(other.full_day) === 1
+      const otherCovered = computeCoveredSlotIds(
+        daySlots,
+        { id: other.slot_id, start_time: other.start_time, end_time: other.end_time },
+        otherDuration,
+        otherFullDay
+      )
+      for (const id of otherCovered) {
+        protectedSet.add(id)
       }
     }
+  } catch {}
 
-    const unique = Array.from(new Set(toRelease))
-    const ph = unique.map(() => '?').join(', ')
+  return {
+    slotIds,
+    protectedOtherSlotIds: Array.from(protectedSet)
+  }
+}
+
+export async function releaseBookingSlots(
+  db: D1Database,
+  bookingId: number | string,
+  explicitSlotId?: number | null,
+  options?: { keepSlotIds?: readonly number[] }
+): Promise<number[]> {
+  if ((bookingId === undefined || bookingId === null || bookingId === '') && !explicitSlotId) {
+    return []
+  }
+
+  const { slotIds, protectedOtherSlotIds } = await resolveBookingSlotIds(db, {
+    bookingId,
+    slotId: explicitSlotId
+  })
+
+  if (slotIds.length === 0) return []
+
+  const keepSet = new Set<number>(options?.keepSlotIds || [])
+  const protectedSet = new Set<number>(protectedOtherSlotIds)
+  const toRelease = slotIds.filter((id) => !keepSet.has(id) && !protectedSet.has(id))
+
+  if (toRelease.length === 0) return []
+
+  const ph = toRelease.map(() => '?').join(', ')
+  try {
     await db
       .prepare(
-        `UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${ph}) AND id NOT IN (SELECT slot_id FROM Bookings WHERE status != 'cancelled' AND id != ?)`
+        `UPDATE Schedule_Slots
+         SET is_booked = 0
+         WHERE id IN (${ph})
+           AND id NOT IN (
+             SELECT slot_id
+             FROM Bookings
+             WHERE LOWER(COALESCE(status, '')) != 'cancelled'
+               AND slot_id IS NOT NULL
+               AND id != ?
+           )`
       )
-      .bind(...unique, bookingId || 0)
+      .bind(...toRelease, bookingId || 0)
       .run()
   } catch {
-    await db.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(effectiveSlotId).run().catch(() => {})
+    await db
+      .prepare(`UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${ph})`)
+      .bind(...toRelease)
+      .run()
+      .catch(() => {})
   }
+
+  return toRelease
 }
