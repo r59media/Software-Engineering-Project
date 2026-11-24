@@ -225,15 +225,16 @@ async function main(): Promise<void> {
     'frontend/src/assets/aboutMeImages/EOS-90D-top-w-lens 2.webp',
     'frontend/src/assets/aboutMeImages/about-paper.webp',
     'frontend/src/assets/aboutMeImages/aboutMe_portraitFrame_img.webp',
-    'frontend/src/assets/aboutMeImages/bigLense_IMG.webp',
     "frontend/src/assets/aboutMeImages/kevin'sPortrait.webp",
-    'frontend/src/assets/aboutMeImages/kevin_Logo_IMG.webp',
     'frontend/src/assets/aboutMeImages/r59media-dslr.webp',
     'frontend/src/assets/aboutMeImages/r59media-large-lens.webp',
     'frontend/src/assets/aboutMeImages/r59media-medium-lens.webp',
     'frontend/src/assets/aboutMeImages/redCard_img.webp',
     'frontend/src/assets/aboutMeImages/r59media-speedlight.webp',
     'frontend/src/assets/aboutMeImages/yellowCard_img.webp',
+
+    // Booking paper texture
+    'frontend/src/assets/booking/session-paper.webp',
   ];
 
   let totalOrigSize = 0;
@@ -246,29 +247,6 @@ async function main(): Promise<void> {
       totalOrigSize += res.origSize;
       totalNewSize += res.newSize;
     }
-  }
-
-  // Also convert booking/session-paper.jpeg -> session-paper.webp (and optimize session-paper.jpeg)
-  const sessionPaperJpeg = path.join(rootDir, 'frontend/src/assets/booking/session-paper.jpeg');
-  const sessionPaperWebp = path.join(rootDir, 'frontend/src/assets/booking/session-paper.webp');
-  if (fs.existsSync(sessionPaperJpeg)) {
-    console.log('\nProcessing booking session paper texture:');
-    const resWebp = await processImage(sessionPaperJpeg, sessionPaperWebp);
-    totalOrigSize += resWebp.origSize;
-    totalNewSize += resWebp.newSize;
-
-    // Also optimize session-paper.jpeg in-place to max 2560px for complete link safety
-    const origJpegSize = fs.statSync(sessionPaperJpeg).size;
-    execFileSync('magick', [
-      sessionPaperJpeg,
-      '-resize', '2560x2560>',
-      '-quality', '92',
-      sessionPaperJpeg,
-    ]);
-    const newJpegSize = fs.statSync(sessionPaperJpeg).size;
-    console.log(
-      `✓ frontend/src/assets/booking/session-paper.jpeg [resized <= 2560px] ${(origJpegSize / 1024).toFixed(1)}KB → ${(newJpegSize / 1024).toFixed(1)}KB`
-    );
   }
 
   console.log('\n================ Re-Optimization Summary ================');
