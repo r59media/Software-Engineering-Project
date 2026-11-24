@@ -6,21 +6,27 @@ import { createStudioLightControls, type StudioLightControls } from './studioLig
 interface NotFoundSceneProps {
   leftOn: boolean
   rightOn: boolean
-  onToggleLeft: () => void
-  onToggleRight: () => void
 }
 
 export function NotFoundScene({
   leftOn,
   rightOn,
-  onToggleLeft: _onToggleLeft,
-  onToggleRight: _onToggleRight,
 }: NotFoundSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const controlsRef = useRef<StudioLightControls | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [failed, setFailed] = useState(false)
   const requestRenderRef = useRef<(() => void) | null>(null)
+  const leftOnRef = useRef(leftOn)
+  const rightOnRef = useRef(rightOn)
+
+  useEffect(() => {
+    leftOnRef.current = leftOn
+  }, [leftOn])
+
+  useEffect(() => {
+    rightOnRef.current = rightOn
+  }, [rightOn])
 
   useEffect(() => {
     const container = containerRef.current
@@ -109,8 +115,8 @@ export function NotFoundScene({
           try {
             controls = createStudioLightControls(gltf.scene)
             controlsRef.current = controls
-            controls.set('left', leftOn, { immediate: true })
-            controls.set('right', rightOn, { immediate: true })
+            controls.set('left', leftOnRef.current, { immediate: true })
+            controls.set('right', rightOnRef.current, { immediate: true })
           } catch (ctrlErr) {
             console.warn('Could not initialize light controls:', ctrlErr)
           }
@@ -128,7 +134,9 @@ export function NotFoundScene({
       )
     } catch (e) {
       console.error('WebGL init failed:', e)
-      setFailed(true)
+      queueMicrotask(() => {
+        if (!disposed) setFailed(true)
+      })
     }
 
     return () => {

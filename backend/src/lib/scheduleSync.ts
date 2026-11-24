@@ -340,7 +340,7 @@ export async function runDailyMaintenance(db: D1Database): Promise<void> {
 
 export async function releaseBookingSlots(
   db: D1Database,
-  bookingId: number,
+  bookingId: number | string,
   slotId?: number | null
 ): Promise<void> {
   if (!bookingId && !slotId) return

@@ -99,7 +99,7 @@ export function createStudioLightControls(model: Object3D): StudioLightControls 
       return enabled
     },
 
-    toggle(side: 'left' | 'right', options) {
+    toggle(side: 'left' | 'right', options?: { immediate?: boolean }) {
       const fixture = getFixture(side)
       return this.set(side, fixture.target === 0, options)
     },

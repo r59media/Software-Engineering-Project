@@ -32,8 +32,6 @@ export function NotFoundPage() {
           <NotFoundScene
             leftOn={leftLightOn}
             rightOn={rightLightOn}
-            onToggleLeft={toggleLeft}
-            onToggleRight={toggleRight}
           />
         </div>
 
