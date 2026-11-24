@@ -2,7 +2,17 @@ import { Hono, type Context } from 'hono'
 import type { Bindings } from '../index'
 import { ensureSchemaReady } from './admin'
 import { isSlotInWeeklyAvailability } from './schedule'
-import { ensureRollingSlotsUpToDate, parseTimeToMinutes, releaseBookingSlots } from '../lib/scheduleSync'
+import {
+  computeSessionEndTime,
+  ensureRollingSlotsUpToDate,
+  getBufferMinutesFromRules,
+  lockSlotsAtomically,
+  parseTimeToMinutes,
+  releaseBookingSlots,
+  resolveBookingSlotIds,
+  resolveSlotWindow,
+  type SlotRowLike
+} from '../lib/scheduleSync'
 import { getMediaSigningSecret, getSigningSecret, getTrustedClientIp, normalizeIpBucket } from '../middleware/auth'
 import {
   signRescheduleToken,
@@ -144,23 +154,106 @@ async function loadPricingConfig(db: D1Database): Promise<{ policy: BookingPolic
   return { policy: DEFAULT_BOOKING_POLICY, feeRules: [] }
 }
 
-async function loadAvailableSlots(db: D1Database, timeZone: string): Promise<any[]> {
+async function loadAvailableSlots(
+  db: D1Database,
+  timeZone: string,
+  booking?: {
+    id?: number
+    slot_id?: number | null
+    service_id?: number | null
+    duration_minutes?: number | null
+    full_day?: number | boolean | null
+  }
+): Promise<SlotRowLike[]> {
   const { currentDate, currentTime } = getStudioCurrentDateTime(timeZone)
+  const currentTimeMins = parseTimeToMinutes(currentTime)
   await ensureRollingSlotsUpToDate(db, currentDate)
   const weeklyAvailability = await loadWeeklyAvailability(db)
+
+  let durationMinutes = Number(booking?.duration_minutes) > 0 ? Number(booking!.duration_minutes) : 60
+  let fullDay = booking?.full_day === true || Number(booking?.full_day) === 1
+  if (booking?.service_id && (booking.duration_minutes === undefined || booking.full_day === undefined)) {
+    const svc = await db
+      .prepare('SELECT duration_minutes, full_day FROM Services WHERE id = ?')
+      .bind(booking.service_id)
+      .first<{ duration_minutes: number | null; full_day: number | boolean | null }>()
+    if (svc) {
+      if (Number(svc.duration_minutes) > 0) {
+        durationMinutes = Number(svc.duration_minutes)
+      }
+      fullDay = svc.full_day === true || Number(svc.full_day) === 1
+    }
+  }
+
+  const bufferMinutes = await getBufferMinutesFromRules(db)
+  const { slotIds: oldSlotIds, protectedOtherSlotIds } = booking?.id
+    ? await resolveBookingSlotIds(db, {
+        bookingId: booking.id,
+        slotId: booking.slot_id ?? null,
+        serviceId: booking.service_id ?? null,
+        durationMinutes,
+        fullDay
+      })
+    : { slotIds: [] as number[], protectedOtherSlotIds: [] as number[] }
+  const protectedSet = new Set<number>(protectedOtherSlotIds)
+  const exemptSlotIds = oldSlotIds.filter((id) => !protectedSet.has(id))
+
   const { results } = await db
     .prepare(
       `SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots
-       WHERE is_booked = 0
-         AND (date > ? OR (date = ? AND start_time > ?))
+       WHERE date >= ?
          AND date NOT IN (SELECT date FROM Blocked_Dates)
-       ORDER BY date ASC, start_time ASC
-       LIMIT 2500`
+       ORDER BY date ASC, start_time ASC, id ASC
+       LIMIT 5000`
     )
-    .bind(currentDate, currentDate, currentTime)
-    .all()
+    .bind(currentDate)
+    .all<SlotRowLike>()
 
-  return (results || []).filter((slot) => isSlotInWeeklyAvailability(slot as any, weeklyAvailability))
+  const allSlots: SlotRowLike[] = (results || []).map((row) => ({
+    ...row,
+    is_booked: Number(row.is_booked) === 1 || (row.is_booked as unknown) === true ? 1 : 0
+  }))
+
+  const daySlotsByDate = new Map<string, SlotRowLike[]>()
+  for (const slot of allSlots) {
+    let list = daySlotsByDate.get(slot.date)
+    if (!list) {
+      list = []
+      daySlotsByDate.set(slot.date, list)
+    }
+    list.push(slot)
+  }
+
+  return allSlots.filter((slot) => {
+    if (booking?.slot_id && slot.id === booking.slot_id) {
+      return false
+    }
+
+    if (slot.date === currentDate) {
+      const slotStartMins = parseTimeToMinutes(slot.start_time)
+      if (slotStartMins !== null && currentTimeMins !== null) {
+        if (slotStartMins <= currentTimeMins) return false
+      } else if (slot.start_time <= currentTime) {
+        return false
+      }
+    } else if (slot.date < currentDate) {
+      return false
+    }
+
+    if (!isSlotInWeeklyAvailability(slot, weeklyAvailability, fullDay ? undefined : durationMinutes)) {
+      return false
+    }
+
+    const windowRes = resolveSlotWindow({
+      daySlots: daySlotsByDate.get(slot.date) || [],
+      startSlot: slot,
+      durationMinutes,
+      fullDay,
+      bufferMinutes,
+      exemptSlotIds
+    })
+    return windowRes.ok
+  })
 }
 
 async function loadBookingWithSlot(db: D1Database, bookingId: number) {
@@ -169,7 +262,7 @@ async function loadBookingWithSlot(db: D1Database, bookingId: number) {
       `SELECT b.id, b.service_id, b.slot_id, b.client_name, b.client_email, b.customer_phone,
               COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
               ss.date AS slot_date, ss.start_time AS slot_start_time, ss.end_time AS slot_end_time,
-              s.name AS service_name
+              s.name AS service_name, s.duration_minutes, s.full_day
        FROM Bookings b
        LEFT JOIN Schedule_Slots ss ON b.slot_id = ss.id
        LEFT JOIN Services s ON b.service_id = s.id
@@ -274,7 +367,7 @@ async function buildReschedulePayload(
   })
   const rescheduleFeeCents = rescheduleFeeEval.totalFeeCents
   const rescheduleFeeItems = rescheduleFeeEval.appliedFees
-  const slots = rescheduleAllowed ? await loadAvailableSlots(c.env.DB, timeZone) : []
+  const slots = rescheduleAllowed ? await loadAvailableSlots(c.env.DB, timeZone, booking) : []
   const origin = new URL(c.req.url).origin
   const rescheduleUrl = `${origin}/reschedule?booking=${booking.id}&token=${encodeURIComponent(token)}`
   const icsUrl = `${origin}/api/bookings/${booking.id}/calendar.ics?token=${encodeURIComponent(token)}`
@@ -417,7 +510,7 @@ rescheduleRoutes.post('/reschedule/unlock', async (c) => {
         `SELECT b.id, b.service_id, b.slot_id, b.client_name, b.client_email, b.customer_phone,
                 COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
                 ss.date AS slot_date, ss.start_time AS slot_start_time, ss.end_time AS slot_end_time,
-                s.name AS service_name
+                s.name AS service_name, s.duration_minutes, s.full_day
          FROM Bookings b
          LEFT JOIN Schedule_Slots ss ON b.slot_id = ss.id
          LEFT JOIN Services s ON b.service_id = s.id
@@ -439,7 +532,7 @@ rescheduleRoutes.post('/reschedule/unlock', async (c) => {
         `SELECT b.id, b.service_id, b.slot_id, b.client_name, b.client_email, b.customer_phone,
                 COALESCE(NULLIF(b.event_location, ''), b.location) AS location, b.notes, b.attendees, b.price_at_booking, b.deposit_paid, b.status,
                 ss.date AS slot_date, ss.start_time AS slot_start_time, ss.end_time AS slot_end_time,
-                s.name AS service_name
+                s.name AS service_name, s.duration_minutes, s.full_day
          FROM Bookings b
          LEFT JOIN Schedule_Slots ss ON b.slot_id = ss.id
          LEFT JOIN Services s ON b.service_id = s.id
@@ -633,66 +726,124 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Selected timeslot is in the past.', details: [] } }, 400)
     }
 
-    let durationMinutes = 60
+    let durationMinutes = Number(booking.duration_minutes) > 0 ? Number(booking.duration_minutes) : 60
+    let fullDay = booking.full_day === true || Number(booking.full_day) === 1
     if (booking.service_id) {
-      const svc = await c.env.DB.prepare('SELECT duration_minutes FROM Services WHERE id = ?').bind(booking.service_id).first<{ duration_minutes: number }>()
-      if (svc && Number(svc.duration_minutes) > 0) {
-        durationMinutes = Number(svc.duration_minutes)
+      const svc = await c.env.DB.prepare('SELECT duration_minutes, full_day FROM Services WHERE id = ?')
+        .bind(booking.service_id)
+        .first<{ duration_minutes: number | null; full_day: number | boolean | null }>()
+      if (svc) {
+        if (Number(svc.duration_minutes) > 0) {
+          durationMinutes = Number(svc.duration_minutes)
+        }
+        fullDay = svc.full_day === true || Number(svc.full_day) === 1
       }
     }
 
+    const bufferMinutes = await getBufferMinutesFromRules(c.env.DB)
+    const oldSlotId: number | null = booking.slot_id ?? null
+
+    const { slotIds: oldSlotIds, protectedOtherSlotIds } = await resolveBookingSlotIds(c.env.DB, {
+      bookingId: booking.id,
+      slotId: oldSlotId,
+      serviceId: booking.service_id,
+      durationMinutes,
+      fullDay
+    })
+    const protectedSet = new Set<number>(protectedOtherSlotIds)
+    const exemptSlotIds = oldSlotIds.filter((id) => !protectedSet.has(id))
+
     const weeklyAvailability = await loadWeeklyAvailability(c.env.DB)
-    if (!isSlotInWeeklyAvailability(targetSlot, weeklyAvailability, durationMinutes)) {
+    if (!isSlotInWeeklyAvailability(targetSlot, weeklyAvailability, fullDay ? undefined : durationMinutes)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Selected timeslot is outside studio weekly availability.', details: [] } }, 400)
     }
 
-    const oldSlotId = booking.slot_id
-    const slotStartMin = parseTimeToMinutes(targetSlot.start_time) ?? 0
-    const sessionEndMin = slotStartMin + durationMinutes
+    const blockedTarget = await c.env.DB.prepare('SELECT id FROM Blocked_Dates WHERE date = ?')
+      .bind(targetSlot.date)
+      .first()
+    if (blockedTarget) {
+      return c.json({ error: { code: 'SLOT_UNAVAILABLE', message: 'Selected date is blocked.', details: [] } }, 409)
+    }
 
     const daySlotsRes = await c.env.DB.prepare(
-      'SELECT id, start_time, end_time, is_booked FROM Schedule_Slots WHERE date = ? ORDER BY start_time ASC'
-    ).bind(targetSlot.date).all<{ id: number; start_time: string; end_time: string; is_booked: number | boolean }>()
+      'SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots WHERE date = ? ORDER BY start_time ASC, id ASC'
+    )
+      .bind(targetSlot.date)
+      .all<SlotRowLike>()
 
-    const daySlots = daySlotsRes.results || []
-    const slotsToLock: number[] = [newSlotId]
+    const daySlots: SlotRowLike[] = (daySlotsRes.results || []).map((row) => ({
+      ...row,
+      date: row.date || targetSlot.date,
+      is_booked: Number(row.is_booked) === 1 || (row.is_booked as unknown) === true ? 1 : 0
+    }))
 
-    for (const s of daySlots) {
-      const sStart = parseTimeToMinutes(s.start_time) ?? 0
-      let sEnd = s.end_time ? (parseTimeToMinutes(s.end_time) ?? sStart + 60) : sStart + 60
-      if (sEnd <= sStart) sEnd = sStart + 60
-      if (sEnd >= 1439) sEnd = 1440
-
-      if (Math.max(slotStartMin, sStart) < Math.min(sessionEndMin, sEnd)) {
-        if (s.id !== oldSlotId && (Number(s.is_booked) === 1 || s.is_booked === true)) {
-          return c.json({ error: { code: 'SLOT_UNAVAILABLE', message: 'Required consecutive timeslots are unavailable or booked.', details: [] } }, 409)
-        }
-        slotsToLock.push(s.id)
-      }
+    const normalizedTargetSlot: SlotRowLike = {
+      id: targetSlot.id,
+      date: targetSlot.date,
+      start_time: targetSlot.start_time,
+      end_time: targetSlot.end_time,
+      is_booked: Number(targetSlot.is_booked) === 1 || targetSlot.is_booked === true ? 1 : 0
     }
 
-    const uniqueNewSlotIds = Array.from(new Set(slotsToLock))
-    const placeholders = uniqueNewSlotIds.map(() => '?').join(', ')
+    const windowRes = resolveSlotWindow({
+      daySlots,
+      startSlot: normalizedTargetSlot,
+      durationMinutes,
+      fullDay,
+      bufferMinutes,
+      exemptSlotIds
+    })
 
-    // Atomically lock the new slot(s)
-    const lockRes = await c.env.DB.prepare(
-      `UPDATE Schedule_Slots SET is_booked = 1 WHERE id IN (${placeholders}) AND (is_booked = 0 OR id = ?) AND date NOT IN (SELECT date FROM Blocked_Dates)`
-    )
-      .bind(...uniqueNewSlotIds, oldSlotId || 0)
-      .run()
+    if (!windowRes.ok) {
+      const msg =
+        windowRes.reason === 'EXCEEDS_MIDNIGHT'
+          ? 'Selected timeslot and service duration extend past the end of the day.'
+          : windowRes.reason === 'SLOT_OVERLAPS_BOOKED'
+            ? 'Required consecutive timeslots overlap an existing booking.'
+            : 'Required consecutive timeslots are unavailable or booked.'
+      return c.json(
+        {
+          error: {
+            code: windowRes.reason === 'EXCEEDS_MIDNIGHT' ? 'VALIDATION_FAILED' : 'SLOT_UNAVAILABLE',
+            message: msg,
+            details: [{ reason: windowRes.reason }]
+          }
+        },
+        windowRes.reason === 'EXCEEDS_MIDNIGHT' ? 400 : 409
+      )
+    }
 
-    if (!lockRes.success || (lockRes.meta.changes ?? 0) < uniqueNewSlotIds.length) {
+    // Atomically lock the new slot(s) (zero partial locks left behind on failure)
+    const lockRes = await lockSlotsAtomically(c.env.DB, windowRes.slotIds, exemptSlotIds)
+    if (!lockRes.ok) {
       return c.json({ error: { code: 'SLOT_UNAVAILABLE', message: 'The selected timeslot is no longer available.', details: [] } }, 409)
     }
+    const newlyLockedIds = lockRes.newlyLockedIds
 
     try {
       await c.env.DB.prepare('UPDATE Bookings SET slot_id = ? WHERE id = ?').bind(newSlotId, booking.id).run()
       if (oldSlotId && oldSlotId !== newSlotId) {
-        await releaseBookingSlots(c.env.DB, booking.id, oldSlotId)
+        await releaseBookingSlots(c.env.DB, booking.id, oldSlotId, { keepSlotIds: windowRes.slotIds })
       }
     } catch (dbErr) {
-      // Rollback new slot lock on failure
-      await c.env.DB.prepare(`UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${placeholders})`).bind(...uniqueNewSlotIds).run().catch(() => {})
+      // Rollback only newly locked slots (never touching oldSlotIds or active bookings)
+      if (newlyLockedIds.length > 0) {
+        const rollbackPh = newlyLockedIds.map(() => '?').join(', ')
+        await c.env.DB.prepare(
+          `UPDATE Schedule_Slots
+           SET is_booked = 0
+           WHERE id IN (${rollbackPh})
+             AND id NOT IN (
+               SELECT slot_id
+               FROM Bookings
+               WHERE LOWER(COALESCE(status, '')) != 'cancelled'
+                 AND slot_id IS NOT NULL
+             )`
+        )
+          .bind(...newlyLockedIds)
+          .run()
+          .catch(() => {})
+      }
       throw dbErr
     }
 
@@ -753,11 +904,13 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
     const origin = new URL(c.req.url).origin
     const rescheduleUrl = `${origin}/reschedule?booking=${booking.id}&token=${encodeURIComponent(token)}`
     const icsUrl = `${origin}/api/bookings/${booking.id}/calendar.ics?token=${encodeURIComponent(token)}`
+    const sessionEndTime =
+      windowRes.endTime || computeSessionEndTime(targetSlot.start_time, targetSlot.end_time, durationMinutes)
     const calendarInput = {
       id: booking.id,
       date: targetSlot.date,
       start_time: targetSlot.start_time,
-      end_time: targetSlot.end_time,
+      end_time: sessionEndTime,
       client_name: booking.client_name,
       client_email: booking.client_email,
       customer_phone: booking.customer_phone,
@@ -778,7 +931,7 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
       slot_id: newSlotId,
       date: targetSlot.date,
       start_time: targetSlot.start_time,
-      end_time: targetSlot.end_time,
+      end_time: sessionEndTime,
       client_name: booking.client_name,
       client_email: booking.client_email,
       package_name: booking.service_name || 'Photography Session',

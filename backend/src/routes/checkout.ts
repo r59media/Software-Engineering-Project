@@ -5,7 +5,13 @@ import { getTrustedClientIp, hasForbiddenPaymentFields, getSigningSecret, getMed
 import { buildHybridSquareNote, ensureCustomer, getSquare, getStudioTimeZone, sendBalanceInvoice } from '../lib/squareBilling'
 import { addDaysISO, depositFor, evaluateDynamicFees, localDateTimeToRFC3339, normalizeBookingPolicy, normalizeDepositPercent, normalizeFeeRules } from '../lib/billingMath'
 import { isSlotInWeeklyAvailability } from './schedule'
-import { parseTimeToMinutes } from '../lib/scheduleSync.ts'
+import {
+  computeSessionEndTime,
+  getBufferMinutesFromRules,
+  lockSlotsAtomically,
+  resolveSlotWindow,
+  type SlotRowLike
+} from '../lib/scheduleSync.ts'
 import { signRescheduleToken } from './reschedule'
 import { buildGoogleCalendarTemplateUrl, syncBookingToGoogleCalendarApi } from '../lib/googleCalendar'
 import { sendBookingConfirmationEmail } from '../email'
@@ -80,7 +86,19 @@ checkoutRouter.post('/', async (c) => {
     if (!slotLocked || lockedSlotIds.length === 0) return
     try {
       const ph = lockedSlotIds.map(() => '?').join(', ')
-      await c.env.DB.prepare(`UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${ph})`).bind(...lockedSlotIds).run()
+      await c.env.DB.prepare(
+        `UPDATE Schedule_Slots
+         SET is_booked = 0
+         WHERE id IN (${ph})
+           AND id NOT IN (
+             SELECT slot_id
+             FROM Bookings
+             WHERE LOWER(COALESCE(status, '')) != 'cancelled'
+               AND slot_id IS NOT NULL
+           )`
+      )
+        .bind(...lockedSlotIds)
+        .run()
     } catch (releaseErr) {
       console.error('Failed to release slot lock:', releaseErr)
     } finally {
@@ -330,21 +348,9 @@ checkoutRouter.post('/', async (c) => {
       }, 400)
     }
 
-    // Validate service duration and availability window
-    const durationMinutes = Number(service.duration_minutes) > 0 ? Number(service.duration_minutes) : 60
-    const slotStartMin = parseTimeToMinutes(slot.start_time) ?? 0
-    const sessionEndMin = slotStartMin + durationMinutes
-
-    if (sessionEndMin > 1440) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'The selected service duration extends past the end of the day.',
-          target: 'checkout_form',
-          details: [{ field: 'slot_id', message: 'Service duration extends past midnight.', code: 'DURATION_OVERFLOW' }]
-        }
-      }, 400)
-    }
+    // Validate service duration, full-day flag, and availability window
+    const effectiveDurationMinutes = Number(service.duration_minutes) > 0 ? Number(service.duration_minutes) : 60
+    const isFullDay = service.full_day === true || Number(service.full_day) === 1
 
     // Validate slot is within weekly availability with service duration
     let weeklyAvailability: any[] = []
@@ -357,7 +363,7 @@ checkoutRouter.post('/', async (c) => {
       }
     } catch {}
 
-    if (!isSlotInWeeklyAvailability(slot, weeklyAvailability, durationMinutes)) {
+    if (!isSlotInWeeklyAvailability(slot, weeklyAvailability, isFullDay ? undefined : effectiveDurationMinutes)) {
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
@@ -368,64 +374,61 @@ checkoutRouter.post('/', async (c) => {
       }, 400)
     }
 
-    // Check consecutive slots for multi-hour sessions
+    const bufferMinutes = await getBufferMinutesFromRules(c.env.DB)
+
+    // Check consecutive slots for multi-hour / full-day sessions
     const daySlotsRes = await c.env.DB.prepare(
-      'SELECT id, start_time, end_time, is_booked FROM Schedule_Slots WHERE date = ? ORDER BY start_time ASC'
-    ).bind(slot.date).all<{ id: number; start_time: string; end_time: string; is_booked: number | boolean }>()
+      'SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots WHERE date = ? ORDER BY start_time ASC, id ASC'
+    ).bind(slot.date).all<SlotRowLike>()
 
-    const daySlots = daySlotsRes.results || []
-    const slotsToLock: number[] = [slot.id]
+    const daySlots: SlotRowLike[] = (daySlotsRes.results || []).map((row) => ({
+      ...row,
+      date: row.date || slot.date,
+      is_booked: Number(row.is_booked) === 1 || (row.is_booked as unknown) === true ? 1 : 0
+    }))
 
-    // Verify continuous unbooked coverage across [slotStartMin, sessionEndMin)
-    const coverage = new Uint8Array(1441)
-    for (const s of daySlots) {
-      if (Number(s.is_booked) === 1 || s.is_booked === true) continue
-      const sStart = parseTimeToMinutes(s.start_time) ?? 0
-      let sEnd = s.end_time ? (parseTimeToMinutes(s.end_time) ?? sStart + 60) : sStart + 60
-      if (sEnd <= sStart) sEnd = sStart + 60
-      if (sEnd >= 1439) sEnd = 1440
-
-      const from = Math.max(0, Math.min(1440, sStart))
-      const to = Math.max(0, Math.min(1440, sEnd))
-      for (let m = from; m < to; m++) {
-        coverage[m] = 1
-      }
-
-      if (Math.max(slotStartMin, sStart) < Math.min(sessionEndMin, sEnd)) {
-        slotsToLock.push(s.id)
-      }
+    const startSlotRow: SlotRowLike = {
+      id: slot.id,
+      date: slot.date,
+      start_time: slot.start_time,
+      end_time: slot.end_time,
+      is_booked: Number(slot.is_booked) === 1 || slot.is_booked === true ? 1 : 0
     }
 
-    for (let m = slotStartMin; m < sessionEndMin; m++) {
-      if (coverage[m] === 0) {
-        return c.json({
-          error: {
-            code: 'VALIDATION_FAILED',
-            message: 'One or more required timeslots for this session duration are unavailable or already booked.',
-            target: 'checkout_form',
-            details: [{ field: 'slot_id', message: 'Continuous timeslots unavailable.', code: 'UNAVAILABLE' }]
-          }
-        }, 409)
-      }
-    }
+    const windowRes = resolveSlotWindow({
+      daySlots,
+      startSlot: startSlotRow,
+      durationMinutes: effectiveDurationMinutes,
+      fullDay: isFullDay,
+      bufferMinutes
+    })
 
-    const uniqueSlotIds = Array.from(new Set(slotsToLock))
-    const placeholders = uniqueSlotIds.map(() => '?').join(', ')
-
-    // 1. Atomic Slot Lock (conditional UPDATE ... WHERE is_booked = 0 and date NOT IN (SELECT date FROM Blocked_Dates))
-    const lockResult = await c.env.DB.prepare(
-      `UPDATE Schedule_Slots SET is_booked = 1 WHERE id IN (${placeholders}) AND is_booked = 0 AND date NOT IN (SELECT date FROM Blocked_Dates)`
-    ).bind(...uniqueSlotIds).run()
-
-    if (!lockResult.success || (lockResult.meta.changes ?? 0) < uniqueSlotIds.length) {
-      // Rollback any partially locked slots
-      await c.env.DB.prepare(
-        `UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${placeholders})`
-      ).bind(...uniqueSlotIds).run().catch(() => {})
+    if (!windowRes.ok) {
+      const reasonMessage =
+        windowRes.reason === 'EXCEEDS_MIDNIGHT'
+          ? 'The selected service duration extends past the end of the day.'
+          : windowRes.reason === 'SLOT_OVERLAPS_BOOKED'
+            ? 'One or more required timeslots for this session overlap an existing booking.'
+            : windowRes.reason === 'INVALID_TIME'
+              ? 'The selected timeslot has an invalid start time.'
+              : 'One or more required timeslots for this session duration are unavailable or insufficient.'
 
       return c.json({
         error: {
-          code: 'VALIDATION_FAILED',
+          code: 'SLOT_UNAVAILABLE',
+          message: reasonMessage,
+          target: 'checkout_form',
+          details: [{ field: 'slot_id', message: reasonMessage, code: windowRes.reason }]
+        }
+      }, 409)
+    }
+
+    // 1. Atomic Slot Lock (zero rollback UPDATE on failure so another user's lock is never touched)
+    const lockRes = await lockSlotsAtomically(c.env.DB, windowRes.slotIds)
+    if (!lockRes.ok) {
+      return c.json({
+        error: {
+          code: 'SLOT_UNAVAILABLE',
           message: 'The selected timeslot is no longer available or falls on a blocked date.',
           target: 'checkout_form',
           details: [{ field: 'slot_id', message: 'Timeslot unavailable.', code: 'UNAVAILABLE' }]
@@ -433,7 +436,7 @@ checkoutRouter.post('/', async (c) => {
       }, 409)
     }
     slotLocked = true
-    lockedSlotIds = uniqueSlotIds
+    lockedSlotIds = lockRes.newlyLockedIds
 
     // Pricing settings from Admin_Settings
     let pricingSettings: any = null
@@ -814,11 +817,14 @@ checkoutRouter.post('/', async (c) => {
         icsUrl = `${origin}/api/bookings/${bookingId}/calendar.ics?token=${encodeURIComponent(rescheduleToken)}`
       }
 
+      const sessionEndTime =
+        windowRes.endTime || computeSessionEndTime(slot.start_time, slot.end_time, effectiveDurationMinutes)
+
       const calendarBooking = {
         id: bookingId,
         date: slot.date,
         start_time: slot.start_time,
-        end_time: slot.end_time,
+        end_time: sessionEndTime,
         client_name: clientName,
         client_email: clientEmail,
         customer_phone: customerPhone,
@@ -842,7 +848,7 @@ checkoutRouter.post('/', async (c) => {
           packageName: packageTitle || service.name || 'Photography Session',
           date: slot.date,
           startTime: slot.start_time,
-          endTime: slot.end_time,
+          endTime: sessionEndTime,
           location: eventLocation,
           depositCents,
           totalCents: finalPriceCents,
