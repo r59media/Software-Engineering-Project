@@ -92,8 +92,9 @@ function BookingFlow({
   const [{ step, movement }, setStage] = useState<{ step: BookingStep; movement: StepMotion }>({ step: 'services', movement: { direction: -1, panelsOnly: false } })
   const setStep = (next: BookingStep) => setStage(previous => {
     const from = previous.step
-    const panelsOnly = (from === 'datetime' && next === 'info') || (from === 'info' && next === 'datetime')
-    const direction = panelsOnly ? (next === 'info' ? 1 : -1) : (STEP_ORDER[next] < STEP_ORDER[from] ? 1 : -1)
+    const hasTicket = (s: BookingStep) => s !== 'services'
+    const panelsOnly = hasTicket(from) && hasTicket(next)
+    const direction = STEP_ORDER[next] < STEP_ORDER[from] ? 1 : -1
     return { step: next, movement: { direction, panelsOnly } }
   })
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null)

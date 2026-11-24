@@ -336,6 +336,7 @@ export function BookingYourInfo({
             people={people}
             pricing={pricing}
             dateTime={dateTime}
+            customerInfo={formData}
             hideDateHighlight
             continueText={busy ? 'Submitting...' : 'Continue to summary'}
             onContinue={() => handleSubmit()}

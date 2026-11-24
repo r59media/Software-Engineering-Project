@@ -1,4 +1,7 @@
 import { useRef, useState } from 'react'
+import { motion } from 'motion/react'
+import { useTicketMotion } from './useTicketMotion'
+import { useTicketTilt } from './useTicketTilt'
 import { computeSessionPricing, type PricingData } from '../../api/client'
 import { previewBookingDepositPercent } from '../../config/booking'
 import type { BookingPhotoPermissions, BookingCustomerInfo, BookingDateTimeSelection, BookingReviewDraft, BookingService } from '../../types/booking'
@@ -32,6 +35,8 @@ export function BookingSummary({
   onEdit,
   onProceedToDeposit,
 }: BookingSummaryProps) {
+  const { shared, transition } = useTicketMotion()
+  const { tiltTicket, resetTilt } = useTicketTilt(6)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lock = useRef(false)
@@ -97,9 +102,23 @@ export function BookingSummary({
     <BookingProgressBar currentStep="summary" onStepClick={step => { if (!busy && (step === 'services' || step === 'datetime' || step === 'info')) onEdit(step) }} />
     <div className="booking-review__intro"><div><h3>Everything look right?</h3><p>Check your session and contact details below.</p></div><button className="booking-review__edit" disabled={busy} onClick={() => onEdit('info')}>← Back to your information</button></div>
     <div className="booking-review__ticket-layout">
-    <article className="booking-review__ticket" aria-label="Your session review" aria-busy={busy}>
-      <header className="booking-review__ticket-heading">
-        <h3>YOUR <em>SESSION</em></h3>
+      <div
+        className="booking-review__ticket-frame"
+        onPointerMove={tiltTicket}
+        onPointerLeave={resetTilt}
+        onPointerCancel={resetTilt}
+      >
+        <motion.article
+          layoutId={shared ? 'booking-ticket' : undefined}
+          transition={transition}
+          className="booking-review__ticket"
+          aria-label="Your session review"
+          aria-busy={busy}
+        >
+          <header className="booking-review__ticket-heading">
+        <motion.h3 layout="position" layoutId={shared ? 'booking-ticket-title' : undefined} transition={transition}>
+          YOUR SESSION <em>SUMMARY</em>
+        </motion.h3>
         <img className="booking-review__logo" src={`${import.meta.env.BASE_URL}r59Media_logo.svg`} alt="R59 Media" width="121" height="75" />
       </header>
       <div className="booking-review__columns">
@@ -197,8 +216,9 @@ export function BookingSummary({
           </div>
         </div>
       </footer>
-    </article>
-    <button className="booking-review__button" disabled={busy || !onProceedToDeposit} onClick={() => void proceed()}>{busy ? 'Continuing…' : 'Continue to deposit →'}</button>
+      </motion.article>
+      <button className="booking-review__button" disabled={busy || !onProceedToDeposit} onClick={() => void proceed()}>{busy ? 'Continuing…' : 'Continue to deposit →'}</button>
+      </div>
     </div>
     {error && <p className="booking-review__error" role="alert">{error}</p>}
   </div>

@@ -13,8 +13,32 @@
 .booking-review__intro h3 { font-size: 24px; }
 .booking-review__intro p { margin-top: 4px; }
 .booking-review__ticket-layout { position: relative; width: min(100%, 1126px); margin-inline: auto; }
-.booking-review__ticket { position: relative; isolation: isolate; padding: 28px clamp(24px, 4vw, 54px); border-radius: 12px; background: var(--color-white); color: var(--color-brand-black); }
-.booking-review__ticket::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: url('../../assets/booking/session-paper.webp') center / cover; filter: grayscale(1); opacity: .11; pointer-events: none; }
+.booking-review__ticket-frame { position: relative; width: 100%; }
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .booking-review__ticket-frame { perspective: 1200px; }
+  .booking-review__ticket-frame > .booking-review__ticket {
+    rotate: var(--ticket-rotation, 1 0 0 0deg);
+    transition: rotate 180ms ease-out;
+  }
+}
+.booking-review__ticket { position: relative; isolation: isolate; padding: 28px clamp(24px, 4vw, 54px) 36px; border-radius: 7px 7px 0 0; background: var(--color-brand-yellow); color: var(--color-brand-black); filter: drop-shadow(-3px 4px 5px rgb(0 0 0 / 12%)); margin-bottom: 24px; }
+.booking-review__ticket::before { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: url('../../assets/booking/session-paper.webp') center / cover; opacity: .15; mix-blend-mode: multiply; pointer-events: none; }
+.booking-review__ticket::after {
+  content: '';
+  position: absolute;
+  inset: auto 0 -13px;
+  height: 14px;
+  background: var(--color-brand-yellow);
+  clip-path: polygon(
+    0 0, 100% 0, 100% 100%,
+    98% 30%, 96% 100%, 94% 45%, 92% 100%, 89% 30%, 87% 100%, 85% 45%, 83% 100%,
+    80% 30%, 78% 100%, 76% 45%, 74% 100%, 72% 35%, 70% 100%, 67% 20%, 65% 100%,
+    63% 45%, 61% 10%, 59% 100%, 56% 35%, 54% 100%, 52% 45%, 50% 10%, 48% 100%,
+    46% 35%, 44% 100%, 41% 45%, 39% 35%, 37% 100%, 35% 20%, 33% 100%, 30% 45%,
+    28% 35%, 26% 100%, 24% 45%, 22% 100%, 19% 35%, 17% 100%, 15% 45%, 13% 100%,
+    11% 35%, 9% 100%, 6% 55%, 4% 100%, 2% 35%, 0 100%
+  );
+}
 .booking-review__ticket-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .booking-review__ticket-heading h3 { font-size: 48px; line-height: .85; }
 .booking-review__ticket-heading em { display: block; }
@@ -38,6 +62,7 @@
 .booking-review__notes { grid-column: 1 / -1; }
 .booking-review__notes p { white-space: pre-wrap; overflow-wrap: anywhere; }
 .booking-review__footer { margin-top: 22px; padding-right: calc(min(300px, 30%) + 24px); }
+.booking-review__ticket-frame > .booking-review__button,
 .booking-review__ticket-layout > .booking-review__button {
   position: absolute;
   right: clamp(24px, 4vw, 54px);
@@ -110,7 +135,8 @@
   .booking-review__price { padding: 14px 18px; gap: 12px; min-height: 72px; }
   .booking-review__deposit-due { font-size: 13.5px; }
   .booking-review__deposit-due b { font-size: 14.5px; }
-  .booking-review__ticket-layout > .booking-review__button { bottom: 38px; min-height: 46px; font-size: 14px; }
+  .booking-review__ticket-frame > .booking-review__button,
+.booking-review__ticket-layout > .booking-review__button { bottom: 38px; min-height: 46px; font-size: 14px; }
 }
 @media (max-width: 767px) {
   .booking__eyebrow { margin-bottom: 8px; }
@@ -144,7 +170,8 @@
   .booking-review__deposit-due { font-size: 13.5px; }
   .booking-review__deposit-due b { font-size: 15px; }
   .booking-review__deposit-note { font-size: 11px; }
-  .booking-review__ticket-layout > .booking-review__button { position: relative; right: auto; bottom: auto; width: 100%; margin-top: 12px; min-height: 48px; font-size: 15px; }
+  .booking-review__ticket-frame > .booking-review__button,
+.booking-review__ticket-layout > .booking-review__button { position: relative; right: auto; bottom: auto; width: 100%; margin-top: 12px; min-height: 48px; font-size: 15px; }
 }
 
 .booking-review__permissions { min-width: 0; margin: 24px 0 0; padding: 16px 0 0; border: 0; border-top: 1px solid rgb(17 17 17 / 20%); }

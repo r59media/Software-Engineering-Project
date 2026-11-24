@@ -45,6 +45,35 @@
   letter-spacing: -0.01em;
   text-decoration: none;
 }
+.booking-session-card__price-section {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.booking-session-card__reserved-block {
+  margin-bottom: 12px;
+}
+.booking-session-card__reserved-content {
+  border-left: 2px solid var(--color-brand-black);
+  padding-left: 10px;
+}
+.booking-session-card__reserved-name {
+  font-family: var(--font-title);
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--color-brand-black);
+  overflow-wrap: anywhere;
+}
+.booking-session-card__reserved-sub {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--color-brand-black);
+  opacity: 0.8;
+  overflow-wrap: anywhere;
+}
 .booking-session-card__sawtooth { display: none; }
 /* Mobile-only Continue Button */
 .booking-session-card__continue-btn--mobile {
@@ -117,13 +146,20 @@
 }
 
 @media (min-width: 768px) {
-  .booking-session-card { min-height: 460px; }
-  .booking-session-card__body { min-height: 460px; padding: 24px 24px 44px; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: 80px 40px 48px 16px 60px 16px 60px; row-gap: 8px; align-content: start; }
+  .booking-session-card { min-height: 480px; }
+  .booking-session-card__body {
+    min-height: 480px;
+    padding: 24px 24px 44px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
   .booking-session-card__body > * { min-width: 0; margin-top: 0; margin-bottom: 0 !important; }
-  .booking-session-card__title { font-size: clamp(36px, 3.32vw, 48px) !important; }
-  .booking-session-card__service-name { font-size: clamp(24px, 2.22vw, 32px); }
-  .booking-session-card__specs { align-self: center; }
+  .booking-session-card__title { font-size: clamp(36px, 3.32vw, 48px) !important; margin-bottom: 0 !important; }
+  .booking-session-card__service-name { font-size: clamp(24px, 2.22vw, 30px); margin-bottom: 0 !important; }
+  .booking-session-card__specs { margin-bottom: 2px !important; }
   .booking-session-card__datetime-block { width: calc(100% - 10px); margin-left: -24px; margin-right: 0; }
+  .booking-session-card__price-section { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
   .booking-session-card__price-block { grid-template-columns: minmax(112px, 136px) minmax(0, 1fr); gap: 16px; }
 }
 

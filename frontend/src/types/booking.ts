@@ -57,6 +57,7 @@ export interface BookingSessionCardProps {
   people: number
   pricing?: PricingData | null
   dateTime?: BookingDateTimeSelection | null
+  customerInfo?: BookingCustomerInfo | null
   onEditService?: () => void
   onEditDateTime?: () => void
   continueText?: string

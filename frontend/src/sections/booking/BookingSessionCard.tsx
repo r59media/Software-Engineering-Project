@@ -11,6 +11,7 @@ export function BookingSessionCard({
   people,
   pricing,
   dateTime,
+  customerInfo,
   continueText,
   onContinue,
   isContinueDisabled = false,
@@ -108,14 +109,37 @@ export function BookingSessionCard({
               )}
             </motion.div>
 
-            <div className="booking-session-card__section-label">SESSION PRICE</div>
-            <div className="booking-session-card__price-block">
-              <motion.div layout="position" layoutId={shared ? 'booking-ticket-price' : undefined} transition={transition} className="booking-session-card__price-amount">{formattedPrice}</motion.div>
-              <div className="booking-session-card__price-note">
-                <span className="booking-session-card__deposit-badge">{breakdown.depositPercent}% DEPOSIT</span>
-                <span className="booking-session-card__deposit-due">
-                  {depositFormatted ? `${depositFormatted} due today` : 'Due to reserve'}
-                </span>
+            {customerInfo && (customerInfo.firstName || customerInfo.lastName) && (
+              <motion.div
+                layout
+                layoutId={shared ? 'booking-ticket-reserved' : undefined}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={transition}
+                className="booking-session-card__reserved-block"
+              >
+                <div className="booking-session-card__section-label">RESERVED FOR</div>
+                <div className="booking-session-card__reserved-content">
+                  <div className="booking-session-card__reserved-name">
+                    {customerInfo.firstName} {customerInfo.lastName}
+                  </div>
+                  {customerInfo.email && (
+                    <div className="booking-session-card__reserved-sub">{customerInfo.email}</div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            <div className="booking-session-card__price-section">
+              <div className="booking-session-card__section-label">SESSION PRICE</div>
+              <div className="booking-session-card__price-block">
+                <motion.div layout="position" layoutId={shared ? 'booking-ticket-price' : undefined} transition={transition} className="booking-session-card__price-amount">{formattedPrice}</motion.div>
+                <div className="booking-session-card__price-note">
+                  <span className="booking-session-card__deposit-badge">{breakdown.depositPercent}% DEPOSIT</span>
+                  <span className="booking-session-card__deposit-due">
+                    {depositFormatted ? `${depositFormatted} due today` : 'Due to reserve'}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
