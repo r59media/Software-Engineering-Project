@@ -27,7 +27,6 @@ export function AboutToRecent() {
   const [fits, setFits] = useState(false)
   const [failed, setFailed] = useState(false)
   const [reduced, setReduced] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
-  const [engaged, setEngaged] = useState(() => window.scrollY > 10 || Boolean(window.location.hash))
   const listeners = useRef(new Set<LensApertureListener>())
   const wasLensVisibleRef = useRef(false)
   const controller = useMemo<LensTransitionController>(() => ({
@@ -48,37 +47,8 @@ export function AboutToRecent() {
     fail: () => setFailed(true),
   }), [url])
   const canReserve = !failed && !reduced && fits
-  const canAnimate = canReserve && engaged
+  const canAnimate = canReserve
   const enabled = canAnimate && readyUrl === url
-
-  useEffect(() => {
-    if (engaged) return
-    const engage = () => setEngaged(true)
-    const opts: AddEventListenerOptions = { passive: true, once: true }
-    window.addEventListener('scroll', engage, opts)
-    window.addEventListener('wheel', engage, opts)
-    window.addEventListener('touchstart', engage, opts)
-    window.addEventListener('pointerdown', engage, opts)
-    window.addEventListener('keydown', engage, opts)
-    let observer: IntersectionObserver | undefined
-    if (root.current && typeof IntersectionObserver !== 'undefined') {
-      observer = new IntersectionObserver(
-        ([entry]) => {
-          if (entry?.isIntersecting && entry.intersectionRect.height > 1) engage()
-        },
-        { rootMargin: '-1px 0px -1px 0px', threshold: 0.01 },
-      )
-      observer.observe(root.current)
-    }
-    return () => {
-      window.removeEventListener('scroll', engage)
-      window.removeEventListener('wheel', engage)
-      window.removeEventListener('touchstart', engage)
-      window.removeEventListener('pointerdown', engage)
-      window.removeEventListener('keydown', engage)
-      observer?.disconnect()
-    }
-  }, [engaged])
 
   useEffect(() => {
     const host = root.current
