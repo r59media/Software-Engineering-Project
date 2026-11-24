@@ -17,6 +17,7 @@ const BookingSection = lazy(() => import('./sections/booking/BookingSection').th
 const LegalPage = lazy(() => import('./pages/legal/LegalPage').then(m => ({ default: m.LegalPage })))
 const FaqPage = lazy(() => import('./pages/faq/FaqPage').then(m => ({ default: m.FaqPage })))
 const FaqSection = lazy(() => import('./pages/faq/FaqPage').then(m => ({ default: m.FaqSection })))
+const NotFoundPage = lazy(() => import('./pages/notFound/NotFoundPage'))
 
 const SECTION_IDS = ['about', 'portfolio', 'booking', 'faq', 'contact'] as const
 
@@ -186,6 +187,11 @@ function App() {
         ? 'terms'
         : null
   const isFaqPage = normalizedPath === `${cleanBase}/faq`
+  const isHome =
+    normalizedPath === '/' ||
+    normalizedPath === '' ||
+    (cleanBase !== '' && (normalizedPath === cleanBase || normalizedPath === `${cleanBase}/`))
+  const isNotFound = !isHome && !legalPage && !isFaqPage && !isRescheduleRoute && !rescheduleParams
   const loadBookingServices = useCallback(async () => {
     try {
       const [{ previewBookingServices }, services, livePricing] = await Promise.all([
@@ -351,7 +357,7 @@ function App() {
   }, [legalPage, isFaqPage])
 
   useEffect(() => {
-    if (legalPage) return
+    if (legalPage || isFaqPage || isNotFound) return
     let controller: AbortController | null = null
 
     const load = () => {
@@ -388,7 +394,7 @@ function App() {
       window.removeEventListener('focus', handleVisibilityChange)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
     }
-  }, [legalPage, loadBookingServices])
+  }, [legalPage, isFaqPage, isNotFound, loadBookingServices])
 
   useEffect(() => {
     const isProtectedTarget = (target: HTMLElement | null): boolean => {
@@ -484,6 +490,22 @@ function App() {
       <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
       <Suspense fallback={null}>
         <FaqPage />
+      </Suspense>
+      <Suspense fallback={null}>
+        <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
+      </Suspense>
+    </div>
+  }
+
+  if (isNotFound) {
+    const homeDestinations = Object.fromEntries(
+      Object.entries(heroDestinations).map(([key, href]) => [key, href?.startsWith('#') ? `${baseUrl}${href}` : href])
+    )
+    return <div id="top" className="site-shell">
+      <a className="skip-link" href="#not-found-content">Skip to content</a>
+      <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
+      <Suspense fallback={null}>
+        <NotFoundPage />
       </Suspense>
       <Suspense fallback={null}>
         <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />

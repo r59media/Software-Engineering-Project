@@ -106,7 +106,7 @@ function addDaysToIsoDate(isoDate: string, days: number): { date: string; dayOfW
   }
 }
 
-function parseTimeToMinutes(timeStr: string): number | null {
+export function parseTimeToMinutes(timeStr: string): number | null {
   const match = String(timeStr || '').trim().match(/^(\d{1,2}):(\d{2})/)
   if (!match) return null
   const hours = parseInt(match[1], 10)
@@ -117,7 +117,7 @@ function parseTimeToMinutes(timeStr: string): number | null {
   return hours * 60 + mins
 }
 
-function formatMinutesToTime(totalMinutes: number): string {
+export function formatMinutesToTime(totalMinutes: number): string {
   const hours = Math.floor(totalMinutes / 60)
   const mins = totalMinutes % 60
   return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`
@@ -336,4 +336,70 @@ export async function runDailyMaintenance(db: D1Database): Promise<void> {
     db.prepare('DELETE FROM Revoked_Sessions WHERE expires_at <= ?').bind(nowMs),
     db.prepare('DELETE FROM Login_Attempts WHERE window_start < ?').bind(staleAttemptsCutoff)
   ])
+}
+
+export async function releaseBookingSlots(
+  db: D1Database,
+  bookingId: number,
+  slotId?: number | null
+): Promise<void> {
+  if (!bookingId && !slotId) return
+
+  let row: any = null
+  if (bookingId) {
+    try {
+      row = await db
+        .prepare(
+          `SELECT b.slot_id, b.service_id, s.duration_minutes, sl.date, sl.start_time
+           FROM Bookings b
+           LEFT JOIN Services s ON b.service_id = s.id
+           LEFT JOIN Schedule_Slots sl ON b.slot_id = sl.id
+           WHERE b.id = ?`
+        )
+        .bind(bookingId)
+        .first()
+    } catch {}
+  }
+
+  const effectiveSlotId = row?.slot_id || slotId
+  if (!effectiveSlotId) return
+
+  const duration = Number(row?.duration_minutes) > 0 ? Number(row.duration_minutes) : 60
+  if (duration <= 60 || !row?.date || !row?.start_time) {
+    await db.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(effectiveSlotId).run().catch(() => {})
+    return
+  }
+
+  const startMin = parseTimeToMinutes(row.start_time) ?? 0
+  const endMin = startMin + duration
+
+  try {
+    const daySlotsRes = await db
+      .prepare('SELECT id, start_time, end_time FROM Schedule_Slots WHERE date = ?')
+      .bind(row.date)
+      .all<{ id: number; start_time: string; end_time: string }>()
+
+    const toRelease: number[] = [effectiveSlotId]
+    for (const s of daySlotsRes.results || []) {
+      const sStart = parseTimeToMinutes(s.start_time) ?? 0
+      let sEnd = s.end_time ? (parseTimeToMinutes(s.end_time) ?? sStart + 60) : sStart + 60
+      if (sEnd <= sStart) sEnd = sStart + 60
+      if (sEnd >= 1439) sEnd = 1440
+
+      if (Math.max(startMin, sStart) < Math.min(endMin, sEnd)) {
+        toRelease.push(s.id)
+      }
+    }
+
+    const unique = Array.from(new Set(toRelease))
+    const ph = unique.map(() => '?').join(', ')
+    await db
+      .prepare(
+        `UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${ph}) AND id NOT IN (SELECT slot_id FROM Bookings WHERE status != 'cancelled' AND id != ?)`
+      )
+      .bind(...unique, bookingId || 0)
+      .run()
+  } catch {
+    await db.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(effectiveSlotId).run().catch(() => {})
+  }
 }

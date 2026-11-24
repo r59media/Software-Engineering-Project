@@ -5,6 +5,7 @@ import { getTrustedClientIp, hasForbiddenPaymentFields, getSigningSecret, getMed
 import { buildHybridSquareNote, ensureCustomer, getSquare, getStudioTimeZone, sendBalanceInvoice } from '../lib/squareBilling'
 import { addDaysISO, depositFor, evaluateDynamicFees, localDateTimeToRFC3339, normalizeBookingPolicy, normalizeDepositPercent, normalizeFeeRules } from '../lib/billingMath'
 import { isSlotInWeeklyAvailability } from './schedule'
+import { parseTimeToMinutes } from '../lib/scheduleSync.ts'
 import { signRescheduleToken } from './reschedule'
 import { buildGoogleCalendarTemplateUrl, syncBookingToGoogleCalendarApi } from '../lib/googleCalendar'
 import { sendBookingConfirmationEmail } from '../email'
@@ -71,8 +72,21 @@ export const checkoutRouter = new Hono<{ Bindings: Bindings }>()
 
 checkoutRouter.post('/', async (c) => {
   let slotLocked = false
+  let lockedSlotIds: number[] = []
   let paymentConfirmed = false
   let slotId: number | undefined
+
+  const unlockSlots = async () => {
+    if (!slotLocked || lockedSlotIds.length === 0) return
+    try {
+      const ph = lockedSlotIds.map(() => '?').join(', ')
+      await c.env.DB.prepare(`UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${ph})`).bind(...lockedSlotIds).run()
+    } catch (releaseErr) {
+      console.error('Failed to release slot lock:', releaseErr)
+    } finally {
+      slotLocked = false
+    }
+  }
 
   try {
     const clientIp = getTrustedClientIp(c)
@@ -291,50 +305,9 @@ checkoutRouter.post('/', async (c) => {
       }, 409)
     }
 
-    // Validate slot is within weekly availability
-    let weeklyAvailability: any[] = []
-    try {
-      const waRow = await c.env.DB.prepare(
-        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'weekly_availability'"
-      ).first<{ setting_value: string }>()
-      if (waRow?.setting_value) {
-        weeklyAvailability = JSON.parse(waRow.setting_value)
-      }
-    } catch {}
-
-    if (!isSlotInWeeklyAvailability(slot, weeklyAvailability)) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'The selected timeslot is outside studio weekly availability.',
-          target: 'checkout_form',
-          details: [{ field: 'slot_id', message: 'Timeslot is outside weekly availability windows.', code: 'OUTSIDE_AVAILABILITY' }]
-        }
-      }, 400)
-    }
-
-    // 1. Atomic Slot Lock (conditional UPDATE ... WHERE is_booked = 0 and date NOT IN (SELECT date FROM Blocked_Dates))
-    const lockResult = await c.env.DB.prepare(
-      'UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ? AND is_booked = 0 AND date NOT IN (SELECT date FROM Blocked_Dates)'
-    ).bind(slotId).run()
-
-    if (!lockResult.success || lockResult.meta.changes === 0) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'The selected timeslot is no longer available or falls on a blocked date.',
-          target: 'checkout_form',
-          details: [{ field: 'slot_id', message: 'Timeslot unavailable.', code: 'UNAVAILABLE' }]
-        }
-      }, 409)
-    }
-    slotLocked = true
-
-    // Fetch Service from DB
+    // Fetch Service from DB before locking
     const service: any = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ? AND is_active = 1').bind(serviceId).first()
     if (!service) {
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
-      slotLocked = false
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
@@ -347,8 +320,6 @@ checkoutRouter.post('/', async (c) => {
 
     const priceCents = Number(service.price)
     if (!Number.isInteger(priceCents) || priceCents <= 0) {
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
-      slotLocked = false
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
@@ -358,6 +329,111 @@ checkoutRouter.post('/', async (c) => {
         }
       }, 400)
     }
+
+    // Validate service duration and availability window
+    const durationMinutes = Number(service.duration_minutes) > 0 ? Number(service.duration_minutes) : 60
+    const slotStartMin = parseTimeToMinutes(slot.start_time) ?? 0
+    const sessionEndMin = slotStartMin + durationMinutes
+
+    if (sessionEndMin > 1440) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'The selected service duration extends past the end of the day.',
+          target: 'checkout_form',
+          details: [{ field: 'slot_id', message: 'Service duration extends past midnight.', code: 'DURATION_OVERFLOW' }]
+        }
+      }, 400)
+    }
+
+    // Validate slot is within weekly availability with service duration
+    let weeklyAvailability: any[] = []
+    try {
+      const waRow = await c.env.DB.prepare(
+        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'weekly_availability'"
+      ).first<{ setting_value: string }>()
+      if (waRow?.setting_value) {
+        weeklyAvailability = JSON.parse(waRow.setting_value)
+      }
+    } catch {}
+
+    if (!isSlotInWeeklyAvailability(slot, weeklyAvailability, durationMinutes)) {
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'The selected timeslot and duration exceed studio weekly availability.',
+          target: 'checkout_form',
+          details: [{ field: 'slot_id', message: 'Timeslot is outside weekly availability windows.', code: 'OUTSIDE_AVAILABILITY' }]
+        }
+      }, 400)
+    }
+
+    // Check consecutive slots for multi-hour sessions
+    const daySlotsRes = await c.env.DB.prepare(
+      'SELECT id, start_time, end_time, is_booked FROM Schedule_Slots WHERE date = ? ORDER BY start_time ASC'
+    ).bind(slot.date).all<{ id: number; start_time: string; end_time: string; is_booked: number | boolean }>()
+
+    const daySlots = daySlotsRes.results || []
+    const slotsToLock: number[] = [slot.id]
+
+    // Verify continuous unbooked coverage across [slotStartMin, sessionEndMin)
+    const coverage = new Uint8Array(1441)
+    for (const s of daySlots) {
+      if (Number(s.is_booked) === 1 || s.is_booked === true) continue
+      const sStart = parseTimeToMinutes(s.start_time) ?? 0
+      let sEnd = s.end_time ? (parseTimeToMinutes(s.end_time) ?? sStart + 60) : sStart + 60
+      if (sEnd <= sStart) sEnd = sStart + 60
+      if (sEnd >= 1439) sEnd = 1440
+
+      const from = Math.max(0, Math.min(1440, sStart))
+      const to = Math.max(0, Math.min(1440, sEnd))
+      for (let m = from; m < to; m++) {
+        coverage[m] = 1
+      }
+
+      if (Math.max(slotStartMin, sStart) < Math.min(sessionEndMin, sEnd)) {
+        slotsToLock.push(s.id)
+      }
+    }
+
+    for (let m = slotStartMin; m < sessionEndMin; m++) {
+      if (coverage[m] === 0) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'One or more required timeslots for this session duration are unavailable or already booked.',
+            target: 'checkout_form',
+            details: [{ field: 'slot_id', message: 'Continuous timeslots unavailable.', code: 'UNAVAILABLE' }]
+          }
+        }, 409)
+      }
+    }
+
+    const uniqueSlotIds = Array.from(new Set(slotsToLock))
+    const placeholders = uniqueSlotIds.map(() => '?').join(', ')
+
+    // 1. Atomic Slot Lock (conditional UPDATE ... WHERE is_booked = 0 and date NOT IN (SELECT date FROM Blocked_Dates))
+    const lockResult = await c.env.DB.prepare(
+      `UPDATE Schedule_Slots SET is_booked = 1 WHERE id IN (${placeholders}) AND is_booked = 0 AND date NOT IN (SELECT date FROM Blocked_Dates)`
+    ).bind(...uniqueSlotIds).run()
+
+    if (!lockResult.success || (lockResult.meta.changes ?? 0) < uniqueSlotIds.length) {
+      // Rollback any partially locked slots
+      await c.env.DB.prepare(
+        `UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${placeholders})`
+      ).bind(...uniqueSlotIds).run().catch(() => {})
+
+      return c.json({
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'The selected timeslot is no longer available or falls on a blocked date.',
+          target: 'checkout_form',
+          details: [{ field: 'slot_id', message: 'Timeslot unavailable.', code: 'UNAVAILABLE' }]
+        }
+      }, 409)
+    }
+    slotLocked = true
+    lockedSlotIds = uniqueSlotIds
 
     // Pricing settings from Admin_Settings
     let pricingSettings: any = null
@@ -374,8 +450,7 @@ checkoutRouter.post('/', async (c) => {
     const policy = normalizeBookingPolicy(pricingSettings?.policy)
 
     if (policy.requireSignature && !agreementSignatureName) {
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
-      slotLocked = false
+      await unlockSlots()
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
@@ -606,12 +681,7 @@ checkoutRouter.post('/', async (c) => {
 
     if (payment?.status !== 'COMPLETED' || payment.amountMoney?.amount !== BigInt(squareChargeCents)) {
       // Explicitly release slot lock before returning 402 payment error
-      try {
-        await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
-        slotLocked = false
-      } catch (releaseErr) {
-        console.error('Failed to release slot lock after payment failure:', releaseErr)
-      }
+      await unlockSlots()
 
       return c.json({
         error: {
@@ -693,12 +763,7 @@ checkoutRouter.post('/', async (c) => {
         })
       }
 
-      try {
-        await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
-        slotLocked = false
-      } catch (releaseErr) {
-        console.error('Failed to release slot lock after booking failure:', releaseErr)
-      }
+      await unlockSlots()
 
       return c.json({
         error: {
@@ -847,12 +912,8 @@ checkoutRouter.post('/', async (c) => {
     console.error('Checkout error:', e)
 
     // Release the slot lock ONLY if payment was not confirmed
-    if (slotLocked && !paymentConfirmed && slotId) {
-      try {
-        await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(slotId).run()
-      } catch (releaseErr) {
-        console.error('CRITICAL: Failed to release slot lock after error:', releaseErr)
-      }
+    if (slotLocked && !paymentConfirmed) {
+      await unlockSlots()
     }
 
     return c.json({

@@ -19,7 +19,7 @@ import {
 } from '../middleware/auth'
 import { DEFAULT_PROFILE, ensurePortfolioDefaults, listPortfolio, portfolioListQuery } from './portfolio'
 import { bumpPublicContentVersion } from '../lib/edgeCache'
-import { syncRollingScheduleSlots } from '../lib/scheduleSync'
+import { releaseBookingSlots, syncRollingScheduleSlots } from '../lib/scheduleSync'
 import { isEmailConfigured, sendEmail } from '../email'
 import {
   addDaysISO,
@@ -1455,7 +1455,7 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
     }
 
     if (statusLower === 'cancelled' && existing.slot_id) {
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(existing.slot_id).run()
+      await releaseBookingSlots(c.env.DB, id, existing.slot_id)
     } else if (statusLower !== 'cancelled' && existingStatus === 'cancelled' && existing.slot_id) {
       await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ?').bind(existing.slot_id).run()
     }
@@ -1560,7 +1560,7 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
     }
 
     if (booking.slot_id) {
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(booking.slot_id).run()
+      await releaseBookingSlots(c.env.DB, id, booking.slot_id)
     }
 
     scheduleGoogleCalendarSync(c, id, 'delete')

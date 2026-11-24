@@ -362,8 +362,9 @@ export async function fetchServices(signal?: AbortSignal): Promise<ServicePackag
   return Array.isArray(items) ? items : []
 }
 
-export async function fetchAvailableSlots(signal?: AbortSignal): Promise<ScheduleSlotItem[] | null> {
-  const items = await apiGet<ScheduleSlotItem[]>('/schedule', signal)
+export async function fetchAvailableSlots(signal?: AbortSignal, durationMinutes?: number | null): Promise<ScheduleSlotItem[] | null> {
+  const query = durationMinutes && durationMinutes > 0 ? `?duration=${durationMinutes}` : ''
+  const items = await apiGet<ScheduleSlotItem[]>(`/schedule${query}`, signal)
   return Array.isArray(items) ? items : null
 }
 

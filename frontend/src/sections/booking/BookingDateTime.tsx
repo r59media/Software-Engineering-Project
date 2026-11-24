@@ -7,7 +7,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchAvailableSlots } from '../../api/client'
 import type { ScheduleSlotItem } from '../../api/client'
 import type { BookingDateTimeProps, BookingDateTimeSelection } from '../../types/booking'
-import { formatSlotTime, getEasternToday } from './bookingUtils'
+import {
+  formatSlotTime,
+  getEasternCurrentMinutes,
+  getEasternToday,
+  isPreviewSlotAvailable,
+  isSlotAvailableForDuration,
+} from './bookingUtils'
 import { BookingDatePicker } from './BookingDatePicker'
 import { BookingProgressBar } from './BookingProgressBar'
 import { BookingSessionCard } from './BookingSessionCard'
@@ -56,7 +62,7 @@ export function BookingDateTime({
       const current = new AbortController()
       controller = current
       try {
-        const slots = await fetchAvailableSlots(current.signal)
+        const slots = await fetchAvailableSlots(current.signal, service.durationMinutes)
         if (!active || current.signal.aborted) return
         if (slots !== null) {
           setScheduleSlots(slots)
@@ -84,32 +90,42 @@ export function BookingDateTime({
     }
   }, [])
 
-  const availableDates = useMemo(() => {
-    const unbookedSlots = scheduleSlots.filter(s => s.is_booked === 0 && s.date >= easternToday)
-    if (unbookedSlots.length > 0 || slotsLoadedFromApi) {
-      const dates = Array.from(new Set(unbookedSlots.map(s => s.date))).sort()
-      return dates
+  const [currentEasternMinutes, setCurrentEasternMinutes] = useState(() => getEasternCurrentMinutes())
+
+  useEffect(() => {
+    const updateTime = () => setCurrentEasternMinutes(getEasternCurrentMinutes())
+    window.addEventListener('focus', updateTime)
+    document.addEventListener('visibilitychange', updateTime)
+    const timer = setInterval(updateTime, 60000)
+    return () => {
+      window.removeEventListener('focus', updateTime)
+      document.removeEventListener('visibilitychange', updateTime)
+      clearInterval(timer)
     }
-    const dates: string[] = []
-    const [y, m, d] = easternToday.split('-').map(Number)
-    for (let i = 0; i < 30; i++) {
-      const day = new Date(Date.UTC(y, m - 1, d + i))
-      dates.push(
-        `${day.getUTCFullYear()}-${String(day.getUTCMonth() + 1).padStart(2, '0')}-${String(day.getUTCDate()).padStart(2, '0')}`
+  }, [])
+
+  // Group slots by date for efficient lookup
+  const slotsByDate = useMemo(() => {
+    const map = new Map<string, ScheduleSlotItem[]>()
+    for (const slot of scheduleSlots) {
+      if (slot.date < easternToday) continue
+      let list = map.get(slot.date)
+      if (!list) {
+        list = []
+        map.set(slot.date, list)
+      }
+      list.push(slot)
+    }
+    return map
+  }, [scheduleSlots, easternToday])
+
+  const getValidSlotsForDate = (date: string): TimeSlotItem[] => {
+    if (slotsLoadedFromApi) {
+      const dayList = slotsByDate.get(date) || []
+      const valid = dayList.filter(slot =>
+        isSlotAvailableForDuration(slot, dayList, service.durationMinutes, easternToday, currentEasternMinutes)
       )
-    }
-    return dates
-  }, [scheduleSlots, slotsLoadedFromApi, easternToday])
-
-  const currentDate =
-    availableDates.length > 0 && !availableDates.includes(selectedDate)
-      ? availableDates[0]
-      : selectedDate
-
-  const daySlots: TimeSlotItem[] = useMemo(() => {
-    const matched = scheduleSlots.filter(s => s.date === currentDate && s.is_booked === 0)
-    if (matched.length > 0) {
-      return matched.map(slot => {
+      return valid.map(slot => {
         const formatted = formatSlotTime(slot.start_time)
         const hour = parseInt(slot.start_time.split(':')[0], 10)
         return {
@@ -121,12 +137,54 @@ export function BookingDateTime({
       })
     }
 
-    if (!slotsLoadedFromApi) {
-      return [...previewBookingTimeSlots]
+    return previewBookingTimeSlots
+      .filter(p => isPreviewSlotAvailable(p.time, service.durationMinutes, date, easternToday, currentEasternMinutes))
+      .map(p => ({
+        time: p.time,
+        period: p.period,
+        available: true,
+      }))
+  }
+
+  const availableDates = useMemo(() => {
+    if (slotsLoadedFromApi) {
+      const validDates: string[] = []
+      const sortedDates = Array.from(slotsByDate.keys()).sort()
+      for (const d of sortedDates) {
+        const dayList = slotsByDate.get(d) || []
+        const hasValidSlot = dayList.some(slot =>
+          isSlotAvailableForDuration(slot, dayList, service.durationMinutes, easternToday, currentEasternMinutes)
+        )
+        if (hasValidSlot) {
+          validDates.push(d)
+        }
+      }
+      return validDates
     }
 
-    return []
-  }, [scheduleSlots, slotsLoadedFromApi, currentDate])
+    const dates: string[] = []
+    const [y, m, d] = easternToday.split('-').map(Number)
+    for (let i = 0; i < 30; i++) {
+      const day = new Date(Date.UTC(y, m - 1, d + i))
+      const dateStr = `${day.getUTCFullYear()}-${String(day.getUTCMonth() + 1).padStart(2, '0')}-${String(day.getUTCDate()).padStart(2, '0')}`
+      const hasPreviewSlot = previewBookingTimeSlots.some(p =>
+        isPreviewSlotAvailable(p.time, service.durationMinutes, dateStr, easternToday, currentEasternMinutes)
+      )
+      if (hasPreviewSlot) {
+        dates.push(dateStr)
+      }
+    }
+    return dates
+  }, [slotsLoadedFromApi, slotsByDate, service.durationMinutes, easternToday, currentEasternMinutes])
+
+  const currentDate =
+    availableDates.length > 0 && !availableDates.includes(selectedDate)
+      ? availableDates[0]
+      : selectedDate
+
+  const daySlots: TimeSlotItem[] = useMemo(() => {
+    return getValidSlotsForDate(currentDate)
+  }, [slotsLoadedFromApi, slotsByDate, currentDate, service.durationMinutes, easternToday, currentEasternMinutes])
 
   const resolveSlotId = (date: string, time: string | null): number | undefined => {
     if (!time || !scheduleSlots.length) return undefined
@@ -136,14 +194,38 @@ export function BookingDateTime({
     return found?.id
   }
 
+  // Ensure current time slot is valid within daySlots, syncing whenever date or service changes
+  useEffect(() => {
+    if (daySlots.length === 0) {
+      if (currentTimeSlot !== null) {
+        setCurrentTimeSlot(null)
+      }
+      return
+    }
+    const matching = daySlots.find(s => s.time === currentTimeSlot)
+    if (!matching) {
+      const firstValid = daySlots[0].time
+      setCurrentTimeSlot(firstValid)
+      const slotId = resolveSlotId(currentDate, firstValid)
+      onSelectDateTime({
+        date: currentDate,
+        timeSlot: firstValid,
+        timezone: 'Eastern Time (ET)',
+        slotId,
+      })
+    }
+  }, [daySlots, currentDate])
+
   const handleSelectDate = (date: string) => {
     setSelectedDate(date)
-    const slot = currentTimeSlot || '03:00 PM'
+    const validSlotsForDate = getValidSlotsForDate(date)
+    const currentMatching = validSlotsForDate.find(s => s.time === currentTimeSlot)
+    const slot = currentMatching ? currentTimeSlot : (validSlotsForDate[0]?.time || null)
     setCurrentTimeSlot(slot)
-    const slotId = resolveSlotId(date, slot)
+    const slotId = slot ? resolveSlotId(date, slot) : undefined
     const nextSelection: BookingDateTimeSelection = {
       date,
-      timeSlot: slot,
+      timeSlot: slot || '',
       timezone: 'Eastern Time (ET)',
       slotId,
     }
@@ -171,7 +253,12 @@ export function BookingDateTime({
       ? { date: currentDate, timeSlot: currentTimeSlot, timezone: 'Eastern Time (ET)', slotId: liveSlotId }
       : null
 
-  const isContinueEnabled = Boolean(liveSelection && liveSelection.date && liveSelection.timeSlot)
+  const isContinueEnabled = Boolean(
+    liveSelection &&
+    liveSelection.date &&
+    liveSelection.timeSlot &&
+    daySlots.some(s => s.time === liveSelection.timeSlot)
+  )
 
   const formatTriggerDate = (dateStr: string) => {
     try {

@@ -6,7 +6,8 @@ export const scheduleRouter = new Hono<{ Bindings: Bindings }>()
 
 export function isSlotInWeeklyAvailability(
   slot: { date: string; start_time: string; end_time?: string },
-  weeklyAvailability: Array<{ day: string; available: boolean; timeframes?: Array<{ start: string; end: string }> }>
+  weeklyAvailability: Array<{ day: string; available: boolean; timeframes?: Array<{ start: string; end: string }> }>,
+  durationMinutes?: number
 ): boolean {
   if (!Array.isArray(weeklyAvailability) || weeklyAvailability.length === 0) {
     return true
@@ -29,24 +30,30 @@ export function isSlotInWeeklyAvailability(
     return false
   }
 
-  const norm = (t: string) => {
+  const parseMins = (t: string): number => {
     const parts = (t || '').trim().split(':')
     if (parts.length >= 2) {
-      return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`
+      return (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0)
     }
-    return t || '00:00'
+    return 0
   }
 
-  const slotStart = norm(slot.start_time)
-  const slotEnd = slot.end_time ? norm(slot.end_time) : ''
+  const slotStartMins = parseMins(slot.start_time)
+  let slotEndMins = slot.end_time ? parseMins(slot.end_time) : slotStartMins + 60
+
+  if (typeof durationMinutes === 'number' && durationMinutes > 0) {
+    slotEndMins = slotStartMins + durationMinutes
+  }
+
+  // Crosses calendar day midnight
+  if (slotEndMins > 1440) {
+    return false
+  }
 
   return dayRule.timeframes.some(tf => {
-    const tfStart = norm(tf.start || '00:00')
-    const tfEnd = norm(tf.end || '23:59')
-    if (slotEnd) {
-      return slotStart >= tfStart && slotEnd <= tfEnd
-    }
-    return slotStart >= tfStart && slotStart < tfEnd
+    const tfStartMins = parseMins(tf.start || '00:00')
+    const tfEndMins = parseMins(tf.end || '23:59')
+    return slotStartMins >= tfStartMins && slotEndMins <= tfEndMins
   })
 }
 
@@ -89,6 +96,8 @@ scheduleRouter.get('/', async (c) => {
 
     const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '50', 10) || 50, 100))
     const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0)
+    const durationQuery = parseInt(c.req.query('duration') || '0', 10)
+    const durationMinutes = durationQuery > 0 ? durationQuery : undefined
 
     const waRow = await c.env.DB.prepare(
       "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'weekly_availability'"
@@ -125,7 +134,7 @@ scheduleRouter.get('/', async (c) => {
       ).bind(currentDate, currentDate, currentTime).all()
 
       const matching = (results || []).filter(slot =>
-        isSlotInWeeklyAvailability(slot as any, weeklyAvailability)
+        isSlotInWeeklyAvailability(slot as any, weeklyAvailability, durationMinutes)
       )
       finalSlots = matching.slice(offset, offset + limit)
     }

@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono'
 import type { Bindings } from '../index'
 import { ensureSchemaReady } from './admin'
 import { isSlotInWeeklyAvailability } from './schedule'
-import { ensureRollingSlotsUpToDate } from '../lib/scheduleSync'
+import { ensureRollingSlotsUpToDate, parseTimeToMinutes, releaseBookingSlots } from '../lib/scheduleSync'
 import { getMediaSigningSecret, getSigningSecret, getTrustedClientIp, normalizeIpBucket } from '../middleware/auth'
 import {
   signRescheduleToken,
@@ -633,31 +633,66 @@ rescheduleRoutes.post('/:id/reschedule', async (c) => {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Selected timeslot is in the past.', details: [] } }, 400)
     }
 
+    let durationMinutes = 60
+    if (booking.service_id) {
+      const svc = await c.env.DB.prepare('SELECT duration_minutes FROM Services WHERE id = ?').bind(booking.service_id).first<{ duration_minutes: number }>()
+      if (svc && Number(svc.duration_minutes) > 0) {
+        durationMinutes = Number(svc.duration_minutes)
+      }
+    }
+
     const weeklyAvailability = await loadWeeklyAvailability(c.env.DB)
-    if (!isSlotInWeeklyAvailability(targetSlot, weeklyAvailability)) {
+    if (!isSlotInWeeklyAvailability(targetSlot, weeklyAvailability, durationMinutes)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Selected timeslot is outside studio weekly availability.', details: [] } }, 400)
     }
 
-    // Atomically lock the new slot
+    const oldSlotId = booking.slot_id
+    const slotStartMin = parseTimeToMinutes(targetSlot.start_time) ?? 0
+    const sessionEndMin = slotStartMin + durationMinutes
+
+    const daySlotsRes = await c.env.DB.prepare(
+      'SELECT id, start_time, end_time, is_booked FROM Schedule_Slots WHERE date = ? ORDER BY start_time ASC'
+    ).bind(targetSlot.date).all<{ id: number; start_time: string; end_time: string; is_booked: number | boolean }>()
+
+    const daySlots = daySlotsRes.results || []
+    const slotsToLock: number[] = [newSlotId]
+
+    for (const s of daySlots) {
+      const sStart = parseTimeToMinutes(s.start_time) ?? 0
+      let sEnd = s.end_time ? (parseTimeToMinutes(s.end_time) ?? sStart + 60) : sStart + 60
+      if (sEnd <= sStart) sEnd = sStart + 60
+      if (sEnd >= 1439) sEnd = 1440
+
+      if (Math.max(slotStartMin, sStart) < Math.min(sessionEndMin, sEnd)) {
+        if (s.id !== oldSlotId && (Number(s.is_booked) === 1 || s.is_booked === true)) {
+          return c.json({ error: { code: 'SLOT_UNAVAILABLE', message: 'Required consecutive timeslots are unavailable or booked.', details: [] } }, 409)
+        }
+        slotsToLock.push(s.id)
+      }
+    }
+
+    const uniqueNewSlotIds = Array.from(new Set(slotsToLock))
+    const placeholders = uniqueNewSlotIds.map(() => '?').join(', ')
+
+    // Atomically lock the new slot(s)
     const lockRes = await c.env.DB.prepare(
-      'UPDATE Schedule_Slots SET is_booked = 1 WHERE id = ? AND is_booked = 0 AND date NOT IN (SELECT date FROM Blocked_Dates)'
+      `UPDATE Schedule_Slots SET is_booked = 1 WHERE id IN (${placeholders}) AND (is_booked = 0 OR id = ?) AND date NOT IN (SELECT date FROM Blocked_Dates)`
     )
-      .bind(newSlotId)
+      .bind(...uniqueNewSlotIds, oldSlotId || 0)
       .run()
 
-    if (!lockRes.success || lockRes.meta.changes === 0) {
+    if (!lockRes.success || (lockRes.meta.changes ?? 0) < uniqueNewSlotIds.length) {
       return c.json({ error: { code: 'SLOT_UNAVAILABLE', message: 'The selected timeslot is no longer available.', details: [] } }, 409)
     }
 
-    const oldSlotId = booking.slot_id
     try {
       await c.env.DB.prepare('UPDATE Bookings SET slot_id = ? WHERE id = ?').bind(newSlotId, booking.id).run()
       if (oldSlotId && oldSlotId !== newSlotId) {
-        await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(oldSlotId).run()
+        await releaseBookingSlots(c.env.DB, booking.id, oldSlotId)
       }
     } catch (dbErr) {
       // Rollback new slot lock on failure
-      await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(newSlotId).run().catch(() => {})
+      await c.env.DB.prepare(`UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${placeholders})`).bind(...uniqueNewSlotIds).run().catch(() => {})
       throw dbErr
     }
 
