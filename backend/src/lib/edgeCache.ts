@@ -143,3 +143,80 @@ export function scheduleEdgeCachePut(
     // Ignore edge cache write errors
   }
 }
+
+export interface PublicEdgeCacheContext {
+  bypassEdgeCache: boolean
+  cacheControl: string
+  version?: string
+}
+
+/**
+ * Wraps a public GET route with Cloudflare edge cache lookup, __cv cache-busting versioning,
+ * and non-blocking cache population for cacheable 200 responses.
+ */
+export async function withPublicEdgeCache(
+  c: {
+    req: { url: string; query: (name: string) => string | undefined; header: (name: string) => string | undefined }
+    env?: { DB?: D1Database }
+    executionCtx?: EdgeCacheExecutionContext
+  },
+  buildResponse: (ctx: PublicEdgeCacheContext) => Promise<{ response: Response; cacheable?: boolean }>,
+  options?: { bypass?: boolean }
+): Promise<Response> {
+  const bypassEdgeCache = Boolean(options?.bypass) || shouldBypassPublicEdgeCache(c)
+  const cacheControl = bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL
+  let cacheKeyUrl: string | null = null
+  let version: string | undefined
+
+  if (!bypassEdgeCache) {
+    version = await getPublicContentVersion(c.env?.DB)
+    cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
+    const cached = await tryEdgeCacheMatch(cacheKeyUrl)
+    if (cached) {
+      return new Response(cached.body, {
+        status: cached.status,
+        statusText: cached.statusText,
+        headers: cached.headers
+      })
+    }
+  }
+
+  const { response, cacheable = true } = await buildResponse({
+    bypassEdgeCache,
+    cacheControl,
+    version
+  })
+
+  if (cacheable && !bypassEdgeCache && cacheKeyUrl) {
+    scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, response)
+  }
+
+  return response
+}
+
+/**
+ * Convenience wrapper for public JSON GET endpoints: serves edge cache when eligible,
+ * sets Cache-Control, and falls back to `fallback()` with `no-store` if `loadPayload()` throws.
+ */
+export async function withPublicJsonCache(
+  c: {
+    req: { url: string; query: (name: string) => string | undefined; header: (name: string) => string | undefined }
+    env?: { DB?: D1Database }
+    executionCtx?: EdgeCacheExecutionContext
+    header: (name: string, value: string) => void
+    json: (data: any) => Response
+  },
+  loadPayload: () => Promise<Record<string, unknown>>,
+  fallbackPayload: () => Record<string, unknown>
+): Promise<Response> {
+  return withPublicEdgeCache(c, async ({ cacheControl }) => {
+    try {
+      const payload = await loadPayload()
+      c.header('Cache-Control', cacheControl)
+      return { response: c.json(payload) }
+    } catch {
+      c.header('Cache-Control', 'no-store')
+      return { cacheable: false, response: c.json(fallbackPayload()) }
+    }
+  })
+}

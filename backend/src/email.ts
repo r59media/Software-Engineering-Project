@@ -25,6 +25,7 @@
  * Never log the message body: it carries the reset link.
  */
 import type { Bindings } from './index'
+import { stripHeaderNewlines } from './utils/validation.ts'
 
 export type EmailMessageInput = { to: string; subject: string; text: string }
 export type EmailResult = { sent: boolean; reason?: string }
@@ -60,6 +61,7 @@ export function isEmailConfigured(env: Bindings): boolean {
 /** Sends one plain-text email. Never throws; the result says whether it was sent. */
 export async function sendEmail(env: Bindings, message: EmailMessageInput): Promise<EmailResult> {
   if (!isEmailConfigured(env)) return { sent: false, reason: 'not_configured' }
+  const cleanSubject = stripHeaderNewlines(message.subject).slice(0, 500)
   try {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -70,13 +72,21 @@ export async function sendEmail(env: Bindings, message: EmailMessageInput): Prom
       body: JSON.stringify({
         from: env.EMAIL_FROM,
         to: [message.to],
-        subject: message.subject,
+        subject: cleanSubject,
         text: message.text
       }),
       signal: AbortSignal.timeout(10000)
     })
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '')
+      console.error('[email] Resend API returned non-OK status:', {
+        status: res.status,
+        body: errBody.slice(0, 300)
+      })
+    }
     return { sent: res.ok, reason: res.ok ? undefined : `http_${res.status}` }
-  } catch {
+  } catch (err) {
+    console.error('[email] Resend request failed:', err instanceof Error ? err.message : String(err))
     return { sent: false, reason: 'network_error' }
   }
 }
@@ -118,7 +128,7 @@ export async function sendBookingConfirmationEmail(
     text: clientLines.join('\n')
   })
 
-  const adminEmail = (env.ADMIN_EMAIL || 'r59mediatesting@gmail.com').trim()
+  const adminEmail = (env.ADMIN_EMAIL || '').trim()
   const adminLines = [
     `New R59 Media Booking Confirmed (#${details.bookingId})`,
     '',
@@ -141,4 +151,51 @@ export async function sendBookingConfirmationEmail(
     : { sent: false, reason: 'no_admin_email' }
 
   return { client: clientResult, admin: adminResult }
+}
+
+/** Sends an operational alert email to ADMIN_EMAIL (e.g. cron failures). Never throws. */
+export async function sendOperationalAlertEmail(
+  env: Bindings,
+  subject: string,
+  details: string
+): Promise<EmailResult> {
+  const adminEmail = (env.ADMIN_EMAIL || '').trim()
+  if (!adminEmail) return { sent: false, reason: 'no_admin_email' }
+  return sendEmail(env, {
+    to: adminEmail,
+    subject,
+    text: details
+  })
+}
+
+/** Sends a new contact/lead notification to ADMIN_EMAIL when email is configured. Never throws. */
+export async function sendNewLeadNotificationEmail(
+  env: Bindings,
+  lead: {
+    id?: number | string
+    name: string
+    email: string
+    phone?: string | null
+    sessionType?: string | null
+    message: string
+  }
+): Promise<EmailResult> {
+  const adminEmail = (env.ADMIN_EMAIL || '').trim()
+  if (!adminEmail) return { sent: false, reason: 'no_admin_email' }
+  const lines = [
+    `New R59 Media Inquiry${lead.id ? ` (#${lead.id})` : ''}`,
+    '',
+    `Name: ${lead.name}`,
+    `Email: ${lead.email}`,
+    lead.phone ? `Phone: ${lead.phone}` : '',
+    lead.sessionType ? `Session Type: ${lead.sessionType}` : '',
+    '',
+    'Message:',
+    lead.message
+  ].filter((line, idx, arr) => !(line === '' && arr[idx - 1] === ''))
+  return sendEmail(env, {
+    to: adminEmail,
+    subject: `New Contact Inquiry: ${lead.name}${lead.sessionType ? ` (${lead.sessionType})` : ''}`,
+    text: lines.join('\n')
+  })
 }

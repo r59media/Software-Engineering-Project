@@ -86,6 +86,10 @@ CREATE TABLE Bookings (
     agreement_signed_name TEXT,
     agreement_signed_at TEXT,
     applied_fees_json TEXT,
+    checkout_idempotency_key TEXT,
+    locked_slot_ids_json TEXT,
+    gcal_sync_status TEXT DEFAULT 'synced',
+    reschedule_count INTEGER NOT NULL DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (service_id) REFERENCES Services(id),
     FOREIGN KEY (slot_id) REFERENCES Schedule_Slots(id)
@@ -102,6 +106,8 @@ CREATE TABLE Booking_Payments (
     paid_on TEXT NOT NULL, -- YYYY-MM-DD
     note TEXT DEFAULT '',
     square_invoice_id TEXT, -- set when the payment came from a paid Square invoice (unique, see index below)
+    square_terminal_checkout_id TEXT,
+    square_refund_id TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -155,6 +161,9 @@ CREATE TABLE Coupons (
     discount_type TEXT NOT NULL DEFAULT 'percent', -- 'percent' or 'amount'
     discount_value REAL NOT NULL,
     description TEXT DEFAULT '',
+    expires_at TEXT,
+    max_uses INTEGER,
+    used_count INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -187,6 +196,12 @@ CREATE TABLE IF NOT EXISTS Login_Attempts (
   window_start INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS Rate_Limits (
+  bucket TEXT PRIMARY KEY,
+  count INTEGER NOT NULL,
+  window_start INTEGER NOT NULL
+);
+
 -- Performance Indexes
 CREATE INDEX IF NOT EXISTS idx_slots_availability ON Schedule_Slots(is_booked, date, start_time);
 CREATE INDEX IF NOT EXISTS idx_portfolio_active ON Portfolio_Images(is_active, display_order);
@@ -196,6 +211,7 @@ CREATE INDEX IF NOT EXISTS idx_services_active ON Services(is_active);
 CREATE INDEX IF NOT EXISTS idx_services_active_order ON Services(is_active, display_order);
 CREATE INDEX IF NOT EXISTS idx_bookings_slot ON Bookings(slot_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot ON Bookings(slot_id) WHERE status != 'cancelled';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_checkout_idempotency ON Bookings(checkout_idempotency_key) WHERE checkout_idempotency_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_bookings_service ON Bookings(service_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_created ON Bookings(created_at DESC);
 
@@ -204,6 +220,8 @@ CREATE INDEX IF NOT EXISTS idx_payments_booking ON Booking_Payments(booking_id);
 CREATE INDEX IF NOT EXISTS idx_booking_payments_booking ON Booking_Payments(booking_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_square_invoice ON Booking_Payments(square_invoice_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_invoice ON Booking_Payments(square_invoice_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_booking_payments_terminal_checkout ON Booking_Payments(square_terminal_checkout_id) WHERE square_terminal_checkout_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_booking_payments_refund_id ON Booking_Payments(square_refund_id) WHERE square_refund_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_charges_booking ON Booking_Charges(booking_id);
 CREATE INDEX IF NOT EXISTS idx_booking_charges_booking ON Booking_Charges(booking_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_booking ON Booking_Invoices(booking_id);

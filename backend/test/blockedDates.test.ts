@@ -1,25 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { createSessionToken } from '../src/middleware/auth.ts'
-
-function loadAdminRouter() {
-  const req = createRequire(import.meta.url)
-  const esbuild = createRequire(req.resolve('wrangler'))('esbuild')
-  const out = esbuild.buildSync({
-    entryPoints: [fileURLToPath(new URL('../src/routes/admin.ts', import.meta.url))],
-    bundle: true,
-    write: false,
-    format: 'cjs',
-    platform: 'node',
-    packages: 'external'
-  })
-  const mod = { exports: {} as any }
-  new Function('require', 'exports', 'module', out.outputFiles[0].text)(req, mod.exports, mod)
-  return mod.exports.adminRouter || mod.exports.default
-}
+import { adminRouter } from '../src/routes/admin.ts'
 
 function createD1(sqlite: DatabaseSync): any {
   const plain = (row: any) => (row ? { ...row } : null)
@@ -58,9 +41,13 @@ async function setup() {
       date TEXT NOT NULL UNIQUE,
       reason TEXT
     );
-    CREATE TABLE revoked_tokens (
-      token_hash TEXT PRIMARY KEY,
-      expires_at INTEGER
+    CREATE TABLE Revoked_Sessions (
+      signature TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE Admin_Settings (
+      setting_key TEXT PRIMARY KEY,
+      setting_value TEXT NOT NULL
     );
     CREATE TABLE Site_Settings (
       key TEXT PRIMARY KEY,
@@ -94,7 +81,6 @@ async function postBlockedDates(adminRouter: any, env: any, token: string, body:
 }
 
 test('POST /admin/blocked-dates supports single-date, range, and rejects invalid ranges', async () => {
-  const adminRouter = loadAdminRouter()
   const { sqlite, token, env } = await setup()
 
   // 1. Single-date request remains backwards-compatible

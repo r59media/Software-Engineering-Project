@@ -7,6 +7,7 @@ import type { BookingTotals } from './billingMath.ts'
 import {
   OPEN_INVOICE_STATUSES,
   PAID_LIKE_STATUSES,
+  PAYMENT_SYNC_STATUSES,
   INVOICE_DUE_DAYS,
   STALE_SEND_MS,
   DEFAULT_TIMEZONE,
@@ -370,9 +371,38 @@ export async function ensureCustomer(client: SquareClient, booking: any, attempt
 
 // ── Flow 3: syncInvoice ───────────────────────────────────────────
 
+function extractInvoiceRefundedCents(invoice: any, requests: any[]): number {
+  let reqRefunded = 0
+  for (const req of requests) {
+    const money =
+      pick(req, 'refundedAmountMoney', 'refunded_amount_money') ??
+      pick(req, 'totalRefundedAmountMoney', 'total_refunded_amount_money')
+    if (money?.amount !== undefined) {
+      reqRefunded += Number(money.amount) || 0
+    }
+  }
+  if (reqRefunded > 0) return reqRefunded
+
+  const invMoney =
+    pick(invoice, 'refundedAmountMoney', 'refunded_amount_money') ??
+    pick(invoice, 'totalRefundedAmountMoney', 'total_refunded_amount_money')
+  if (invMoney?.amount !== undefined) {
+    return Number(invMoney.amount) || 0
+  }
+
+  if (Array.isArray(invoice?.refunds)) {
+    return invoice.refunds.reduce((sum: number, ref: any) => {
+      const m = pick(ref, 'amountMoney', 'amount_money')
+      return sum + (Number(m?.amount) || 0)
+    }, 0)
+  }
+
+  return 0
+}
+
 /**
  * Saves a Square invoice (read from Square, never from a webhook body) onto its Booking_Invoices row, and records
- * the collected amount as one Booking_Payments row when it is paid or refunded. Safe to run any number of times.
+ * the net collected amount as one Booking_Payments row when it is paid, partially paid, or refunded. Safe to run any number of times.
  */
 export async function syncInvoice(db: D1Database, invoice: any, timeZone: string): Promise<void> {
   const squareInvoiceId = invoice?.id
@@ -385,38 +415,64 @@ export async function syncInvoice(db: D1Database, invoice: any, timeZone: string
   const requests: any[] = Array.isArray(rawRequests) ? rawRequests : []
   const dueDate = pick(invoice, 'dueDate', 'due_date') ?? pick(requests[0], 'dueDate', 'due_date') ?? null
 
-  // Step 1: an older read never overwrites a newer one. A DRAFT read never replaces our CREATING marker:
-  // a send in progress owns that row until publish returns (Flows 2 and 5 handle drafts themselves).
-  await db.prepare(
-    `UPDATE Booking_Invoices
-     SET status = COALESCE(?, status), version = COALESCE(?, version), invoice_number = COALESCE(?, invoice_number),
-         public_url = COALESCE(?, public_url), due_date = COALESCE(?, due_date), updated_at = CURRENT_TIMESTAMP
-     WHERE square_invoice_id = ? AND (version IS NULL OR version <= ?)
-       AND NOT (status = 'CREATING' AND COALESCE(?, '') = 'DRAFT')`
-  ).bind(status, version, invoiceNumber, publicUrl, dueDate, squareInvoiceId, version, status).run()
+  const owner = await db
+    .prepare('SELECT booking_id, version, status FROM Booking_Invoices WHERE square_invoice_id = ?')
+    .bind(squareInvoiceId)
+    .first<{ booking_id: number; version: number | null; status: string }>()
 
-  // Step 2, independent of step 1.
-  const collected = requests.reduce((sum: number, request: any) => {
+  const shouldUpdateInvoice = Boolean(
+    owner &&
+      (owner.version === null || version === null || owner.version <= version) &&
+      !(owner.status === 'CREATING' && status === 'DRAFT')
+  )
+
+  const totalCompleted = requests.reduce((sum: number, request: any) => {
     const money = pick(request, 'totalCompletedAmountMoney', 'total_completed_amount_money')
     return sum + (Number(money?.amount) || 0)
   }, 0)
-  if (!(collected > 0) || !status || !PAID_LIKE_STATUSES.includes(status)) return
+  const refunded = extractInvoiceRefundedCents(invoice, requests)
+  const netCollected = Math.max(0, Math.round(totalCompleted - refunded))
 
-  const owner = await db.prepare(
-    'SELECT booking_id FROM Booking_Invoices WHERE square_invoice_id = ?'
-  ).bind(squareInvoiceId).first<{ booking_id: number }>()
-  if (!owner) return
+  const statements: D1PreparedStatement[] = []
+  statements.push(
+    db
+      .prepare(
+        `UPDATE Booking_Invoices
+         SET status = COALESCE(?, status), version = COALESCE(?, version), invoice_number = COALESCE(?, invoice_number),
+             public_url = COALESCE(?, public_url), due_date = COALESCE(?, due_date), updated_at = CURRENT_TIMESTAMP
+         WHERE square_invoice_id = ? AND (version IS NULL OR version <= ?)
+           AND NOT (status = 'CREATING' AND COALESCE(?, '') = 'DRAFT')`
+      )
+      .bind(status, version, invoiceNumber, publicUrl, dueDate, squareInvoiceId, version, status)
+  )
 
-  const updatedAtRaw = pick(invoice, 'updatedAt', 'updated_at')
-  let paidAt = updatedAtRaw ? new Date(updatedAtRaw) : new Date()
-  if (Number.isNaN(paidAt.getTime())) paidAt = new Date()
-  const note = invoiceNumber ? `Square invoice #${invoiceNumber}` : 'Square invoice'
+  if (owner && shouldUpdateInvoice && status) {
+    if (netCollected > 0 && PAYMENT_SYNC_STATUSES.includes(status)) {
+      const updatedAtRaw = pick(invoice, 'updatedAt', 'updated_at')
+      let paidAt = updatedAtRaw ? new Date(updatedAtRaw) : new Date()
+      if (Number.isNaN(paidAt.getTime())) paidAt = new Date()
+      const note = invoiceNumber ? `Square invoice #${invoiceNumber}` : 'Square invoice'
 
-  await db.prepare(
-    `INSERT INTO Booking_Payments (booking_id, amount, method, paid_on, note, square_invoice_id)
-     VALUES (?, ?, 'Square', ?, ?, ?)
-     ON CONFLICT(square_invoice_id) DO NOTHING`
-  ).bind(owner.booking_id, Math.round(collected), dateInTimeZone(timeZone, paidAt), note, squareInvoiceId).run()
+      statements.push(
+        db
+          .prepare(
+            `INSERT INTO Booking_Payments (booking_id, amount, method, paid_on, note, square_invoice_id)
+             VALUES (?, ?, 'Square', ?, ?, ?)
+             ON CONFLICT(square_invoice_id) DO UPDATE SET
+               amount = excluded.amount,
+               paid_on = excluded.paid_on,
+               note = excluded.note`
+          )
+          .bind(owner.booking_id, netCollected, dateInTimeZone(timeZone, paidAt), note, squareInvoiceId)
+      )
+    } else if (netCollected === 0 && (status === 'REFUNDED' || status === 'CANCELED')) {
+      statements.push(
+        db.prepare('DELETE FROM Booking_Payments WHERE square_invoice_id = ?').bind(squareInvoiceId)
+      )
+    }
+  }
+
+  await db.batch(statements)
 }
 
 /** invoices.get, then syncInvoice. Rethrows Square errors (callers decide what a 404 means). Returns the Square invoice. */
@@ -520,41 +576,77 @@ export async function refreshBilling(
     }
   }
 
+  // Reconcile pending Square Terminal checkouts so delayed/missed webhooks still update payments
+  const { results: pendingTerminalRows } = await db
+    .prepare(
+      `SELECT id, attempt_key FROM Booking_Invoices
+       WHERE booking_id = ? AND status IN (${OPEN_STATUS_LIST}) AND attempt_key LIKE 'terminal:%'`
+    )
+    .bind(bookingId)
+    .all<{ id: number; attempt_key: string }>()
+  for (const row of pendingTerminalRows || []) {
+    const checkoutId = row.attempt_key.slice('terminal:'.length).trim()
+    if (!checkoutId) continue
+    try {
+      const checkout = await fetchAndSyncTerminalCheckout(db, env, checkoutId, RECHECK_OPTIONS)
+      const st = String(checkout?.status || '').toUpperCase()
+      if (st === 'COMPLETED' || st === 'CANCELED' || st === 'CANCELLED' || st === 'FAILED') {
+        await db.prepare('DELETE FROM Booking_Invoices WHERE id = ?').bind(row.id).run().catch(() => {})
+      }
+    } catch (err) {
+      if (isSquareNotFound(err)) {
+        await db.prepare('DELETE FROM Booking_Invoices WHERE id = ?').bind(row.id).run().catch(() => {})
+      } else {
+        stale = true
+      }
+    }
+  }
+
   const billing = await loadBilling(db, bookingId)
   return billing ? { ...billing, stale } : null
 }
 
 // ── Flow 2: sendBalanceInvoice ────────────────────────────────────
 
-/** Sends a Square invoice for the booking's balance. Throws BillingError for every error case. */
-export async function sendBalanceInvoice(
+function resolveInvoiceDates(
+  timeZone: string,
+  bookingDateRaw: unknown,
+  options?: { scheduledAt?: string; dueDateOverride?: string }
+): { scheduledAt: string | undefined; dueDate: string } {
+  const today = dateInTimeZone(timeZone)
+  const defaultDueDate = addDaysISO(today, INVOICE_DUE_DAYS)
+  const scheduledAtMs = typeof options?.scheduledAt === 'string' ? Date.parse(options.scheduledAt) : NaN
+  const scheduledAt = Number.isFinite(scheduledAtMs) && scheduledAtMs > Date.now() + 60_000
+    ? options!.scheduledAt
+    : undefined
+  const bookingDate = typeof bookingDateRaw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(bookingDateRaw)
+    ? bookingDateRaw
+    : ''
+  const overrideDueDate =
+    typeof options?.dueDateOverride === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(options.dueDateOverride)
+      ? options.dueDateOverride
+      : ''
+  const scheduledUtcDate = scheduledAt ? new Date(scheduledAtMs).toISOString().slice(0, 10) : ''
+  let dueDate = overrideDueDate || (scheduledAt && bookingDate > defaultDueDate ? bookingDate : defaultDueDate)
+  if (scheduledUtcDate && dueDate < scheduledUtcDate) {
+    dueDate = scheduledUtcDate
+  }
+  return { scheduledAt, dueDate }
+}
+
+async function claimOpenInvoiceSlot(
   db: D1Database,
   env: BillingEnv,
-  bookingId: string | number,
-  expectedCents: unknown,
-  options?: { scheduledAt?: string; dueDateOverride?: string }
-): Promise<{ invoice: any; totals: BookingTotals }> {
-  // Pre-checks, in the doc's order.
-  const initial = await loadBookingTotals(db, bookingId)
-  if (!initial) throw new BillingError('NOT_FOUND', 404, 'Booking not found.')
-  if (String(initial.booking.status ?? '').trim().toLowerCase() === 'cancelled') {
-    throw new BillingError('BOOKING_CANCELLED', 409, "Cancelled bookings can't be invoiced.")
-  }
-  if (!isSquareConfigured(env)) throw new SquareNotConfiguredError()
-  if (!EMAIL_PATTERN.test(String(initial.booking.client_email ?? '').trim())) {
-    throw new BillingError('INVALID_EMAIL', 400, 'Add a valid client email to this booking before sending an invoice.')
-  }
-  if (typeof expectedCents !== 'number' || !Number.isSafeInteger(expectedCents)) {
-    throw new BillingError('VALIDATION_FAILED', 400, 'Check the highlighted fields.', [
-      { field: 'expected_amount_cents', message: 'Expected amount must be a whole number of cents.' }
-    ])
-  }
-  const id = initial.booking.id
-
-  // 1. Clear stuck sends.
+  id: number | string,
+  expectedCents: number
+): Promise<{
+  attemptKey: string
+  booking: any
+  balance: number
+  charges: { description: string; amount_cents: number }[]
+}> {
   await resolveStaleSends(db, env, id)
 
-  // 2. Claim the booking (the partial unique index allows one open invoice per booking).
   const attemptKey = crypto.randomUUID()
   try {
     await db.prepare(
@@ -567,18 +659,12 @@ export async function sendBalanceInvoice(
     if (open?.status === 'CREATING') throw new BillingError('INVOICE_SENDING', 409, SENDING_MESSAGE)
     throw new BillingError('INVOICE_OPEN', 409, 'This booking already has an open invoice.')
   }
-  const deleteClaim = () =>
-    db.prepare('DELETE FROM Booking_Invoices WHERE attempt_key = ?').bind(attemptKey).run().catch(() => null)
 
-  // 3. Compute the balance now, after the claim (every lock checks for this row).
-  let booking: any
-  let balance: number
-  let charges: { description: string; amount_cents: number; category?: string }[]
   try {
     const fresh = await loadBookingTotals(db, id)
     if (!fresh) throw new BillingError('NOT_FOUND', 404, 'Booking not found.')
-    booking = fresh.booking
-    balance = fresh.totals.balance_cents
+    const booking = fresh.booking
+    const balance = fresh.totals.balance_cents
     if (balance <= 0) throw new BillingError('NO_BALANCE', 409, 'This booking has no balance to invoice.')
     if (balance !== expectedCents) {
       throw new BillingError('BALANCE_CHANGED', 409, `The balance changed to $${formatDollars(balance)}. Review and send again.`, [
@@ -587,17 +673,32 @@ export async function sendBalanceInvoice(
     }
     await db.prepare('UPDATE Booking_Invoices SET amount_cents = ? WHERE attempt_key = ?').bind(balance, attemptKey).run()
     const { results } = await db.prepare(CHARGES_SELECT_SQL).bind(id).all<any>()
-    charges = (results || []).map((row: any) => ({
+    const charges = (results || []).map((row: any) => ({
       description: String(row.description),
-      amount_cents: Number(row.amount_cents) || 0,
-      category: typeof row.category === 'string' && row.category.trim() ? row.category.trim() : undefined
+      amount_cents: Number(row.amount_cents) || 0
     }))
+    return { attemptKey, booking, balance, charges }
   } catch (err) {
-    await deleteClaim()
+    await db.prepare('DELETE FROM Booking_Invoices WHERE attempt_key = ?').bind(attemptKey).run().catch(() => null)
     throw err
   }
+}
 
-  // Optional context for hybrid Square metadata/descriptions (safe if legacy test DB omits these columns).
+async function createSquareDraftAndPublish(
+  db: D1Database,
+  square: { client: SquareClient; locationId: string },
+  params: {
+    id: number | string
+    attemptKey: string
+    booking: any
+    balance: number
+    charges: { description: string; amount_cents: number }[]
+    timeZone: string
+    options?: { scheduledAt?: string; dueDateOverride?: string }
+  },
+  onDraftCreated: (invoiceId: string) => void
+): Promise<any> {
+  const { id, attemptKey, booking, balance, charges, timeZone, options } = params
   const extraContext = await db.prepare(
     `SELECT b.attendees, b.coupon_code, b.agreement_signed_name, b.agreement_signed_at, b.event_location, sl.start_time, s.best_for
      FROM Bookings b
@@ -621,7 +722,121 @@ export async function sendBalanceInvoice(
     bookingId: id
   })
 
-  // Steps 4–7 talk to Square.
+  const customerId = await ensureCustomer(square.client, booking, attemptKey)
+  const lines = buildInvoiceLines({ balanceCents: balance, packageName: booking.service_name, charges })
+  const orderRes = await square.client.orders.create({
+    idempotencyKey: `${attemptKey}-order`,
+    order: {
+      locationId: square.locationId,
+      customerId,
+      lineItems: lines.map((line) => ({
+        name: line.name,
+        quantity: '1',
+        basePriceMoney: { amount: BigInt(line.amountCents), currency: 'USD' }
+      })),
+      metadata: {
+        booking_id: String(id),
+        category: serviceCategory.slice(0, 255),
+        session_type: String(booking.service_name || 'Custom Session').slice(0, 255),
+        photo_permission_portfolio: booking.photo_permission_portfolio ? 'YES' : 'NO',
+        photo_permission_social: booking.photo_permission_social ? 'YES' : 'NO'
+      },
+      pricingOptions: { autoApplyTaxes: false }
+    }
+  })
+  const orderId = orderRes.order?.id
+  if (!orderId) throw new Error('Square returned no order id')
+  await db.prepare('UPDATE Booking_Invoices SET square_order_id = ? WHERE attempt_key = ?').bind(orderId, attemptKey).run()
+
+  const { scheduledAt, dueDate } = resolveInvoiceDates(timeZone, booking.date, options)
+  const createRes = await square.client.invoices.create({
+    idempotencyKey: `${attemptKey}-invoice`,
+    invoice: {
+      locationId: square.locationId,
+      orderId,
+      primaryRecipient: { customerId },
+      ...(scheduledAt ? { scheduledAt } : {}),
+      paymentRequests: [
+        {
+          requestType: 'BALANCE',
+          dueDate,
+          automaticPaymentSource: 'NONE',
+          tippingEnabled: false,
+          reminders: [
+            {
+              relativeScheduledDays: 0,
+              message: 'Final reminder: today is the last day of your grace period to pay your remaining session balance.'
+            }
+          ]
+        }
+      ],
+      deliveryMethod: 'EMAIL',
+      acceptedPaymentMethods: {
+        card: true,
+        bankAccount: true,
+        squareGiftCard: false,
+        buyNowPayLater: false,
+        cashAppPay: false
+      },
+      title: invoiceTitle(booking),
+      description: hybridNote
+    }
+  })
+  const created = createRes.invoice
+  if (!created?.id) throw new Error('Square returned no invoice id')
+  onDraftCreated(created.id)
+  const createdVersion = toNumberOrNull(created.version) ?? 0
+  await db.prepare(
+    'UPDATE Booking_Invoices SET square_invoice_id = ?, version = ?, updated_at = CURRENT_TIMESTAMP WHERE attempt_key = ?'
+  ).bind(created.id, createdVersion, attemptKey).run()
+
+  const publishRes = await square.client.invoices.publish({
+    invoiceId: created.id,
+    version: createdVersion,
+    idempotencyKey: `${attemptKey}-publish`
+  })
+  const published = publishRes.invoice ?? (await square.client.invoices.get({ invoiceId: created.id })).invoice
+  if (!published) throw new Error('Square returned no invoice')
+  return published
+}
+
+async function recordPublishedInvoice(
+  db: D1Database,
+  id: number | string,
+  attemptKey: string,
+  timeZone: string
+): Promise<{ invoice: any; totals: BookingTotals }> {
+  const row = await db.prepare('SELECT * FROM Booking_Invoices WHERE attempt_key = ?').bind(attemptKey).first<any>()
+  const after = await loadBookingTotals(db, id)
+  if (!row || !after) throw new BillingError('SQUARE_ERROR', 502, UNCONFIRMED_MESSAGE)
+  return { invoice: toInvoiceJSON(row, dateInTimeZone(timeZone)), totals: after.totals }
+}
+
+/** Sends a Square invoice for the booking's balance. Throws BillingError for every error case. */
+export async function sendBalanceInvoice(
+  db: D1Database,
+  env: BillingEnv,
+  bookingId: string | number,
+  expectedCents: unknown,
+  options?: { scheduledAt?: string; dueDateOverride?: string }
+): Promise<{ invoice: any; totals: BookingTotals }> {
+  const initial = await loadBookingTotals(db, bookingId)
+  if (!initial) throw new BillingError('NOT_FOUND', 404, 'Booking not found.')
+  if (String(initial.booking.status ?? '').trim().toLowerCase() === 'cancelled') {
+    throw new BillingError('BOOKING_CANCELLED', 409, "Cancelled bookings can't be invoiced.")
+  }
+  if (!isSquareConfigured(env)) throw new SquareNotConfiguredError()
+  if (!EMAIL_PATTERN.test(String(initial.booking.client_email ?? '').trim())) {
+    throw new BillingError('INVALID_EMAIL', 400, 'Add a valid client email to this booking before sending an invoice.')
+  }
+  if (typeof expectedCents !== 'number' || !Number.isSafeInteger(expectedCents)) {
+    throw new BillingError('VALIDATION_FAILED', 400, 'Check the highlighted fields.', [
+      { field: 'expected_amount_cents', message: 'Expected amount must be a whole number of cents.' }
+    ])
+  }
+  const id = initial.booking.id
+  const { attemptKey, booking, balance, charges } = await claimOpenInvoiceSlot(db, env, id, expectedCents)
+
   let client: SquareClient | null = null
   let squareInvoiceId: string | null = null
   let timeZone = DEFAULT_TIMEZONE
@@ -629,114 +844,18 @@ export async function sendBalanceInvoice(
     const square = await getSquare(env)
     client = square.client
     timeZone = await getStudioTimeZone(db)
-
-    // 4. Customer.
-    const customerId = await ensureCustomer(client, booking, attemptKey)
-
-    // 5. Order.
-    const annotatedCharges = charges.map((charge) => ({
-      description: charge.category ? `[${charge.category}] ${charge.description}` : charge.description,
-      amount_cents: charge.amount_cents
-    }))
-    const lines = buildInvoiceLines({ balanceCents: balance, packageName: booking.service_name, charges: annotatedCharges })
-    const orderRes = await client.orders.create({
-      idempotencyKey: `${attemptKey}-order`,
-      order: {
-        locationId: square.locationId,
-        customerId,
-        lineItems: lines.map((line) => ({
-          name: line.name,
-          quantity: '1',
-          basePriceMoney: { amount: BigInt(line.amountCents), currency: 'USD' }
-        })),
-        metadata: {
-          booking_id: String(id),
-          category: serviceCategory.slice(0, 255),
-          session_type: String(booking.service_name || 'Custom Session').slice(0, 255),
-          photo_permission_portfolio: booking.photo_permission_portfolio ? 'YES' : 'NO',
-          photo_permission_social: booking.photo_permission_social ? 'YES' : 'NO'
-        },
-        pricingOptions: { autoApplyTaxes: false }
-      }
-    })
-    const orderId = orderRes.order?.id
-    if (!orderId) throw new Error('Square returned no order id')
-    await db.prepare('UPDATE Booking_Invoices SET square_order_id = ? WHERE attempt_key = ?').bind(orderId, attemptKey).run()
-
-    // 6. Create the draft invoice.
-    const today = dateInTimeZone(timeZone)
-    const defaultDueDate = addDaysISO(today, INVOICE_DUE_DAYS)
-    const scheduledAtMs = typeof options?.scheduledAt === 'string' ? Date.parse(options.scheduledAt) : NaN
-    const scheduledAt = Number.isFinite(scheduledAtMs) && scheduledAtMs > Date.now() + 60_000
-      ? options!.scheduledAt
-      : undefined
-    const bookingDate = typeof booking.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(booking.date)
-      ? booking.date
-      : ''
-    const overrideDueDate =
-      typeof options?.dueDateOverride === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(options.dueDateOverride)
-        ? options.dueDateOverride
-        : ''
-    const dueDate = overrideDueDate || (scheduledAt && bookingDate > defaultDueDate ? bookingDate : defaultDueDate)
-    const createRes = await client.invoices.create({
-      idempotencyKey: `${attemptKey}-invoice`,
-      invoice: {
-        locationId: square.locationId,
-        orderId,
-        primaryRecipient: { customerId },
-        ...(scheduledAt ? { scheduledAt } : {}),
-        paymentRequests: [
-          {
-            requestType: 'BALANCE',
-            dueDate,
-            automaticPaymentSource: 'NONE',
-            tippingEnabled: false,
-            reminders: [
-              {
-                relativeScheduledDays: 0,
-                message: 'Final reminder: today is the last day of your grace period to pay your remaining session balance.'
-              }
-            ]
-          }
-        ],
-        deliveryMethod: 'EMAIL',
-        acceptedPaymentMethods: {
-          card: true,
-          bankAccount: true,
-          squareGiftCard: false,
-          buyNowPayLater: false,
-          cashAppPay: false
-        },
-        title: invoiceTitle(booking),
-        description: hybridNote
-      }
-    })
-    const created = createRes.invoice
-    if (!created?.id) throw new Error('Square returned no invoice id')
-    squareInvoiceId = created.id
-    const createdVersion = toNumberOrNull(created.version) ?? 0
-    await db.prepare(
-      'UPDATE Booking_Invoices SET square_invoice_id = ?, version = ?, updated_at = CURRENT_TIMESTAMP WHERE attempt_key = ?'
-    ).bind(squareInvoiceId, createdVersion, attemptKey).run()
-
-    // 7. Publish. Square emails the client.
-    const publishRes = await client.invoices.publish({
-      invoiceId: squareInvoiceId,
-      version: createdVersion,
-      idempotencyKey: `${attemptKey}-publish`
-    })
-    const published = publishRes.invoice ?? (await client.invoices.get({ invoiceId: squareInvoiceId })).invoice
-    if (!published) throw new Error('Square returned no invoice')
+    const published = await createSquareDraftAndPublish(
+      db,
+      square,
+      { id, attemptKey, booking, balance, charges, timeZone, options },
+      (invId) => { squareInvoiceId = invId }
+    )
     await syncInvoice(db, published, timeZone)
   } catch (err) {
-    // Throws unless the invoice turns out to be published, in which case it was sent and we answer 200.
     await handleSendFailure(db, client, attemptKey, squareInvoiceId, timeZone, err)
   }
 
-  const row = await db.prepare('SELECT * FROM Booking_Invoices WHERE attempt_key = ?').bind(attemptKey).first<any>()
-  const after = await loadBookingTotals(db, id)
-  if (!row || !after) throw new BillingError('SQUARE_ERROR', 502, UNCONFIRMED_MESSAGE)
-  return { invoice: toInvoiceJSON(row, dateInTimeZone(timeZone)), totals: after.totals }
+  return recordPublishedInvoice(db, id, attemptKey, timeZone)
 }
 
 /** Flow 2 "On failure". Returns normally only when the invoice was published; otherwise throws a BillingError. */
@@ -801,6 +920,29 @@ export async function cancelOpenInvoice(
     db.prepare("UPDATE Booking_Invoices SET status = 'CANCELED', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(row.id).run()
 
   if (!row.square_invoice_id) {
+    if (typeof row.attempt_key === 'string' && row.attempt_key.startsWith('terminal:')) {
+      const checkoutId = row.attempt_key.slice('terminal:'.length).trim()
+      if (checkoutId) {
+        const { client } = await getSquare(env)
+        const timeZone = await getStudioTimeZone(db)
+        try {
+          const checkout = (await client.terminal.checkouts.get({ checkoutId })).checkout
+          const st = String(checkout?.status || '').toUpperCase()
+          if (st === 'COMPLETED') {
+            await syncTerminalCheckout(db, checkout, timeZone)
+            throw new BillingError('INVOICE_ALREADY_PAID', 409, "This terminal checkout is already paid, so it can't be cancelled.")
+          }
+          if (st === 'PENDING' || st === 'IN_PROGRESS') {
+            await (client.terminal.checkouts as any).cancel?.({ checkoutId }).catch(() => {})
+          }
+        } catch (err) {
+          if (err instanceof BillingError) throw err
+          if (!isSquareNotFound(err)) throw toSquareFailure(err)
+        }
+      }
+      await db.prepare('DELETE FROM Booking_Invoices WHERE id = ?').bind(row.id).run()
+      return { invoice: toInvoiceJSON({ ...row, status: 'CANCELED' }, await studioTodayISO(db)) }
+    }
     // An open row without a Square id can only be CREATING; close any other so it never blocks the booking.
     await markCancelled()
   } else {
@@ -871,12 +1013,18 @@ function toTerminalCheckoutJSON(checkout: any) {
 
 /**
  * Records a completed Square Terminal checkout as a card payment in Booking_Payments.
- * Idempotent: checks for an existing Booking_Payments row whose note contains checkout.id.
+ * Atomic & idempotent via unique square_terminal_checkout_id index.
  */
 export async function syncTerminalCheckout(db: D1Database, checkout: any, timeZone: string): Promise<void> {
-  if (checkout?.status !== 'COMPLETED') return
   const checkoutId = typeof checkout?.id === 'string' ? checkout.id.trim() : ''
   if (!checkoutId) return
+
+  const statusUpper = String(checkout?.status || '').toUpperCase()
+  if (statusUpper === 'CANCELED' || statusUpper === 'CANCELLED' || statusUpper === 'FAILED') {
+    await db.prepare('DELETE FROM Booking_Invoices WHERE attempt_key = ?').bind(`terminal:${checkoutId}`).run().catch(() => {})
+    return
+  }
+  if (statusUpper !== 'COMPLETED') return
 
   const rawRef = String(pick(checkout, 'referenceId', 'reference_id') ?? '').trim()
   if (!/^[1-9]\d{0,9}$/.test(rawRef)) return
@@ -889,19 +1037,20 @@ export async function syncTerminalCheckout(db: D1Database, checkout: any, timeZo
   const bookingExists = await db.prepare('SELECT id FROM Bookings WHERE id = ?').bind(bookingId).first()
   if (!bookingExists) return
 
-  const existing = await db.prepare(
-    'SELECT id FROM Booking_Payments WHERE booking_id = ? AND note LIKE ? LIMIT 1'
-  ).bind(bookingId, `%${checkoutId}%`).first()
-  if (existing) return
-
   const updatedAtRaw = pick(checkout, 'updatedAt', 'updated_at') ?? pick(checkout, 'createdAt', 'created_at')
   let paidAt = updatedAtRaw ? new Date(updatedAtRaw) : new Date()
   if (Number.isNaN(paidAt.getTime())) paidAt = new Date()
 
-  await db.prepare(
-    `INSERT INTO Booking_Payments (booking_id, amount, method, paid_on, note)
-     VALUES (?, ?, 'card', ?, ?)`
-  ).bind(bookingId, amountCents, dateInTimeZone(timeZone, paidAt), `Square Terminal (${checkoutId})`).run()
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO Booking_Payments (booking_id, amount, method, paid_on, note, square_terminal_checkout_id)
+         VALUES (?, ?, 'card', ?, ?, ?)
+         ON CONFLICT(square_terminal_checkout_id) WHERE square_terminal_checkout_id IS NOT NULL DO NOTHING`
+      )
+      .bind(bookingId, amountCents, dateInTimeZone(timeZone, paidAt), `Square Terminal (${checkoutId})`, checkoutId),
+    db.prepare('DELETE FROM Booking_Invoices WHERE attempt_key = ?').bind(`terminal:${checkoutId}`)
+  ])
 }
 
 /** terminal.checkouts.get, then syncTerminalCheckout. Rethrows Square errors. */
@@ -956,21 +1105,66 @@ export async function sendTerminalCheckout(
 
   const id = initial.booking.id
 
-  // Cancel any open/scheduled Square invoice first so the client is never double-billed.
+  await resolveStaleSends(db, env, id)
+
+  // Cancel any open/scheduled Square invoice first (excluding active terminal/CREATING locks).
   const openInvoice = await db.prepare(OPEN_INVOICE_SELECT_SQL).bind(id).first<any>()
   if (openInvoice) {
+    if (openInvoice.status === 'CREATING') {
+      throw new BillingError('INVOICE_SENDING', 409, SENDING_MESSAGE)
+    }
+    if (typeof openInvoice.attempt_key === 'string' && openInvoice.attempt_key.startsWith('terminal:')) {
+      throw new BillingError('TERMINAL_IN_PROGRESS', 409, 'A Square Terminal checkout is already pending for this booking.')
+    }
     await cancelOpenInvoice(db, env, id)
   }
 
-  const fresh = await loadBookingTotals(db, id)
-  if (!fresh) throw new BillingError('NOT_FOUND', 404, 'Booking not found.')
-  const booking = fresh.booking
-  const balance = fresh.totals.balance_cents
-  if (balance <= 0) throw new BillingError('NO_BALANCE', 409, 'This booking has no balance to charge.')
-  if (balance !== expectedCents) {
-    throw new BillingError('BALANCE_CHANGED', 409, `The balance changed to $${formatDollars(balance)}. Review and send again.`, [
-      { balance_cents: balance }
-    ])
+  // Claim exclusive lock row before invoking Square Terminal API.
+  const idempotencyKey = crypto.randomUUID()
+  const lockAttemptKey = `terminal_creating:${idempotencyKey}`
+  try {
+    await db
+      .prepare(
+        `INSERT INTO Booking_Invoices (booking_id, attempt_key, amount_cents, status)
+         SELECT ?, ?, 0, 'CREATING'
+         WHERE NOT ${OPEN_INVOICE_EXISTS_SQL}`
+      )
+      .bind(id, lockAttemptKey, id)
+      .run()
+  } catch (err) {
+    const message = String((err as { message?: unknown } | null)?.message ?? '')
+    if (!message.includes('UNIQUE constraint failed')) throw err
+    throw new BillingError('INVOICE_SENDING', 409, SENDING_MESSAGE)
+  }
+
+  const claimCheck = await db
+    .prepare('SELECT id FROM Booking_Invoices WHERE attempt_key = ?')
+    .bind(lockAttemptKey)
+    .first()
+  if (!claimCheck) {
+    throw new BillingError('INVOICE_OPEN', 409, 'This booking already has an open invoice or pending terminal checkout.')
+  }
+
+  const deleteClaim = () =>
+    db.prepare('DELETE FROM Booking_Invoices WHERE attempt_key = ?').bind(lockAttemptKey).run().catch(() => null)
+
+  let booking: any
+  let balance: number
+  try {
+    const fresh = await loadBookingTotals(db, id)
+    if (!fresh) throw new BillingError('NOT_FOUND', 404, 'Booking not found.')
+    booking = fresh.booking
+    balance = fresh.totals.balance_cents
+    if (balance <= 0) throw new BillingError('NO_BALANCE', 409, 'This booking has no balance to charge.')
+    if (balance !== expectedCents) {
+      throw new BillingError('BALANCE_CHANGED', 409, `The balance changed to $${formatDollars(balance)}. Review and send again.`, [
+        { balance_cents: balance }
+      ])
+    }
+    await db.prepare('UPDATE Booking_Invoices SET amount_cents = ? WHERE attempt_key = ?').bind(balance, lockAttemptKey).run()
+  } catch (err) {
+    await deleteClaim()
+    throw err
   }
 
   const extraContext = await db.prepare(
@@ -997,7 +1191,6 @@ export async function sendTerminalCheckout(
   try {
     const { client } = await getSquare(env)
     const timeZone = await getStudioTimeZone(db)
-    const idempotencyKey = crypto.randomUUID()
     const customerId = EMAIL_PATTERN.test(String(booking.client_email ?? '').trim())
       ? await ensureCustomer(client, booking, idempotencyKey)
       : undefined
@@ -1017,10 +1210,19 @@ export async function sendTerminalCheckout(
 
     if (checkout.status === 'COMPLETED') {
       await syncTerminalCheckout(db, checkout, timeZone)
+      await deleteClaim()
+    } else if (checkout.id) {
+      await db
+        .prepare("UPDATE Booking_Invoices SET attempt_key = ?, status = 'PAYMENT_PENDING', updated_at = CURRENT_TIMESTAMP WHERE attempt_key = ?")
+        .bind(`terminal:${checkout.id}`, lockAttemptKey)
+        .run()
+    } else {
+      await deleteClaim()
     }
 
     return { checkout: toTerminalCheckoutJSON(checkout) }
   } catch (err) {
+    await deleteClaim()
     throw toSquareFailure(err)
   }
 }

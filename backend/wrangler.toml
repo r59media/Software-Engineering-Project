@@ -8,14 +8,13 @@ minify = true
 [build]
 command = "pnpm run build"
 
-[vars]
-ADMIN_EMAIL = "r59mediatesting@gmail.com"
-GOOGLE_CALENDAR_ID = "r59mediatesting@gmail.com"
-GOOGLE_CLIENT_ID = "903574031170-h5dehd9irqrpd5ujki24dp1q91k23f9o.apps.googleusercontent.com"
-# Square webhook: set to https://<deployed-domain>/api/square/webhook (the exact URL registered in Square).
-# Empty means the webhook returns 503. The signature key is set with `wrangler secret put SQUARE_WEBHOOK_SIGNATURE_KEY`.
-SQUARE_WEBHOOK_URL = ""
-SQUARE_ENVIRONMENT = "sandbox"
+# Mutable production environment variables (SQUARE_ENVIRONMENT, SQUARE_WEBHOOK_URL,
+# ADMIN_EMAIL, GOOGLE_CALENDAR_ID, GOOGLE_CLIENT_ID, etc.) are intentionally omitted
+# from wrangler.toml so automated deploys (`wrangler deploy --minify --keep-vars`)
+# NEVER overwrite client Cloudflare Dashboard settings back to sandbox/testing values.
+# - Production values: configure in Cloudflare Dashboard (Workers & Pages -> Settings
+#   -> Variables and Secrets) or via `wrangler secret put <NAME>`.
+# - Local development values: place in `backend/.dev.vars` (already gitignored).
 
 [previews]
 
@@ -23,7 +22,7 @@ SQUARE_ENVIRONMENT = "sandbox"
 directory = "./public"
 binding = "ASSETS"
 html_handling = "auto-trailing-slash"
-run_worker_first = [ "/", "/index.html", "/reschedule", "/reschedule/*", "/faq", "/faq/*", "/api/*", "/admin/*", "/assets/*.webp", "/models/*" ]
+run_worker_first = [ "/", "/index.html", "/reschedule", "/reschedule/*", "/faq", "/faq/*", "/api/*", "/admin", "/admin/*", "/assets/*.webp", "/assets/*.glb", "/assets/*.png", "/assets/*.jpg", "/assets/*.jpeg", "/models/*" ]
 
 [[d1_databases]]
 binding = "DB"

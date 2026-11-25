@@ -26,6 +26,24 @@ function isMigrationPending(rawOutput) {
   return String(rawOutput || '').includes(LEGACY_MIGRATION)
 }
 
+function hasD1MigrationsTable() {
+  const raw = runWrangler([
+    'd1',
+    'execute',
+    DB_NAME,
+    '--remote',
+    '--command',
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='d1_migrations';",
+    '--json'
+  ])
+  const parsed = JSON.parse(raw)
+  const blocks = Array.isArray(parsed) ? parsed : [parsed]
+  return blocks.some((block) =>
+    Array.isArray(block?.results) &&
+    block.results.some((row) => row?.name === 'd1_migrations')
+  )
+}
+
 function hasPhotoPermissionColumn() {
   const raw = runWrangler([
     'd1',
@@ -46,7 +64,7 @@ function hasPhotoPermissionColumn() {
 
 try {
   const pendingOutput = runWrangler(['d1', 'migrations', 'list', DB_NAME, '--remote'])
-  if (isMigrationPending(pendingOutput) && hasPhotoPermissionColumn()) {
+  if (isMigrationPending(pendingOutput) && hasD1MigrationsTable() && hasPhotoPermissionColumn()) {
     console.log(`[d1-migrate] Recording already-applied ${LEGACY_MIGRATION} in d1_migrations`)
     runWrangler(
       [
@@ -65,9 +83,14 @@ try {
   if (applyOut?.trim()) process.stdout.write(applyOut)
 } catch (err) {
   const output = String(err?.combinedOutput || err?.message || '')
-  if (output.includes('code: 7403') || output.includes('not authorized to access this service')) {
+  if (
+    output.includes('code: 7403') ||
+    output.includes('code: 10000') ||
+    output.includes('Authentication error') ||
+    output.includes('not authorized to access this service')
+  ) {
     console.warn(
-      '::warning::Skipping remote D1 migration step: CLOUDFLARE_API_TOKEN lacks D1:Edit permission (code 7403). Existing r59_db schema is unaffected; grant D1:Edit to CLOUDFLARE_API_TOKEN if you add new SQL migrations.'
+      '::warning title=D1 CLI Migration Skipped (Token Scope)::CLOUDFLARE_API_TOKEN lacks Account -> D1:Edit permission (code 7403/10000). Runtime schema self-healing (billingSchema.ts) remains active; grant D1:Edit to CLOUDFLARE_API_TOKEN to enable CLI SQL migrations & pre-migration backups.'
     )
     process.exit(0)
   }

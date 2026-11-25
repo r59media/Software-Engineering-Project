@@ -1,5 +1,6 @@
 import type { Bindings } from '../index'
 import { addDaysISO, DEFAULT_TIMEZONE, localDateTimeToRFC3339 } from './billingMath.ts'
+import { stripHeaderNewlines } from '../utils/validation.ts'
 
 export interface CalendarBookingInput {
   id: number | string
@@ -16,6 +17,25 @@ export interface CalendarBookingInput {
   location?: string | null
   attendees?: number | null
   timeZone?: string | null
+}
+
+export function mapRowToCalendarBooking(row: any, timeZone: string): CalendarBookingInput {
+  return {
+    id: row.id,
+    date: row.date,
+    start_time: row.start_time,
+    end_time: row.end_time,
+    client_name: row.client_name,
+    client_email: row.client_email,
+    customer_phone: row.customer_phone,
+    package_name: row.service_name,
+    service_name: row.service_name,
+    status: row.status,
+    notes: row.notes,
+    location: row.location,
+    attendees: row.attendees,
+    timeZone
+  }
 }
 
 export interface CalendarBlockedDateInput {
@@ -126,9 +146,12 @@ function buildBookingVEventLines(
 export function buildStudioIcsFeed(
   bookings: CalendarBookingInput[],
   blockedDates: CalendarBlockedDateInput[],
-  timeZone: string = DEFAULT_TIMEZONE
+  timeZone: string = DEFAULT_TIMEZONE,
+  calendarEmail: string = ''
 ): string {
-  const tz = (timeZone || DEFAULT_TIMEZONE).trim() || DEFAULT_TIMEZONE
+  const tz = stripHeaderNewlines((timeZone || DEFAULT_TIMEZONE).trim()) || DEFAULT_TIMEZONE
+  const cleanCalEmail = stripHeaderNewlines((calendarEmail || '').trim())
+  const calName = cleanCalEmail ? `R59 Media Bookings (${cleanCalEmail})` : 'R59 Media Bookings'
   const dtStamp = formatUtcStamp()
 
   const lines: string[] = [
@@ -137,7 +160,7 @@ export function buildStudioIcsFeed(
     'PRODID:-//R59 Media//Booking Calendar//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
-    'X-WR-CALNAME:R59 Media Bookings (r59mediatesting@gmail.com)',
+    `X-WR-CALNAME:${calName}`,
     `X-WR-TIMEZONE:${tz}`
   ]
 
@@ -179,7 +202,7 @@ export function buildBookingIcs(
   rescheduleUrl: string,
   timeZone: string = DEFAULT_TIMEZONE
 ): string {
-  const tz = (timeZone || DEFAULT_TIMEZONE).trim() || DEFAULT_TIMEZONE
+  const tz = stripHeaderNewlines((timeZone || DEFAULT_TIMEZONE).trim()) || DEFAULT_TIMEZONE
   const dtStamp = formatUtcStamp()
   const eventLines = buildBookingVEventLines(booking, tz, dtStamp, rescheduleUrl)
 
@@ -200,7 +223,7 @@ export function buildBookingIcs(
 export function buildGoogleCalendarTemplateUrl(
   booking: CalendarBookingInput,
   rescheduleUrl: string,
-  targetEmail: string = 'r59mediatesting@gmail.com'
+  targetEmail: string = ''
 ): string {
   const tz = (booking.timeZone || DEFAULT_TIMEZONE).trim() || DEFAULT_TIMEZONE
   const times = resolveStartEndRfc3339(booking, tz)
@@ -216,11 +239,14 @@ export function buildGoogleCalendarTemplateUrl(
   if (booking.location) {
     params.set('location', booking.location)
   }
-  if (targetEmail) {
-    params.set('add', targetEmail)
+  const cleanTargetEmail = (targetEmail || '').trim()
+  if (cleanTargetEmail) {
+    params.set('add', cleanTargetEmail)
   }
   return `https://calendar.google.com/calendar/render?${params.toString()}`
 }
+
+let cachedOAuthToken: { key: string; token: string; expiresAtMs: number } | null = null
 
 async function fetchGoogleCalendarAccessToken(
   env: Bindings
@@ -232,6 +258,11 @@ async function fetchGoogleCalendarAccessToken(
     return { token: null, reason: 'not_configured' }
   }
 
+  const cacheKey = `${clientId}:${refreshToken.slice(-8)}`
+  if (cachedOAuthToken && cachedOAuthToken.key === cacheKey && Date.now() < cachedOAuthToken.expiresAtMs) {
+    return { token: cachedOAuthToken.token }
+  }
+
   const res = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -240,16 +271,30 @@ async function fetchGoogleCalendarAccessToken(
       client_secret: clientSecret,
       refresh_token: refreshToken,
       grant_type: 'refresh_token'
-    })
+    }),
+    signal: AbortSignal.timeout(10000)
   })
   if (!res.ok) {
     return { token: null, reason: `oauth_${res.status}` }
   }
-  const json = (await res.json()) as { access_token?: string }
+  const json = (await res.json()) as { access_token?: string; expires_in?: number }
   if (!json.access_token) {
     return { token: null, reason: 'oauth_missing_token' }
   }
+  const expiresInSec = Math.max(0, Number(json.expires_in) || 3600)
+  cachedOAuthToken = {
+    key: cacheKey,
+    token: json.access_token,
+    expiresAtMs: Date.now() + Math.max(0, expiresInSec - 60) * 1000
+  }
   return { token: json.access_token }
+}
+
+async function recordGcalSyncStatus(env: Bindings, bookingId: number | string, status: 'synced' | 'failed'): Promise<void> {
+  if (!env?.DB) return
+  try {
+    await env.DB.prepare('UPDATE Bookings SET gcal_sync_status = ? WHERE id = ?').bind(status, bookingId).run()
+  } catch {}
 }
 
 /**
@@ -261,14 +306,23 @@ export async function syncBookingToGoogleCalendarApi(
   booking: CalendarBookingInput,
   action: 'upsert' | 'delete' = 'upsert'
 ): Promise<{ synced: boolean; reason?: string }> {
+  const calendarId = (env.GOOGLE_CALENDAR_ID || '').trim()
+  if (!calendarId) {
+    return { synced: false, reason: 'not_configured' }
+  }
+
+  let attemptedApi = false
   try {
     const auth = await fetchGoogleCalendarAccessToken(env)
     if (auth.token === null) {
+      if (auth.reason !== 'not_configured') {
+        await recordGcalSyncStatus(env, booking.id, 'failed')
+      }
       return { synced: false, reason: auth.reason }
     }
     const accessToken = auth.token
+    attemptedApi = true
 
-    const calendarId = (env.GOOGLE_CALENDAR_ID || 'r59mediatesting@gmail.com').trim()
     // Google Calendar event IDs must use lowercase base32hex characters [a-v0-9]
     const eventId = `r59booking${String(booking.id).replace(/[^0-9a-v]/g, '')}`
     const baseUrl = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
@@ -276,17 +330,22 @@ export async function syncBookingToGoogleCalendarApi(
     if (action === 'delete') {
       const delRes = await fetch(`${baseUrl}/${encodeURIComponent(eventId)}`, {
         method: 'DELETE',
-        headers: { Authorization: `Bearer ${accessToken}` }
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(10000)
       })
+      if (delRes.status === 401) cachedOAuthToken = null
       if (delRes.ok || delRes.status === 404 || delRes.status === 410) {
+        await recordGcalSyncStatus(env, booking.id, 'synced')
         return { synced: true }
       }
+      await recordGcalSyncStatus(env, booking.id, 'failed')
       return { synced: false, reason: `http_${delRes.status}` }
     }
 
     const tz = (booking.timeZone || DEFAULT_TIMEZONE).trim() || DEFAULT_TIMEZONE
     const times = resolveStartEndRfc3339(booking, tz)
     if (!times) {
+      await recordGcalSyncStatus(env, booking.id, 'failed')
       return { synced: false, reason: 'invalid_datetime' }
     }
 
@@ -308,10 +367,13 @@ export async function syncBookingToGoogleCalendarApi(
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000)
     })
+    if (putRes.status === 401) cachedOAuthToken = null
 
     if (putRes.ok) {
+      await recordGcalSyncStatus(env, booking.id, 'synced')
       return { synced: true }
     }
 
@@ -322,13 +384,20 @@ export async function syncBookingToGoogleCalendarApi(
           Authorization: `Bearer ${accessToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000)
       })
+      if (postRes.status === 401) cachedOAuthToken = null
+      await recordGcalSyncStatus(env, booking.id, postRes.ok ? 'synced' : 'failed')
       return { synced: postRes.ok, reason: postRes.ok ? undefined : `http_${postRes.status}` }
     }
 
+    await recordGcalSyncStatus(env, booking.id, 'failed')
     return { synced: false, reason: `http_${putRes.status}` }
   } catch {
+    if (attemptedApi) {
+      await recordGcalSyncStatus(env, booking.id, 'failed')
+    }
     return { synced: false, reason: 'sync_error' }
   }
 }

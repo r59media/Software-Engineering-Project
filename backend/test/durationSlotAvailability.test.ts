@@ -1,11 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { Hono } from 'hono'
 import type { Bindings } from '../src/index.ts'
 import { isSlotInWeeklyAvailability, scheduleRouter } from '../src/routes/schedule.ts'
+import { rescheduleRoutes, signRescheduleToken } from '../src/routes/reschedule.ts'
+import { adminRouter } from '../src/routes/admin.ts'
 import { createSessionToken } from '../src/middleware/auth.ts'
 import { BOOKING_PAYMENTS_TABLE_SQL, BILLING_SCHEMA_STEPS } from '../src/lib/billingSchema.ts'
 import {
@@ -17,22 +17,6 @@ import {
   resolveSlotWindow,
   type SlotRowLike
 } from '../src/lib/scheduleSync.ts'
-
-function loadBundledModule(relativePath: string): any {
-  const req = createRequire(import.meta.url)
-  const esbuild = createRequire(req.resolve('wrangler'))('esbuild')
-  const out = esbuild.buildSync({
-    entryPoints: [fileURLToPath(new URL(relativePath, import.meta.url))],
-    bundle: true,
-    write: false,
-    format: 'cjs',
-    platform: 'node',
-    packages: 'external'
-  })
-  const mod = { exports: {} as any }
-  new Function('require', 'exports', 'module', out.outputFiles[0].text)(req, mod.exports, mod)
-  return mod.exports
-}
 
 function createD1(sqlite: DatabaseSync): any {
   const plain = (row: any) => (row ? { ...row } : null)
@@ -556,7 +540,6 @@ test('GET /api/schedule?duration=120 omits 10:00 when 11:00 is booked', async ()
 })
 
 test('POST /api/bookings/:id/reschedule handles non-overlapping and overlapping (10:00-12:00 -> 11:00-13:00) reschedules', async () => {
-  const { rescheduleRoutes, signRescheduleToken } = loadBundledModule('../src/routes/reschedule.ts')
   const { sqlite, db } = setupSchedulingDb()
   const sessionDate = getFutureNewYorkDate(14)
   const secret = 'r'.repeat(32)
@@ -634,7 +617,6 @@ test('POST /api/bookings/:id/reschedule handles non-overlapping and overlapping 
 })
 
 test('DELETE /api/admin/bookings/:id releases ALL consecutive slots 1..N (High #4)', async () => {
-  const { adminRouter } = loadBundledModule('../src/routes/admin.ts')
   const { sqlite, db } = setupSchedulingDb()
   const sessionDate = getFutureNewYorkDate(14)
   const secret = 'a'.repeat(32)

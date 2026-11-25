@@ -1,4 +1,4 @@
-import { timingSafeEqual } from '../middleware/auth.ts'
+import { timingSafeEqual } from '../utils/crypto.ts'
 
 /**
  * Verifies Square's `x-square-hmacsha256-signature` header:

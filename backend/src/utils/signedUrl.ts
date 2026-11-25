@@ -2,6 +2,9 @@
  * Signed Media URL utility for HMAC-SHA256 short-lived token generation and verification.
  */
 
+import { timingSafeEqual, hmacSha256Hex } from './crypto.ts'
+import { isRealCalendarDate } from './validation.ts'
+
 function toBase64Url(bytes: Uint8Array): string {
   let binary = ''
   for (let i = 0; i < bytes.byteLength; i++) {
@@ -11,25 +14,6 @@ function toBase64Url(bytes: Uint8Array): string {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '')
-}
-
-/**
- * Constant-time string comparison to prevent timing attacks without length leaks.
- */
-export function timingSafeEqual(a: string, b: string): boolean {
-  if (typeof a !== 'string' || typeof b !== 'string') return false
-  const encoder = new TextEncoder()
-  const aBytes = encoder.encode(a)
-  const bBytes = encoder.encode(b)
-
-  let mismatch = aBytes.byteLength === bBytes.byteLength ? 0 : 1
-  const maxLen = Math.max(aBytes.byteLength, bBytes.byteLength)
-  for (let i = 0; i < maxLen; i++) {
-    const aByte = i < aBytes.byteLength ? aBytes[i] : 0
-    const bByte = i < bBytes.byteLength ? bBytes[i] : 0
-    mismatch |= aByte ^ bByte
-  }
-  return mismatch === 0
 }
 
 export type MediaVariantWidth = 640 | 1280
@@ -162,31 +146,34 @@ export function parseRangeHeader(
 
 const RESCHEDULE_TOKEN_PREFIX = 'r59-booking-reschedule-v1'
 const CALENDAR_FEED_TOKEN_PREFIX = 'r59-calendar-feed-v1'
+const DEFAULT_RESCHEDULE_TTL_DAYS = 30
 
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
-}
-
-async function hmacSha256Hex(message: string, secret: string): Promise<string> {
-  const encoder = new TextEncoder()
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  )
-  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(message))
-  return bytesToHex(new Uint8Array(signature))
+function resolveRescheduleExpirySeconds(options?: {
+  eventDate?: string | null
+  expSeconds?: number
+  ttlDays?: number
+}): number {
+  if (typeof options?.expSeconds === 'number' && Number.isFinite(options.expSeconds)) {
+    return Math.floor(options.expSeconds)
+  }
+  if (options?.eventDate && isRealCalendarDate(options.eventDate)) {
+    const [y, m, d] = options.eventDate.split('-').map(Number)
+    const eventEndSec = Math.floor(Date.UTC(y, m - 1, d, 23, 59, 59) / 1000)
+    return eventEndSec + (options?.ttlDays ?? DEFAULT_RESCHEDULE_TTL_DAYS) * 86400
+  }
+  return Math.floor(Date.now() / 1000) + (options?.ttlDays ?? DEFAULT_RESCHEDULE_TTL_DAYS) * 86400
 }
 
 export async function signRescheduleToken(
   bookingId: number | string,
   clientEmail: string,
-  secret: string
+  secret: string,
+  options?: { eventDate?: string | null; expSeconds?: number; ttlDays?: number }
 ): Promise<string> {
-  const payload = `${RESCHEDULE_TOKEN_PREFIX}:${String(bookingId).trim()}:${clientEmail.trim().toLowerCase()}`
-  return hmacSha256Hex(payload, secret)
+  const exp = resolveRescheduleExpirySeconds(options)
+  const payload = `${RESCHEDULE_TOKEN_PREFIX}:${String(bookingId).trim()}:${clientEmail.trim().toLowerCase()}:${exp}`
+  const sig = await hmacSha256Hex(payload, secret)
+  return `${exp}.${sig}`
 }
 
 export async function verifyRescheduleToken(
@@ -196,16 +183,74 @@ export async function verifyRescheduleToken(
   secret: string
 ): Promise<boolean> {
   if (!token || !secret || !clientEmail) return false
-  const expected = await signRescheduleToken(bookingId, clientEmail, secret)
-  return timingSafeEqual(expected, token.trim())
+  const trimmed = token.trim()
+  const parts = trimmed.split('.')
+  if (parts.length !== 2) return false
+  const [expStr, sigHex] = parts
+  if (!/^\d+$/.test(expStr) || !/^[0-9a-f]{64}$/i.test(sigHex)) return false
+
+  const exp = Number(expStr)
+  if (!Number.isFinite(exp) || exp <= 0) return false
+
+  const payload = `${RESCHEDULE_TOKEN_PREFIX}:${String(bookingId).trim()}:${clientEmail.trim().toLowerCase()}:${exp}`
+  const expectedSig = await hmacSha256Hex(payload, secret)
+  if (!timingSafeEqual(expectedSig, sigHex.toLowerCase())) return false
+
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  return nowSeconds <= exp
 }
 
-export async function signCalendarFeedToken(secret: string): Promise<string> {
-  return hmacSha256Hex(CALENDAR_FEED_TOKEN_PREFIX, secret)
+export async function signCalendarFeedToken(secret: string, version: string = '1'): Promise<string> {
+  const cleanVersion = (version || '1').trim() || '1'
+  const sig = await hmacSha256Hex(`${CALENDAR_FEED_TOKEN_PREFIX}:v${cleanVersion}`, secret)
+  return `v${cleanVersion}.${sig}`
 }
 
-export async function verifyCalendarFeedToken(token: string, secret: string): Promise<boolean> {
+export async function verifyCalendarFeedToken(
+  token: string,
+  secret: string,
+  expectedVersion: string = '1'
+): Promise<boolean> {
   if (!token || !secret) return false
-  const expected = await signCalendarFeedToken(secret)
-  return timingSafeEqual(expected, token.trim())
+  const trimmed = token.trim()
+  const dotIdx = trimmed.indexOf('.')
+  if (dotIdx <= 1) return false
+  const tokenVersionPart = trimmed.slice(0, dotIdx)
+  const cleanVersion = (expectedVersion || '1').trim() || '1'
+  if (!timingSafeEqual(tokenVersionPart, `v${cleanVersion}`)) return false
+
+  const expected = await signCalendarFeedToken(secret, cleanVersion)
+  return timingSafeEqual(expected, trimmed)
+}
+
+/**
+ * Reads the revocable calendar feed version from Admin_Settings ('calendar_feed_version', default '1').
+ */
+export async function getCalendarFeedVersion(db: D1Database | undefined): Promise<string> {
+  if (!db) return '1'
+  const row = await db
+    .prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'calendar_feed_version'")
+    .first<{ setting_value: string }>()
+  const val = row?.setting_value ? String(row.setting_value).trim() : ''
+  return val || '1'
+}
+
+/**
+ * Atomically bumps calendar_feed_version in Admin_Settings so prior calendar feed URLs are immediately revoked.
+ */
+export async function rotateCalendarFeedVersion(db: D1Database): Promise<string> {
+  await db
+    .prepare('CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)')
+    .run()
+
+  const row = await db
+    .prepare(
+      `INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('calendar_feed_version', '2')
+       ON CONFLICT(setting_key) DO UPDATE SET
+         setting_value = CAST(COALESCE(CAST(NULLIF(TRIM(setting_value), '') AS INTEGER), 1) + 1 AS TEXT)
+       RETURNING setting_value`
+    )
+    .first<{ setting_value: string }>()
+
+  return row?.setting_value ? String(row.setting_value).trim() : '2'
 }

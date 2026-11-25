@@ -18,17 +18,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 10
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: 'pnpm'
@@ -60,6 +60,34 @@ jobs:
             exit 1
           fi
 
+      - name: Export pre-migration remote D1 backup
+        working-directory: backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set +e
+          OUTPUT=$(pnpm exec wrangler d1 export r59_db --remote --output=pre-migration-backup.sql 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ "$STATUS" -ne 0 ]; then
+            if echo "$OUTPUT" | grep -Eqi "code: 10000|code: 7403|Authentication error|not authorized to access this service"; then
+              echo "::warning title=D1 Backup Skipped (Token Scope)::CLOUDFLARE_API_TOKEN lacks Account -> D1:Edit permission. Grant D1:Edit in Cloudflare Dashboard to enable automated pre-migration D1 SQL backups."
+              rm -f pre-migration-backup.sql
+              exit 0
+            fi
+            exit "$STATUS"
+          fi
+
+      - name: Upload pre-migration D1 backup artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pre-migration-d1-backup
+          path: backend/pre-migration-backup.sql
+          retention-days: 30
+          if-no-files-found: warn
+
       - name: Apply remote D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -68,11 +96,12 @@ jobs:
 
       - name: Deploy to Cloudflare Workers
         id: deploy
-        uses: cloudflare/wrangler-action@v4
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: 'backend'
+          command: deploy --minify --keep-vars
 
       - name: Post-deploy health check & auto-rollback
         env:
@@ -83,19 +112,45 @@ jobs:
         run: |
           BASE_URL="${PRODUCTION_URL:-$DEPLOY_URL}"
           if [ -z "$BASE_URL" ]; then
-            echo "::warning title=No Health URL::Neither vars.PRODUCTION_URL nor steps.deploy.outputs.deployment-url is set. Skipping health check."
-            exit 0
+            echo "::error title=Missing Health Check URL::Neither vars.PRODUCTION_URL nor steps.deploy.outputs.deployment-url is set. Configure vars.PRODUCTION_URL in GitHub Actions Variables."
+            exit 1
           fi
-          HEALTH_URL="${BASE_URL%/}/api/health"
-          echo "Checking health at $HEALTH_URL"
+          BASE_URL="${BASE_URL%/}"
+          HEALTH_URL="${BASE_URL}/api/health"
+          echo "Checking health & smoke endpoints at $BASE_URL"
           for i in 1 2 3; do
-            if curl -fsS --max-time 10 "$HEALTH_URL"; then
-              echo "Health check passed on attempt $i."
+            HEALTH_BODY=$(curl -fsS --max-time 10 "$HEALTH_URL" || true)
+            if echo "$HEALTH_BODY" | grep -Eq '"status"[[:space:]]*:[[:space:]]*"ok"|"ok"[[:space:]]*:[[:space:]]*true' \
+              && curl -fsS --max-time 10 -o /dev/null "${BASE_URL}/" \
+              && curl -fsS --max-time 10 -o /dev/null "${BASE_URL}/admin/"; then
+              echo "Health & smoke checks (/api/health, /, /admin/) passed on attempt $i."
               exit 0
             fi
-            echo "Health check attempt $i failed; retrying in 5s..."
+            echo "Smoke check attempt $i failed; retrying in 5s..."
             sleep 5
           done
-          echo "::error title=Health Check Failed::All 3 /api/health checks failed. Rolling back Worker deployment."
+          echo "::error title=Health Check Failed::Post-deploy smoke checks failed after 3 attempts. Rolling back Worker deployment."
           pnpm --dir backend exec wrangler rollback --yes
           exit 1
+
+      - name: Send failure alert email via Resend
+        if: failure()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL || secrets.ADMIN_EMAIL }}
+          FROM_EMAIL: ${{ secrets.EMAIL_FROM || vars.EMAIL_FROM || 'onboarding@resend.dev' }}
+        run: |
+          if [ -z "$RESEND_API_KEY" ] || [ -z "$ADMIN_EMAIL" ]; then
+            echo "Skipping alert email: RESEND_API_KEY or ADMIN_EMAIL not configured."
+            exit 0
+          fi
+          payload=$(jq -n \
+            --arg from "$FROM_EMAIL" \
+            --arg to "$ADMIN_EMAIL" \
+            --arg subject "[R59 Media] Production Deploy Failed on ${GITHUB_REPOSITORY}" \
+            --arg text "The ${GITHUB_WORKFLOW} workflow failed (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}). Ref: ${GITHUB_REF_NAME}." \
+            '{from: $from, to: [$to], subject: $subject, text: $text}')
+          curl -fsS -X POST https://api.resend.com/emails \
+            -H "Authorization: Bearer ${RESEND_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$payload" || echo "::warning::Failed to send Resend failure alert."

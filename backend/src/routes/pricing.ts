@@ -3,51 +3,19 @@ import type { Bindings } from '../index'
 import {
   DEFAULT_BOOKING_POLICY,
   DEFAULT_DEPOSIT_PERCENT,
-  DynamicFeeRule,
+  type DynamicFeeRule,
   normalizeBookingPolicy,
   normalizeDepositPercent,
   normalizeFeeRules
 } from '../lib/billingMath'
-import { getTrustedClientIp } from '../middleware/auth'
-import {
-  buildEdgeCacheKey,
-  getExecutionCtx,
-  getPublicContentVersion,
-  PUBLIC_READ_CACHE_CONTROL,
-  scheduleEdgeCachePut,
-  shouldBypassPublicEdgeCache,
-  tryEdgeCacheMatch
-} from '../lib/edgeCache'
+import { enforceRouteRateLimit } from '../middleware/rateLimit'
+import { withPublicJsonCache } from '../lib/edgeCache'
 
 export const pricingRouter = new Hono<{ Bindings: Bindings }>()
 export const couponsRouter = new Hono<{ Bindings: Bindings }>()
 
-// Rate limiter for coupon validation (30 requests/min per IP, max 1000 entries)
-const MAX_COUPON_IPS = 1000
-const COUPON_WINDOW_MS = 60 * 1000
-const MAX_COUPON_REQUESTS = 30
-const couponRateMap = new Map<string, { count: number; resetAt: number }>()
-
-function checkCouponRateLimit(ip: string): boolean {
-  const now = Date.now()
-  for (const [k, v] of couponRateMap.entries()) {
-    if (now > v.resetAt) couponRateMap.delete(k)
-  }
-  const entry = couponRateMap.get(ip)
-  if (!entry || now > entry.resetAt) {
-    if (couponRateMap.size >= MAX_COUPON_IPS) {
-      const oldest = couponRateMap.keys().next().value
-      if (oldest) couponRateMap.delete(oldest)
-    }
-    couponRateMap.set(ip, { count: 1, resetAt: now + COUPON_WINDOW_MS })
-    return true
-  }
-  if (entry.count >= MAX_COUPON_REQUESTS) {
-    return false
-  }
-  entry.count++
-  return true
-}
+const COUPON_RATE_WINDOW_SECONDS = 60
+const COUPON_RATE_MAX_REQUESTS = 30
 
 function getSquareConfig(env: Bindings) {
   return {
@@ -57,69 +25,38 @@ function getSquareConfig(env: Bindings) {
   }
 }
 
-// GET /api/pricing (public)
-pricingRouter.get('/', async (c) => {
-  const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
-  let cacheKeyUrl: string | null = null
+function parsePricingSetting(rawValue: string | undefined) {
+  let depositPercent = DEFAULT_DEPOSIT_PERCENT
+  let baseFee = 0
+  let perPerson = 0
+  let feeRules: DynamicFeeRule[] = []
+  let policy = DEFAULT_BOOKING_POLICY
 
-  if (!bypassEdgeCache) {
-    const version = await getPublicContentVersion(c.env.DB)
-    cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
-    const cached = await tryEdgeCacheMatch(cacheKeyUrl)
-    if (cached) {
-      return new Response(cached.body, {
-        status: cached.status,
-        statusText: cached.statusText,
-        headers: cached.headers
-      })
-    }
+  if (rawValue) {
+    try {
+      const parsed = JSON.parse(rawValue)
+      if (parsed.depositPercent !== undefined) depositPercent = normalizeDepositPercent(parsed.depositPercent)
+      if (parsed.baseFee !== undefined && Number.isFinite(Number(parsed.baseFee))) baseFee = Number(parsed.baseFee)
+      if (parsed.perPerson !== undefined && Number.isFinite(Number(parsed.perPerson))) perPerson = Number(parsed.perPerson)
+      feeRules = normalizeFeeRules(parsed.feeRules)
+      policy = normalizeBookingPolicy(parsed.policy)
+    } catch {}
   }
 
-  try {
-    const row = await c.env.DB.prepare(
-      "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
-    ).first<{ setting_value: string }>()
+  return { depositPercent, baseFee, perPerson, feeRules, policy }
+}
 
-    let depositPercent = DEFAULT_DEPOSIT_PERCENT
-    let baseFee = 0
-    let perPerson = 0
-    let feeRules: DynamicFeeRule[] = []
-    let policy = DEFAULT_BOOKING_POLICY
-
-    if (row?.setting_value) {
-      try {
-        const parsed = JSON.parse(row.setting_value)
-        if (parsed.depositPercent !== undefined) {
-          depositPercent = normalizeDepositPercent(parsed.depositPercent)
-        }
-        if (parsed.baseFee !== undefined && Number.isFinite(Number(parsed.baseFee))) {
-          baseFee = Number(parsed.baseFee)
-        }
-        if (parsed.perPerson !== undefined && Number.isFinite(Number(parsed.perPerson))) {
-          perPerson = Number(parsed.perPerson)
-        }
-        feeRules = normalizeFeeRules(parsed.feeRules)
-        policy = normalizeBookingPolicy(parsed.policy)
-      } catch {}
-    }
-
-    c.header('Cache-Control', bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL)
-    const res = c.json({
-      depositPercent,
-      baseFee,
-      perPerson,
-      feeRules,
-      policy,
-      currency: 'USD',
-      squareConfig: getSquareConfig(c.env)
-    })
-    if (!bypassEdgeCache && cacheKeyUrl) {
-      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
-    }
-    return res
-  } catch {
-    c.header('Cache-Control', 'no-store')
-    return c.json({
+// GET /api/pricing (public)
+pricingRouter.get('/', (c) =>
+  withPublicJsonCache(
+    c,
+    async () => {
+      const row = await c.env.DB.prepare(
+        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
+      ).first<{ setting_value: string }>()
+      return { ...parsePricingSetting(row?.setting_value), currency: 'USD', squareConfig: getSquareConfig(c.env) }
+    },
+    () => ({
       depositPercent: DEFAULT_DEPOSIT_PERCENT,
       baseFee: 0,
       perPerson: 0,
@@ -128,14 +65,19 @@ pricingRouter.get('/', async (c) => {
       currency: 'USD',
       squareConfig: getSquareConfig(c.env)
     })
-  }
-})
+  )
+)
 
 // GET /api/coupons/validate?code=XYZ (public)
 couponsRouter.get('/validate', async (c) => {
-  const clientIp = getTrustedClientIp(c)
-  if (!checkCouponRateLimit(clientIp)) {
-    c.header('Retry-After', '60')
+  const limited = await enforceRouteRateLimit(c, {
+    prefix: 'coupon',
+    maxRequests: COUPON_RATE_MAX_REQUESTS,
+    windowSeconds: COUPON_RATE_WINDOW_SECONDS,
+    message: 'Too many requests. Please wait a minute and try again.',
+    includeDetails: false
+  })
+  if (limited) {
     return c.json({
       valid: false,
       message: 'Too many requests. Please wait a minute and try again.'
@@ -153,9 +95,16 @@ couponsRouter.get('/validate', async (c) => {
   const code = rawCode.trim().toUpperCase()
 
   try {
-    const coupon = await c.env.DB.prepare(
-      'SELECT id, code, discount_type, discount_value, is_active FROM Coupons WHERE UPPER(code) = ?'
-    ).bind(code).first<any>()
+    let coupon: any = null
+    try {
+      coupon = await c.env.DB.prepare(
+        'SELECT id, code, discount_type, discount_value, is_active, expires_at, max_uses, used_count FROM Coupons WHERE UPPER(code) = ?'
+      ).bind(code).first<any>()
+    } catch {
+      coupon = await c.env.DB.prepare(
+        'SELECT id, code, discount_type, discount_value, is_active FROM Coupons WHERE UPPER(code) = ?'
+      ).bind(code).first<any>()
+    }
 
     if (!coupon) {
       return c.json({
@@ -173,8 +122,11 @@ couponsRouter.get('/validate', async (c) => {
 
     // Check expiry if present
     if (coupon.expires_at) {
-      const exp = new Date(coupon.expires_at).getTime()
-      if (!Number.isNaN(exp) && Date.now() > exp) {
+      const expStr = String(coupon.expires_at).trim()
+      const expMs = /^\d{4}-\d{2}-\d{2}$/.test(expStr)
+        ? Date.parse(`${expStr}T23:59:59.999Z`)
+        : Date.parse(expStr)
+      if (!Number.isNaN(expMs) && Date.now() > expMs) {
         return c.json({
           valid: false,
           message: 'This coupon has expired.'
@@ -183,12 +135,14 @@ couponsRouter.get('/validate', async (c) => {
     }
 
     // Check usage limit if present
-    if (coupon.max_uses || coupon.usage_limit) {
-      const limit = Number(coupon.max_uses || coupon.usage_limit)
+    const rawLimit = coupon.max_uses ?? coupon.usage_limit
+    if (rawLimit !== null && rawLimit !== undefined && Number(rawLimit) > 0) {
+      const limit = Number(rawLimit)
+      const usedCount = Number(coupon.used_count) || 0
       const countRow = await c.env.DB.prepare(
         "SELECT COUNT(*) as count FROM Bookings WHERE UPPER(coupon_code) = ? AND status != 'cancelled'"
-      ).bind(code).first<{ count: number }>()
-      if ((countRow?.count ?? 0) >= limit) {
+      ).bind(code).first<{ count: number }>().catch(() => null)
+      if (Math.max(usedCount, countRow?.count ?? 0) >= limit) {
         return c.json({
           valid: false,
           message: 'This coupon has reached its usage limit.'

@@ -827,19 +827,6 @@
     });
   }
 
-  function generateNonce(): string {
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    let bin = '';
-    for (let i = 0; i < bytes.length; i++) {
-      bin += String.fromCharCode(bytes[i]);
-    }
-    return btoa(bin)
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '');
-  }
-
   function getBuildTimeGoogleClientId(): string {
     const meta = document.querySelector('meta[name="google-client-id"], meta[name="google-signin-client_id"]');
     const metaVal = meta?.getAttribute('content')?.trim();
@@ -874,9 +861,19 @@
     return '';
   }
 
-  function renderGsiButton(clientId: string) {
+  async function renderGsiButton(clientId: string) {
     if (!clientId || typeof google === 'undefined' || !google.accounts?.id) return;
-    currentNonce = generateNonce();
+    let nonce = '';
+    try {
+      nonce = (await R().apiClient?.fetchAuthNonce?.()) || '';
+    } catch {
+      nonce = '';
+    }
+    if (!nonce) {
+      setLoginStatus('Could not initialize secure sign-in session. Please refresh and try again.');
+      return;
+    }
+    currentNonce = nonce;
     google.accounts.id.initialize({
       client_id: clientId,
       callback: handleCredentialResponse,
@@ -903,7 +900,7 @@
 
     if (!response || !response.credential) {
       if (cachedGoogleClientId && typeof google !== 'undefined' && google?.accounts?.id) {
-        renderGsiButton(cachedGoogleClientId);
+        await renderGsiButton(cachedGoogleClientId);
       }
       setLoginStatus('Access denied: Account not authorized for admin access.');
       return;
@@ -920,13 +917,13 @@
         await initDashboard();
       } else {
         if (cachedGoogleClientId && typeof google !== 'undefined' && google?.accounts?.id) {
-          renderGsiButton(cachedGoogleClientId);
+          await renderGsiButton(cachedGoogleClientId);
         }
         setLoginStatus(res?.error || 'Access denied: Account not authorized for admin access.');
       }
     } catch (err: any) {
       if (cachedGoogleClientId && typeof google !== 'undefined' && google?.accounts?.id) {
-        renderGsiButton(cachedGoogleClientId);
+        await renderGsiButton(cachedGoogleClientId);
       }
       setLoginStatus(err?.message || 'Access denied: Account not authorized for admin access.');
     }
@@ -946,7 +943,7 @@
           return;
         }
         await whenGsiReady();
-        renderGsiButton(clientId);
+        await renderGsiButton(clientId);
       } catch (err) {
         console.error('[R59 Admin] Failed to initialize Google Sign-In:', err);
         setLoginStatus('Google Sign-In failed to load. Check your connection or ad blocker and refresh.');

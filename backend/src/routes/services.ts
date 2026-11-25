@@ -1,21 +1,10 @@
 import { Hono } from 'hono'
-import { Bindings } from '../index'
-import { adminAuth, verifySessionToken, extractSessionToken, getSigningSecret, isTokenRevoked, isTokenRevokedInDb, hasForbiddenPaymentFields } from '../middleware/auth'
+import type { Bindings } from '../index'
+import { adminAuth, verifyAdminSessionRequest, hasForbiddenPaymentFields } from '../middleware/auth'
+import { isValidId, parseJsonObject } from '../utils/validation'
 import defaultPortfolioSeed from '../defaultPortfolioSeed.json'
-import {
-  buildEdgeCacheKey,
-  bumpPublicContentVersion,
-  getExecutionCtx,
-  getPublicContentVersion,
-  PUBLIC_READ_CACHE_CONTROL,
-  scheduleEdgeCachePut,
-  shouldBypassPublicEdgeCache,
-  tryEdgeCacheMatch
-} from '../lib/edgeCache'
-
-function isValidId(id: string | undefined): boolean {
-  return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
-}
+import { bumpPublicContentVersion, withPublicEdgeCache } from '../lib/edgeCache'
+import { runOncePerDb } from '../lib/billingSchema'
 
 export const DEFAULT_STUDIO_TIERS = [
   {
@@ -85,19 +74,40 @@ export const DEFAULT_STUDIO_TIERS = [
   }
 ]
 
-export function mapServiceRow(s: any) {
-  let additionalPeople: any = undefined
-  if (s.additional_people) {
-    if (typeof s.additional_people === 'string') {
-      try {
-        additionalPeople = JSON.parse(s.additional_people)
-      } catch {
-        additionalPeople = undefined
-      }
-    } else if (typeof s.additional_people === 'object') {
-      additionalPeople = s.additional_people
-    }
+function parseJsonSafe(raw: unknown): any {
+  if (!raw) return undefined
+  if (typeof raw === 'object') return raw
+  if (typeof raw !== 'string') return undefined
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return undefined
   }
+}
+
+function toNullableNumber(val: unknown): number | null {
+  return val !== null && val !== undefined ? Number(val) : null
+}
+
+function toOptionalNumber(val: unknown): number | undefined {
+  return val !== null && val !== undefined ? Number(val) : undefined
+}
+
+function toRoundedIntOrNull(val: unknown): number | null {
+  return val !== null && val !== undefined ? Math.round(Number(val)) : null
+}
+
+function serializeAdditionalPeopleValue(val: unknown): string | null {
+  if (typeof val === 'object' && val !== null) return JSON.stringify(val)
+  return (val as string | null) ?? null
+}
+
+export function mapServiceRow(s: any) {
+  const additionalPeople = parseJsonSafe(s.additional_people)
+  const bookingMode = (s.booking_mode || 'direct') as 'direct' | 'inquiry'
+  const fullDay = Boolean(s.full_day)
+  const displayOrder = s.display_order ?? 0
+  const priceMinor = toNullableNumber(s.price)
 
   return {
     id: String(s.id),
@@ -109,142 +119,489 @@ export function mapServiceRow(s: any) {
     image: s.image_url ? { url: s.image_url, alt: s.image_alt || s.name } : undefined,
     image_url: s.image_url || null,
     image_alt: s.image_alt || null,
-    durationMinutes: s.duration_minutes !== null && s.duration_minutes !== undefined ? Number(s.duration_minutes) : null,
-    photoCount: s.photo_count !== null && s.photo_count !== undefined ? Number(s.photo_count) : undefined,
-    photo_count: s.photo_count !== null && s.photo_count !== undefined ? Number(s.photo_count) : null,
-    outfits: s.outfits !== null && s.outfits !== undefined ? Number(s.outfits) : undefined,
-    full_day: Boolean(s.full_day),
-    fullDay: Boolean(s.full_day),
-    priceMinor: s.price !== null && s.price !== undefined ? Number(s.price) : null,
-    price: s.price !== null && s.price !== undefined ? Number(s.price) : 0, // backwards-compatibility for existing admin callers
+    durationMinutes: toNullableNumber(s.duration_minutes),
+    photoCount: toOptionalNumber(s.photo_count),
+    photo_count: toNullableNumber(s.photo_count),
+    outfits: toOptionalNumber(s.outfits),
+    full_day: fullDay,
+    fullDay,
+    priceMinor,
+    price: priceMinor ?? 0,
     duration_minutes: s.duration_minutes,
     currency: s.currency || 'USD',
-    bookingMode: (s.booking_mode || 'direct') as 'direct' | 'inquiry',
-    booking_mode: (s.booking_mode || 'direct') as 'direct' | 'inquiry',
+    bookingMode,
+    booking_mode: bookingMode,
     additionalPeople,
     additional_people: additionalPeople ?? null,
-    displayOrder: s.display_order ?? 0,
-    display_order: s.display_order ?? 0,
+    displayOrder,
+    display_order: displayOrder,
     isActive: s.is_active !== 0,
     is_active: s.is_active
   }
 }
 
-let servicesSchemaReady = false
-export async function ensureServicesSchemaAndDefaults(db: D1Database): Promise<void> {
-  if (servicesSchemaReady) return
+const SERVICES_ALTER_COLS = [
+  'ALTER TABLE Services ADD COLUMN best_for TEXT',
+  'ALTER TABLE Services ADD COLUMN image_url TEXT',
+  'ALTER TABLE Services ADD COLUMN image_alt TEXT',
+  'ALTER TABLE Services ADD COLUMN photo_count INTEGER',
+  'ALTER TABLE Services ADD COLUMN outfits INTEGER',
+  'ALTER TABLE Services ADD COLUMN full_day INTEGER DEFAULT 0',
+  'ALTER TABLE Services ADD COLUMN currency TEXT DEFAULT "USD"',
+  'ALTER TABLE Services ADD COLUMN booking_mode TEXT DEFAULT "direct"',
+  'ALTER TABLE Services ADD COLUMN additional_people TEXT',
+  'ALTER TABLE Services ADD COLUMN display_order INTEGER DEFAULT 0'
+]
+
+async function ensureServicesTablesAndColumns(db: D1Database): Promise<void> {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS Services (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT,
+      best_for TEXT,
+      image_url TEXT,
+      image_alt TEXT,
+      price INTEGER,
+      duration_minutes INTEGER,
+      photo_count INTEGER,
+      outfits INTEGER,
+      full_day INTEGER DEFAULT 0,
+      currency TEXT DEFAULT 'USD',
+      booking_mode TEXT DEFAULT 'direct',
+      additional_people TEXT,
+      display_order INTEGER DEFAULT 0,
+      is_active BOOLEAN DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run().catch(() => {})
+
+  for (const stmt of SERVICES_ALTER_COLS) {
+    await db.prepare(stmt).run().catch(() => {})
+  }
+}
+
+async function seedServicesList(db: D1Database, seedList: any[]): Promise<void> {
+  const inserts = seedList.map((s: any) =>
+    db.prepare(
+      `INSERT INTO Services (
+        name, description, best_for, image_url, image_alt,
+        price, duration_minutes, photo_count, outfits, full_day,
+        currency, booking_mode, additional_people, display_order, is_active
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      s.name,
+      s.description ?? null,
+      s.best_for ?? s.bestFor ?? null,
+      s.image_url ?? s.imageUrl ?? null,
+      s.image_alt ?? s.imageAlt ?? null,
+      toRoundedIntOrNull(s.price),
+      toRoundedIntOrNull(s.duration_minutes),
+      toRoundedIntOrNull(s.photo_count),
+      toRoundedIntOrNull(s.outfits),
+      s.full_day ? 1 : 0,
+      s.currency || 'USD',
+      s.booking_mode || s.bookingMode || 'direct',
+      serializeAdditionalPeopleValue(s.additional_people),
+      s.display_order ?? s.displayOrder ?? 0,
+      1
+    )
+  )
+  await db.batch(inserts)
+}
+
+async function backfillServicesDefaults(db: D1Database, seedList: any[]): Promise<void> {
+  await db.prepare(
+    'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)'
+  ).run().catch(() => {})
+  const flag = await db.prepare(
+    "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'services_defaults_backfilled_v1'"
+  ).first<{ setting_value: string }>().catch(() => null)
+  if (flag) return
+
+  const updates = seedList.map((s: any) =>
+    db.prepare(
+      `UPDATE Services SET
+        best_for = COALESCE(NULLIF(best_for, ''), ?),
+        photo_count = COALESCE(photo_count, ?),
+        outfits = COALESCE(outfits, ?),
+        booking_mode = COALESCE(NULLIF(booking_mode, ''), ?),
+        additional_people = COALESCE(additional_people, ?),
+        display_order = CASE WHEN display_order IS NULL OR display_order = 0 THEN ? ELSE display_order END
+      WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))`
+    ).bind(
+      s.best_for ?? s.bestFor ?? null,
+      toRoundedIntOrNull(s.photo_count),
+      toRoundedIntOrNull(s.outfits),
+      s.booking_mode || s.bookingMode || 'direct',
+      serializeAdditionalPeopleValue(s.additional_people),
+      s.display_order ?? s.displayOrder ?? 0,
+      s.name
+    )
+  )
+  updates.push(
+    db.prepare(
+      "INSERT OR REPLACE INTO Admin_Settings (setting_key, setting_value) VALUES ('services_defaults_backfilled_v1', '1')"
+    )
+  )
+  await db.batch(updates).catch(() => {})
+}
+
+const servicesSchemaByDb = new WeakMap<object, Promise<void>>()
+
+async function runServicesSchemaMigration(targetDb: D1Database): Promise<boolean> {
   try {
-    await db.prepare(`
-      CREATE TABLE IF NOT EXISTS Services (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        description TEXT,
-        best_for TEXT,
-        image_url TEXT,
-        image_alt TEXT,
-        price INTEGER,
-        duration_minutes INTEGER,
-        photo_count INTEGER,
-        outfits INTEGER,
-        full_day INTEGER DEFAULT 0,
-        currency TEXT DEFAULT 'USD',
-        booking_mode TEXT DEFAULT 'direct',
-        additional_people TEXT,
-        display_order INTEGER DEFAULT 0,
-        is_active BOOLEAN DEFAULT 1,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `).run().catch(() => {})
-
-    const alterCols = [
-      'ALTER TABLE Services ADD COLUMN best_for TEXT',
-      'ALTER TABLE Services ADD COLUMN image_url TEXT',
-      'ALTER TABLE Services ADD COLUMN image_alt TEXT',
-      'ALTER TABLE Services ADD COLUMN photo_count INTEGER',
-      'ALTER TABLE Services ADD COLUMN outfits INTEGER',
-      'ALTER TABLE Services ADD COLUMN full_day INTEGER DEFAULT 0',
-      'ALTER TABLE Services ADD COLUMN currency TEXT DEFAULT "USD"',
-      'ALTER TABLE Services ADD COLUMN booking_mode TEXT DEFAULT "direct"',
-      'ALTER TABLE Services ADD COLUMN additional_people TEXT',
-      'ALTER TABLE Services ADD COLUMN display_order INTEGER DEFAULT 0'
-    ]
-    for (const stmt of alterCols) {
-      await db.prepare(stmt).run().catch(() => {})
-    }
-
-    const row = await db.prepare('SELECT COUNT(*) as count FROM Services').first<{ count: number }>().catch(() => null)
+    await ensureServicesTablesAndColumns(targetDb)
+    const row = await targetDb.prepare('SELECT COUNT(*) as count FROM Services').first<{ count: number }>().catch(() => null)
+    const seedList = (defaultPortfolioSeed as any)?.services || DEFAULT_STUDIO_TIERS
     if (row && row.count === 0) {
-      const seedList = (defaultPortfolioSeed as any)?.services || DEFAULT_STUDIO_TIERS
-      const inserts = seedList.map((s: any) =>
-        db.prepare(
-          `INSERT INTO Services (
-            name, description, best_for, image_url, image_alt,
-            price, duration_minutes, photo_count, outfits, full_day,
-            currency, booking_mode, additional_people, display_order, is_active
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(
-          s.name,
-          s.description ?? null,
-          s.best_for ?? s.bestFor ?? null,
-          s.image_url ?? s.imageUrl ?? null,
-          s.image_alt ?? s.imageAlt ?? null,
-          s.price !== null && s.price !== undefined ? Math.round(Number(s.price)) : null,
-          s.duration_minutes !== null && s.duration_minutes !== undefined ? Math.round(Number(s.duration_minutes)) : null,
-          s.photo_count !== null && s.photo_count !== undefined ? Math.round(Number(s.photo_count)) : null,
-          s.outfits !== null && s.outfits !== undefined ? Math.round(Number(s.outfits)) : null,
-          s.full_day ? 1 : 0,
-          s.currency || 'USD',
-          s.booking_mode || s.bookingMode || 'direct',
-          typeof s.additional_people === 'object' && s.additional_people !== null
-            ? JSON.stringify(s.additional_people)
-            : (s.additional_people ?? null),
-          s.display_order ?? s.displayOrder ?? 0,
-          1
-        )
-      )
-      await db.batch(inserts)
+      await seedServicesList(targetDb, seedList)
     } else if (row && row.count > 0) {
-      await db.prepare(
-        'CREATE TABLE IF NOT EXISTS Admin_Settings (setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL)'
-      ).run().catch(() => {})
-      const flag = await db.prepare(
-        "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'services_defaults_backfilled_v1'"
-      ).first<{ setting_value: string }>().catch(() => null)
-      if (!flag) {
-        const seedList = (defaultPortfolioSeed as any)?.services || DEFAULT_STUDIO_TIERS
-        const updates = seedList.map((s: any) =>
-          db.prepare(
-            `UPDATE Services SET
-              best_for = COALESCE(NULLIF(best_for, ''), ?),
-              photo_count = COALESCE(photo_count, ?),
-              outfits = COALESCE(outfits, ?),
-              booking_mode = COALESCE(NULLIF(booking_mode, ''), ?),
-              additional_people = COALESCE(additional_people, ?),
-              display_order = CASE WHEN display_order IS NULL OR display_order = 0 THEN ? ELSE display_order END
-            WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))`
-          ).bind(
-            s.best_for ?? s.bestFor ?? null,
-            s.photo_count !== null && s.photo_count !== undefined ? Math.round(Number(s.photo_count)) : null,
-            s.outfits !== null && s.outfits !== undefined ? Math.round(Number(s.outfits)) : null,
-            s.booking_mode || s.bookingMode || 'direct',
-            typeof s.additional_people === 'object' && s.additional_people !== null
-              ? JSON.stringify(s.additional_people)
-              : (s.additional_people ?? null),
-            s.display_order ?? s.displayOrder ?? 0,
-            s.name
-          )
-        )
-        updates.push(
-          db.prepare(
-            "INSERT OR REPLACE INTO Admin_Settings (setting_key, setting_value) VALUES ('services_defaults_backfilled_v1', '1')"
-          )
-        )
-        await db.batch(updates).catch(() => {})
-      }
+      await backfillServicesDefaults(targetDb, seedList)
     }
-    servicesSchemaReady = true
+    return true
   } catch (err) {
     console.error('[services] ensureServicesSchemaAndDefaults non-fatal error:', err)
+    return false
+  }
+}
+
+export async function ensureServicesSchemaAndDefaults(db: D1Database): Promise<void> {
+  return runOncePerDb(servicesSchemaByDb, db, runServicesSchemaMigration)
+}
+
+export function extractMediaStorageKey(rawUrl: unknown): string | null {
+  if (typeof rawUrl !== 'string') return null
+  const trimmed = rawUrl.trim()
+  if (!trimmed || /^https?:\/\//i.test(trimmed) || trimmed.startsWith('/assets/') || trimmed.startsWith('data:')) {
+    return null
+  }
+  const key = trimmed.split('?')[0].replace(/^\/api\/media\//, '').replace(/^\/+/, '')
+  if (!key || key.includes('..')) return null
+  return key
+}
+
+/** Deletes a service image's Media_Storage chunks if no other service or portfolio row still references it. */
+export async function deleteServiceImageIfUnreferenced(db: D1Database, rawImageUrl: unknown): Promise<void> {
+  const key = extractMediaStorageKey(rawImageUrl)
+  if (!key) return
+  try {
+    const refService = await db
+      .prepare('SELECT 1 FROM Services WHERE image_url IN (?, ?, ?) LIMIT 1')
+      .bind(key, `/api/media/${key}`, `/${key}`)
+      .first()
+    if (refService) return
+
+    const refPortfolio = await db
+      .prepare('SELECT 1 FROM Portfolio_Images WHERE media_key IN (?, ?, ?) LIMIT 1')
+      .bind(key, `/api/media/${key}`, `/${key}`)
+      .first()
+      .catch(() => null)
+    if (refPortfolio) return
+
+    await db
+      .prepare('DELETE FROM Media_Storage WHERE file_key IN (?, ?, ?)')
+      .bind(key, `${key}__w640`, `${key}__w1280`)
+      .run()
+  } catch {}
+}
+
+export interface ParsedServicePayload {
+  name: string
+  description: string | null
+  bestFor: string | null
+  imageUrl: string | null
+  imageAlt: string | null
+  price: number | null
+  durationMinutes: number | null
+  photoCount: number | null
+  outfits: number | null
+  fullDay: number
+  currency: string
+  bookingMode: string
+  additionalPeople: string | null
+  displayOrder: number
+  isActive: number
+}
+
+type FieldError = { field: string; message: string; code: string }
+
+function parseOptionalNonNegInt(
+  raw: unknown,
+  fallback: number | null,
+  field: string,
+  message: string,
+  errors: FieldError[]
+): number | null {
+  if (raw === undefined) return fallback
+  if (raw === null) return null
+  const num = Number(raw)
+  if (!Number.isFinite(num) || num < 0) {
+    errors.push({ field, message, code: 'INVALID_VALUE' })
+    return fallback
+  }
+  return Math.round(num)
+}
+
+function parseAdditionalPeopleInput(
+  raw: unknown,
+  fallback: string | null,
+  errors: FieldError[]
+): string | null {
+  if (raw === undefined) return fallback
+  if (raw === null || raw === '') return null
+  if (typeof raw === 'string') {
+    try {
+      JSON.parse(raw)
+      return raw
+    } catch {
+      errors.push({ field: 'additional_people', message: 'Additional people must be a valid JSON string or object.', code: 'INVALID_VALUE' })
+      return fallback
+    }
+  }
+  if (typeof raw === 'object') return JSON.stringify(raw)
+  errors.push({ field: 'additional_people', message: 'Additional people must be an object or JSON string.', code: 'INVALID_VALUE' })
+  return fallback
+}
+
+function firstDefined(body: Record<string, any>, ...keys: string[]): any {
+  for (const k of keys) {
+    if (body[k] !== undefined) return body[k]
+  }
+  return undefined
+}
+
+function parseOptionalTextField(raw: unknown, fallback: string | null): string | null {
+  if (raw === undefined) return fallback
+  return raw === null ? null : String(raw)
+}
+
+function resolvePriceAndDuration(
+  body: Record<string, any>,
+  existing: any | undefined,
+  bookingMode: string,
+  errors: FieldError[]
+): { price: number | null; durationMinutes: number | null } {
+  const isCreate = !existing
+  const rawPrice = firstDefined(body, 'priceMinor', 'price')
+  let price: number | null = existing ? existing.price : null
+  if (rawPrice === null || (rawPrice === undefined && bookingMode === 'inquiry' && isCreate)) {
+    price = null
+  } else if (rawPrice !== undefined) {
+    const num = Number(rawPrice)
+    if (!Number.isFinite(num) || num < 0) {
+      errors.push({
+        field: 'price',
+        message: isCreate ? 'Price (in cents) must be a valid number >= 0.' : 'Price must be a valid number >= 0.',
+        code: 'INVALID_VALUE'
+      })
+    } else {
+      price = Math.round(num)
+    }
+  } else if (isCreate) {
+    errors.push({ field: 'price', message: 'Price (in cents) is required for direct booking mode.', code: 'REQUIRED_FIELD' })
+  }
+
+  const rawDuration = firstDefined(body, 'duration_minutes', 'durationMinutes')
+  let durationMinutes: number | null = existing ? existing.duration_minutes : 60
+  if (rawDuration === null || (rawDuration === undefined && bookingMode === 'inquiry' && (isCreate || existing?.duration_minutes == null))) {
+    durationMinutes = null
+  } else if (rawDuration !== undefined) {
+    const num = Number(rawDuration)
+    if (!Number.isFinite(num) || num < 0) {
+      errors.push({ field: 'duration_minutes', message: 'Duration in minutes must be >= 0.', code: 'INVALID_VALUE' })
+    } else {
+      durationMinutes = Math.round(num)
+    }
+  }
+
+  return { price, durationMinutes }
+}
+
+/**
+ * Shared service/package payload parser & validator used by POST /api/services,
+ * PUT /api/services/:id, and PUT /api/admin/packages/:id.
+ */
+export function parseServicePayload(
+  body: Record<string, any>,
+  existing?: any
+): { ok: true; data: ParsedServicePayload } | { ok: false; errors: FieldError[] } {
+  const errors: FieldError[] = []
+  const isCreate = !existing
+
+  const rawName = body.name ?? body.title
+  const name = rawName !== undefined ? (typeof rawName === 'string' || !isCreate ? String(rawName).trim() : '') : String(existing?.name || '').trim()
+  if (!name) {
+    errors.push({
+      field: 'name',
+      message: isCreate ? 'Service name/title is required.' : 'Service name/title cannot be empty.',
+      code: 'REQUIRED_FIELD'
+    })
+  }
+
+  const rawBookingMode = firstDefined(body, 'booking_mode', 'bookingMode')
+  const bookingMode = rawBookingMode !== undefined ? String(rawBookingMode) : (existing?.booking_mode || 'direct')
+  if (bookingMode !== 'direct' && bookingMode !== 'inquiry') {
+    errors.push({ field: 'booking_mode', message: "Booking mode must be 'direct' or 'inquiry'.", code: 'INVALID_VALUE' })
+  }
+
+  const { price, durationMinutes } = resolvePriceAndDuration(body, existing, bookingMode, errors)
+
+  const photoCount = parseOptionalNonNegInt(
+    firstDefined(body, 'photo_count', 'photoCount'),
+    existing?.photo_count ?? null,
+    'photo_count',
+    'Photo count must be an integer >= 0.',
+    errors
+  )
+  const outfits = parseOptionalNonNegInt(
+    body.outfits,
+    existing?.outfits ?? null,
+    'outfits',
+    'Outfits must be an integer >= 0.',
+    errors
+  )
+  const additionalPeople = parseAdditionalPeopleInput(
+    firstDefined(body, 'additional_people', 'additionalPeople'),
+    existing?.additional_people ?? null,
+    errors
+  )
+
+  const rawDisplayOrder = firstDefined(body, 'display_order', 'displayOrder')
+  let displayOrder = existing?.display_order ?? 0
+  if (rawDisplayOrder !== undefined) {
+    if (rawDisplayOrder === null) {
+      displayOrder = 0
+    } else {
+      const num = Number(rawDisplayOrder)
+      if (!Number.isFinite(num)) {
+        errors.push({ field: 'display_order', message: 'Display order must be an integer.', code: 'INVALID_VALUE' })
+      } else {
+        displayOrder = Math.round(num)
+      }
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors }
+
+  const rawFullDay = firstDefined(body, 'full_day', 'fullDay')
+  const fullDay = rawFullDay !== undefined
+    ? (rawFullDay === true || Number(rawFullDay) === 1 ? 1 : 0)
+    : (existing?.full_day ? 1 : 0)
+  const rawActive = firstDefined(body, 'is_active', 'active')
+  const isActive = rawActive !== undefined ? (rawActive ? 1 : 0) : (existing ? existing.is_active : 1)
+  const currency = typeof body.currency === 'string' && body.currency.trim()
+    ? body.currency.trim()
+    : (existing?.currency || 'USD')
+
+  return {
+    ok: true,
+    data: {
+      name,
+      description: parseOptionalTextField(body.description, existing?.description ?? null),
+      bestFor: parseOptionalTextField(firstDefined(body, 'best_for', 'bestFor'), existing?.best_for ?? null),
+      imageUrl: parseOptionalTextField(firstDefined(body, 'image_url', 'imageUrl') ?? body.image?.url, existing?.image_url ?? null),
+      imageAlt: parseOptionalTextField(firstDefined(body, 'image_alt', 'imageAlt') ?? body.image?.alt, existing?.image_alt ?? null),
+      price,
+      durationMinutes,
+      photoCount,
+      outfits,
+      fullDay,
+      currency,
+      bookingMode,
+      additionalPeople,
+      displayOrder,
+      isActive
+    }
+  }
+}
+
+/**
+ * Persists a validated service payload (insert when `existing` is omitted, update otherwise),
+ * cleans up replaced image blobs, and bumps public edge cache version.
+ */
+export async function saveServiceRecord(
+  db: D1Database,
+  payload: ParsedServicePayload,
+  existing?: any
+): Promise<{ id: number; row: any; mapped: ReturnType<typeof mapServiceRow> }> {
+  const binds = [
+    payload.name,
+    payload.description,
+    payload.bestFor,
+    payload.imageUrl,
+    payload.imageAlt,
+    payload.price,
+    payload.durationMinutes,
+    payload.photoCount,
+    payload.outfits,
+    payload.fullDay,
+    payload.currency,
+    payload.bookingMode,
+    payload.additionalPeople,
+    payload.displayOrder,
+    payload.isActive
+  ]
+
+  let targetId: number
+  if (existing) {
+    targetId = Number(existing.id)
+    await db.prepare(
+      `UPDATE Services SET
+        name = ?, description = ?, best_for = ?, image_url = ?, image_alt = ?,
+        price = ?, duration_minutes = ?, photo_count = ?, outfits = ?, full_day = ?,
+        currency = ?, booking_mode = ?, additional_people = ?, display_order = ?, is_active = ?
+      WHERE id = ?`
+    ).bind(...binds, existing.id).run()
+
+    if (existing.image_url && existing.image_url !== payload.imageUrl) {
+      await deleteServiceImageIfUnreferenced(db, existing.image_url)
+    }
+  } else {
+    const result = await db.prepare(
+      `INSERT INTO Services (
+        name, description, best_for, image_url, image_alt,
+        price, duration_minutes, photo_count, outfits, full_day,
+        currency, booking_mode, additional_people, display_order, is_active
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(...binds).run()
+    targetId = Number(result.meta.last_row_id)
+  }
+
+  const row = await db.prepare('SELECT * FROM Services WHERE id = ?').bind(targetId).first()
+  await bumpPublicContentVersion(db)
+  return { id: targetId, row, mapped: mapServiceRow(row) }
+}
+
+/**
+ * Deletes a service if it has no bookings, or soft-deactivates it (`is_active = 0`) otherwise.
+ */
+export async function deleteOrDeactivateService(
+  db: D1Database,
+  id: string
+): Promise<
+  | { ok: true; deactivated: boolean; reason?: 'has_bookings' | 'fk_constraint' }
+  | { ok: false; status: 404 }
+> {
+  const existing = await db.prepare('SELECT id, image_url FROM Services WHERE id = ?').bind(id).first<{ id: number; image_url: string | null }>()
+  if (!existing) return { ok: false, status: 404 }
+
+  const bookingCheck = await db.prepare('SELECT id FROM Bookings WHERE service_id = ? LIMIT 1').bind(id).first()
+  if (bookingCheck) {
+    await db.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
+    await bumpPublicContentVersion(db)
+    return { ok: true, deactivated: true, reason: 'has_bookings' }
+  }
+
+  try {
+    await db.prepare('DELETE FROM Services WHERE id = ?').bind(id).run()
+    await deleteServiceImageIfUnreferenced(db, existing.image_url)
+    await bumpPublicContentVersion(db)
+    return { ok: true, deactivated: false }
+  } catch {
+    await db.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
+    await bumpPublicContentVersion(db)
+    return { ok: true, deactivated: true, reason: 'fk_constraint' }
   }
 }
 
@@ -252,108 +609,95 @@ export const servicesRouter = new Hono<{ Bindings: Bindings }>()
 
 // GET: List services (active only by default, or all if requested with valid admin auth)
 servicesRouter.get('/', async (c) => {
-  try {
-    const includeAllRequested = c.req.query('all') === 'true'
-    const bypassEdgeCache = includeAllRequested || shouldBypassPublicEdgeCache(c)
-    let cacheKeyUrl: string | null = null
-
-    if (!bypassEdgeCache) {
-      const version = await getPublicContentVersion(c.env.DB)
-      cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
-      const cached = await tryEdgeCacheMatch(cacheKeyUrl)
-      if (cached) {
-        return new Response(cached.body, {
-          status: cached.status,
-          statusText: cached.statusText,
-          headers: cached.headers
-        })
-      }
-    }
-
-    let includeAll = false
-
-    if (includeAllRequested) {
-      const { token } = extractSessionToken(c)
-      const signingSecret = getSigningSecret(c.env)
-      if (token && signingSecret && !isTokenRevoked(token) && !(await isTokenRevokedInDb(c.env.DB, token))) {
-        const session = await verifySessionToken(token, signingSecret)
-        if (session.valid) {
+  const includeAllRequested = c.req.query('all') === 'true'
+  return withPublicEdgeCache(c, async ({ cacheControl }) => {
+    try {
+      let includeAll = false
+      if (includeAllRequested) {
+        const authResult = await verifyAdminSessionRequest(c)
+        if (authResult.ok) {
           includeAll = true
+        } else if (authResult.status === 503) {
+          c.header('Cache-Control', 'no-store')
+          return {
+            cacheable: false,
+            response: c.json({ error: { code: authResult.code, message: authResult.message, details: [] } }, 503)
+          }
         }
       }
-    }
 
-    await ensureServicesSchemaAndDefaults(c.env.DB)
+      await ensureServicesSchemaAndDefaults(c.env.DB)
+      const query = includeAll
+        ? 'SELECT * FROM Services ORDER BY display_order ASC, id ASC'
+        : 'SELECT * FROM Services WHERE is_active = 1 ORDER BY display_order ASC, id ASC'
 
-    const query = includeAll
-      ? 'SELECT * FROM Services ORDER BY display_order ASC, id ASC'
-      : 'SELECT * FROM Services WHERE is_active = 1 ORDER BY display_order ASC, id ASC'
+      const { results } = await c.env.DB.prepare(query).all()
+      const services = (results || []).map(mapServiceRow)
 
-    const { results } = await c.env.DB.prepare(query).all()
-    const services = (results || []).map(mapServiceRow)
-
-    c.header('Cache-Control', bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL)
-    const res = c.json({ services, status: 'success', data: services })
-    if (!bypassEdgeCache && cacheKeyUrl) {
-      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
-    }
-    return res
-  } catch (e: any) {
-    c.header('Cache-Control', 'no-store')
-    return c.json({
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Could not fetch services.',
-        details: []
+      c.header('Cache-Control', cacheControl)
+      return { response: c.json({ services, status: 'success', data: services }) }
+    } catch {
+      c.header('Cache-Control', 'no-store')
+      return {
+        cacheable: false,
+        response: c.json({
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Could not fetch services.',
+            details: []
+          }
+        }, 500)
       }
-    }, 500)
-  }
+    }
+  }, { bypass: includeAllRequested })
 })
 
 // GET /:id: Get a single service
 servicesRouter.get('/:id', async (c) => {
-  try {
-    const id = c.req.param('id')
-    if (!isValidId(id)) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
-    }
-
-    const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
-    let cacheKeyUrl: string | null = null
-    if (!bypassEdgeCache) {
-      const version = await getPublicContentVersion(c.env.DB)
-      cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
-      const cached = await tryEdgeCacheMatch(cacheKeyUrl)
-      if (cached) {
-        return new Response(cached.body, {
-          status: cached.status,
-          statusText: cached.statusText,
-          headers: cached.headers
-        })
-      }
-    }
-
-    await ensureServicesSchemaAndDefaults(c.env.DB)
-    const row = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(id).first()
-    if (!row) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
-    }
-    const service = mapServiceRow(row)
-    c.header('Cache-Control', bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL)
-    const res = c.json({ service, status: 'success', data: service })
-    if (!bypassEdgeCache && cacheKeyUrl) {
-      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
-    }
-    return res
-  } catch (e: any) {
-    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch service.', details: [] } }, 500)
+  const id = c.req.param('id')
+  if (!isValidId(id)) {
+    return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
   }
+
+  return withPublicEdgeCache(c, async ({ cacheControl }) => {
+    try {
+      await ensureServicesSchemaAndDefaults(c.env.DB)
+      const row = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(id).first<any>()
+      if (!row) {
+        c.header('Cache-Control', 'no-store')
+        return { cacheable: false, response: c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404) }
+      }
+
+      const isInactive = row.is_active === 0 || row.is_active === false
+      if (isInactive) {
+        const authResult = await verifyAdminSessionRequest(c)
+        if (!authResult.ok) {
+          c.header('Cache-Control', 'no-store')
+          if (authResult.status === 503) {
+            return { cacheable: false, response: c.json({ error: { code: authResult.code, message: authResult.message, details: [] } }, 503) }
+          }
+          return { cacheable: false, response: c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404) }
+        }
+        const service = mapServiceRow(row)
+        c.header('Cache-Control', 'private, no-store')
+        return { cacheable: false, response: c.json({ service, status: 'success', data: service }) }
+      }
+
+      const service = mapServiceRow(row)
+      c.header('Cache-Control', cacheControl)
+      return { response: c.json({ service, status: 'success', data: service }) }
+    } catch {
+      return { cacheable: false, response: c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch service.', details: [] } }, 500) }
+    }
+  })
 })
 
 // POST: Admin — create a new service
 servicesRouter.post('/', adminAuth, async (c) => {
   try {
-    const body = await c.req.json()
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body = parsedBody.data
     if (hasForbiddenPaymentFields(body)) {
       return c.json({
         error: {
@@ -365,161 +709,14 @@ servicesRouter.post('/', adminAuth, async (c) => {
     }
 
     await ensureServicesSchemaAndDefaults(c.env.DB)
-
-    const rawName = body.name ?? body.title
-    const name = typeof rawName === 'string' ? rawName.trim() : ''
-    const description = body.description !== undefined && body.description !== null ? String(body.description) : null
-    const rawBestFor = body.best_for ?? body.bestFor
-    const bestFor = rawBestFor !== undefined && rawBestFor !== null ? String(rawBestFor) : null
-
-    const rawImageUrl = body.image_url ?? body.imageUrl ?? body.image?.url
-    const imageUrl = rawImageUrl !== undefined && rawImageUrl !== null ? String(rawImageUrl) : null
-    const rawImageAlt = body.image_alt ?? body.imageAlt ?? body.image?.alt
-    const imageAlt = rawImageAlt !== undefined && rawImageAlt !== null ? String(rawImageAlt) : null
-
-    const rawBookingMode = body.booking_mode ?? body.bookingMode ?? 'direct'
-    const bookingMode = rawBookingMode === 'inquiry' ? 'inquiry' : 'direct'
-
-    const currency = typeof body.currency === 'string' && body.currency.trim() ? body.currency.trim() : 'USD'
-
-    const errors: Array<{ field: string; message: string; code: string }> = []
-    if (!name) {
-      errors.push({ field: 'name', message: 'Service name/title is required.', code: 'REQUIRED_FIELD' })
-    }
-    if (rawBookingMode !== 'direct' && rawBookingMode !== 'inquiry' && rawBookingMode !== undefined) {
-      errors.push({ field: 'booking_mode', message: "Booking mode must be 'direct' or 'inquiry'.", code: 'INVALID_VALUE' })
+    const parsed = parseServicePayload(body)
+    if (!parsed.ok) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not create service.', details: parsed.errors } }, 400)
     }
 
-    const rawPrice = body.priceMinor !== undefined ? body.priceMinor : body.price
-    let cleanPrice: number | null = null
-    if (rawPrice === null || (rawPrice === undefined && bookingMode === 'inquiry')) {
-      cleanPrice = null
-    } else if (rawPrice !== undefined) {
-      const numPrice = Number(rawPrice)
-      if (!Number.isFinite(numPrice) || numPrice < 0) {
-        errors.push({ field: 'price', message: 'Price (in cents) must be a valid number >= 0.', code: 'INVALID_VALUE' })
-      } else {
-        cleanPrice = Math.round(numPrice)
-      }
-    } else {
-      errors.push({ field: 'price', message: 'Price (in cents) is required for direct booking mode.', code: 'REQUIRED_FIELD' })
-    }
-
-    const rawDuration = body.duration_minutes !== undefined ? body.duration_minutes : body.durationMinutes
-    let cleanDuration: number | null = null
-    if (rawDuration === null || (rawDuration === undefined && bookingMode === 'inquiry')) {
-      cleanDuration = null
-    } else if (rawDuration !== undefined) {
-      const numDuration = Number(rawDuration)
-      if (!Number.isFinite(numDuration) || numDuration < 0) {
-        errors.push({ field: 'duration_minutes', message: 'Duration in minutes must be >= 0.', code: 'INVALID_VALUE' })
-      } else {
-        cleanDuration = Math.round(numDuration)
-      }
-    } else {
-      cleanDuration = 60
-    }
-
-    const rawPhotoCount = body.photo_count !== undefined ? body.photo_count : body.photoCount
-    let cleanPhotoCount: number | null = null
-    if (rawPhotoCount !== undefined && rawPhotoCount !== null) {
-      const num = Number(rawPhotoCount)
-      if (!Number.isFinite(num) || num < 0) {
-        errors.push({ field: 'photo_count', message: 'Photo count must be an integer >= 0.', code: 'INVALID_VALUE' })
-      } else {
-        cleanPhotoCount = Math.round(num)
-      }
-    }
-
-    const rawOutfits = body.outfits
-    let cleanOutfits: number | null = null
-    if (rawOutfits !== undefined && rawOutfits !== null) {
-      const num = Number(rawOutfits)
-      if (!Number.isFinite(num) || num < 0) {
-        errors.push({ field: 'outfits', message: 'Outfits must be an integer >= 0.', code: 'INVALID_VALUE' })
-      } else {
-        cleanOutfits = Math.round(num)
-      }
-    }
-
-    const rawAdditionalPeople = body.additional_people !== undefined ? body.additional_people : body.additionalPeople
-    let cleanAdditionalPeople: string | null = null
-    if (rawAdditionalPeople !== undefined && rawAdditionalPeople !== null && rawAdditionalPeople !== '') {
-      if (typeof rawAdditionalPeople === 'string') {
-        try {
-          JSON.parse(rawAdditionalPeople)
-          cleanAdditionalPeople = rawAdditionalPeople
-        } catch {
-          errors.push({ field: 'additional_people', message: 'Additional people must be a valid JSON string or object.', code: 'INVALID_VALUE' })
-        }
-      } else if (typeof rawAdditionalPeople === 'object') {
-        cleanAdditionalPeople = JSON.stringify(rawAdditionalPeople)
-      } else {
-        errors.push({ field: 'additional_people', message: 'Additional people must be an object or JSON string.', code: 'INVALID_VALUE' })
-      }
-    }
-
-    const rawDisplayOrder = body.display_order !== undefined ? body.display_order : body.displayOrder
-    let cleanDisplayOrder = 0
-    if (rawDisplayOrder !== undefined && rawDisplayOrder !== null) {
-      const num = Number(rawDisplayOrder)
-      if (!Number.isFinite(num)) {
-        errors.push({ field: 'display_order', message: 'Display order must be an integer.', code: 'INVALID_VALUE' })
-      } else {
-        cleanDisplayOrder = Math.round(num)
-      }
-    }
-
-    const rawFullDay = body.full_day !== undefined ? body.full_day : body.fullDay
-    const fullDay = rawFullDay === true || Number(rawFullDay) === 1 ? 1 : 0
-
-    const isActive = body.is_active !== undefined
-      ? (body.is_active ? 1 : 0)
-      : body.active !== undefined
-        ? (body.active ? 1 : 0)
-        : 1
-
-    if (errors.length > 0) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not create service.', details: errors } }, 400)
-    }
-
-    const result = await c.env.DB.prepare(
-      `INSERT INTO Services (
-        name, description, best_for, image_url, image_alt,
-        price, duration_minutes, photo_count, outfits, full_day,
-        currency, booking_mode, additional_people, display_order, is_active
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(
-      name,
-      description,
-      bestFor,
-      imageUrl,
-      imageAlt,
-      cleanPrice,
-      cleanDuration,
-      cleanPhotoCount,
-      cleanOutfits,
-      fullDay,
-      currency,
-      bookingMode,
-      cleanAdditionalPeople,
-      cleanDisplayOrder,
-      isActive
-    ).run()
-
-    const newId = result.meta.last_row_id
-    const createdRow = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(newId).first()
-    const mapped = mapServiceRow(createdRow)
-
-    await bumpPublicContentVersion(c.env.DB)
-
-    return c.json({
-      success: true,
-      status: 'success',
-      id: newId,
-      data: mapped
-    })
-  } catch (e: any) {
+    const saved = await saveServiceRecord(c.env.DB, parsed.data)
+    return c.json({ success: true, status: 'success', id: saved.id, data: saved.mapped })
+  } catch {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not create service.', details: [] } }, 500)
   }
 })
@@ -527,8 +724,9 @@ servicesRouter.post('/', adminAuth, async (c) => {
 // PUT /order: Admin — update display_order for services in a batch
 servicesRouter.put('/order', adminAuth, async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({}))
-    const ids = body?.ids
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const ids = parsedBody.data?.ids
     if (!Array.isArray(ids)) {
       return c.json({
         error: {
@@ -562,7 +760,7 @@ servicesRouter.put('/order', adminAuth, async (c) => {
     await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success' })
-  } catch (e: any) {
+  } catch {
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
@@ -580,7 +778,9 @@ servicesRouter.put('/:id', adminAuth, async (c) => {
     if (!isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
-    const body = await c.req.json()
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body = parsedBody.data
     if (hasForbiddenPaymentFields(body)) {
       return c.json({
         error: {
@@ -598,199 +798,14 @@ servicesRouter.put('/:id', adminAuth, async (c) => {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
     }
 
-    const rawName = body.name ?? body.title
-    const name = rawName !== undefined ? String(rawName).trim() : String(existing.name || '').trim()
-    const description = body.description !== undefined
-      ? (body.description === null ? null : String(body.description))
-      : existing.description
-
-    const rawBestFor = body.best_for !== undefined ? body.best_for : body.bestFor
-    const bestFor = rawBestFor !== undefined
-      ? (rawBestFor === null ? null : String(rawBestFor))
-      : existing.best_for
-
-    const rawImageUrl = body.image_url !== undefined ? body.image_url : (body.imageUrl !== undefined ? body.imageUrl : body.image?.url)
-    const imageUrl = rawImageUrl !== undefined
-      ? (rawImageUrl === null ? null : String(rawImageUrl))
-      : existing.image_url
-
-    const rawImageAlt = body.image_alt !== undefined ? body.image_alt : (body.imageAlt !== undefined ? body.imageAlt : body.image?.alt)
-    const imageAlt = rawImageAlt !== undefined
-      ? (rawImageAlt === null ? null : String(rawImageAlt))
-      : existing.image_alt
-
-    const rawBookingMode = body.booking_mode !== undefined ? body.booking_mode : body.bookingMode
-    const bookingMode = rawBookingMode !== undefined ? rawBookingMode : (existing.booking_mode || 'direct')
-
-    const currency = typeof body.currency === 'string' && body.currency.trim() ? body.currency.trim() : (existing.currency || 'USD')
-
-    const errors: Array<{ field: string; message: string; code: string }> = []
-    if (!name) {
-      errors.push({ field: 'name', message: 'Service name/title cannot be empty.', code: 'REQUIRED_FIELD' })
-    }
-    if (bookingMode !== 'direct' && bookingMode !== 'inquiry') {
-      errors.push({ field: 'booking_mode', message: "Booking mode must be 'direct' or 'inquiry'.", code: 'INVALID_VALUE' })
+    const parsed = parseServicePayload(body, existing)
+    if (!parsed.ok) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not update service.', details: parsed.errors } }, 400)
     }
 
-    const rawPrice = body.priceMinor !== undefined ? body.priceMinor : body.price
-    let cleanPrice: number | null = existing.price
-    if (rawPrice !== undefined) {
-      if (rawPrice === null) {
-        cleanPrice = null
-      } else {
-        const numPrice = Number(rawPrice)
-        if (!Number.isFinite(numPrice) || numPrice < 0) {
-          errors.push({ field: 'price', message: 'Price must be a valid number >= 0.', code: 'INVALID_VALUE' })
-        } else {
-          cleanPrice = Math.round(numPrice)
-        }
-      }
-    } else if (rawBookingMode === 'inquiry' && cleanPrice === null) {
-      cleanPrice = null
-    }
-
-    const rawDuration = body.duration_minutes !== undefined ? body.duration_minutes : body.durationMinutes
-    let cleanDuration: number | null = existing.duration_minutes
-    if (rawDuration !== undefined) {
-      if (rawDuration === null) {
-        cleanDuration = null
-      } else {
-        const numDuration = Number(rawDuration)
-        if (!Number.isFinite(numDuration) || numDuration < 0) {
-          errors.push({ field: 'duration_minutes', message: 'Duration in minutes must be >= 0.', code: 'INVALID_VALUE' })
-        } else {
-          cleanDuration = Math.round(numDuration)
-        }
-      }
-    }
-
-    const rawPhotoCount = body.photo_count !== undefined ? body.photo_count : body.photoCount
-    let cleanPhotoCount: number | null = existing.photo_count
-    if (rawPhotoCount !== undefined) {
-      if (rawPhotoCount === null) {
-        cleanPhotoCount = null
-      } else {
-        const num = Number(rawPhotoCount)
-        if (!Number.isFinite(num) || num < 0) {
-          errors.push({ field: 'photo_count', message: 'Photo count must be an integer >= 0.', code: 'INVALID_VALUE' })
-        } else {
-          cleanPhotoCount = Math.round(num)
-        }
-      }
-    }
-
-    const rawOutfits = body.outfits
-    let cleanOutfits: number | null = existing.outfits
-    if (rawOutfits !== undefined) {
-      if (rawOutfits === null) {
-        cleanOutfits = null
-      } else {
-        const num = Number(rawOutfits)
-        if (!Number.isFinite(num) || num < 0) {
-          errors.push({ field: 'outfits', message: 'Outfits must be an integer >= 0.', code: 'INVALID_VALUE' })
-        } else {
-          cleanOutfits = Math.round(num)
-        }
-      }
-    }
-
-    const rawAdditionalPeople = body.additional_people !== undefined ? body.additional_people : body.additionalPeople
-    let cleanAdditionalPeople: string | null = existing.additional_people
-    if (rawAdditionalPeople !== undefined) {
-      if (rawAdditionalPeople === null || rawAdditionalPeople === '') {
-        cleanAdditionalPeople = null
-      } else if (typeof rawAdditionalPeople === 'string') {
-        try {
-          JSON.parse(rawAdditionalPeople)
-          cleanAdditionalPeople = rawAdditionalPeople
-        } catch {
-          errors.push({ field: 'additional_people', message: 'Additional people must be a valid JSON string or object.', code: 'INVALID_VALUE' })
-        }
-      } else if (typeof rawAdditionalPeople === 'object') {
-        cleanAdditionalPeople = JSON.stringify(rawAdditionalPeople)
-      } else {
-        errors.push({ field: 'additional_people', message: 'Additional people must be an object or JSON string.', code: 'INVALID_VALUE' })
-      }
-    }
-
-    const rawDisplayOrder = body.display_order !== undefined ? body.display_order : body.displayOrder
-    let cleanDisplayOrder = existing.display_order ?? 0
-    if (rawDisplayOrder !== undefined) {
-      if (rawDisplayOrder === null) {
-        cleanDisplayOrder = 0
-      } else {
-        const num = Number(rawDisplayOrder)
-        if (!Number.isFinite(num)) {
-          errors.push({ field: 'display_order', message: 'Display order must be an integer.', code: 'INVALID_VALUE' })
-        } else {
-          cleanDisplayOrder = Math.round(num)
-        }
-      }
-    }
-
-    const rawFullDay = body.full_day !== undefined ? body.full_day : body.fullDay
-    const fullDay = rawFullDay !== undefined
-      ? (rawFullDay === true || Number(rawFullDay) === 1 ? 1 : 0)
-      : (existing.full_day ? 1 : 0)
-
-    const isActive = body.is_active !== undefined
-      ? (body.is_active ? 1 : 0)
-      : body.active !== undefined
-        ? (body.active ? 1 : 0)
-        : existing.is_active
-
-    if (errors.length > 0) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not update service.', details: errors } }, 400)
-    }
-
-    await c.env.DB.prepare(
-      `UPDATE Services SET
-        name = ?,
-        description = ?,
-        best_for = ?,
-        image_url = ?,
-        image_alt = ?,
-        price = ?,
-        duration_minutes = ?,
-        photo_count = ?,
-        outfits = ?,
-        full_day = ?,
-        currency = ?,
-        booking_mode = ?,
-        additional_people = ?,
-        display_order = ?,
-        is_active = ?
-      WHERE id = ?`
-    ).bind(
-      name,
-      description,
-      bestFor,
-      imageUrl,
-      imageAlt,
-      cleanPrice,
-      cleanDuration,
-      cleanPhotoCount,
-      cleanOutfits,
-      fullDay,
-      currency,
-      bookingMode,
-      cleanAdditionalPeople,
-      cleanDisplayOrder,
-      isActive,
-      id
-    ).run()
-
-    const updatedRow = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(id).first()
-    const mapped = mapServiceRow(updatedRow)
-
-    await bumpPublicContentVersion(c.env.DB)
-
-    return c.json({
-      success: true,
-      status: 'success',
-      data: mapped
-    })
-  } catch (e: any) {
+    const saved = await saveServiceRecord(c.env.DB, parsed.data, existing)
+    return c.json({ success: true, status: 'success', data: saved.mapped })
+  } catch {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not update service.', details: [] } }, 500)
   }
 })
@@ -803,33 +818,19 @@ servicesRouter.delete('/:id', adminAuth, async (c) => {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
 
-    const existing = await c.env.DB.prepare('SELECT id FROM Services WHERE id = ?').bind(id).first()
-    if (!existing) {
+    const result = await deleteOrDeactivateService(c.env.DB, id)
+    if (!result.ok) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
     }
-
-    // Check if service has existing bookings
-    const bookingCheck = await c.env.DB.prepare(
-      'SELECT id FROM Bookings WHERE service_id = ? LIMIT 1'
-    ).bind(id).first()
-
-    if (bookingCheck) {
-      await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
-      await bumpPublicContentVersion(c.env.DB)
-      return c.json({ success: true, status: 'success', message: 'Service deactivated (has associated bookings).' })
+    if (result.deactivated) {
+      const message =
+        result.reason === 'has_bookings'
+          ? 'Service deactivated (has associated bookings).'
+          : 'Service deactivated (has associated records).'
+      return c.json({ success: true, status: 'success', message })
     }
-
-    try {
-      await c.env.DB.prepare('DELETE FROM Services WHERE id = ?').bind(id).run()
-      await bumpPublicContentVersion(c.env.DB)
-      return c.json({ success: true, status: 'success' })
-    } catch {
-      // Fallback to soft-deactivation if foreign key constraint prevents deletion
-      await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
-      await bumpPublicContentVersion(c.env.DB)
-      return c.json({ success: true, status: 'success', message: 'Service deactivated (has associated records).' })
-    }
-  } catch (e: any) {
+    return c.json({ success: true, status: 'success' })
+  } catch {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete service.', details: [] } }, 500)
   }
 })

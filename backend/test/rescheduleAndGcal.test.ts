@@ -10,7 +10,7 @@ test('signRescheduleToken / verifyRescheduleToken: valid, tampered bookingId, ta
   const email = 'Client@Example.com'
 
   const token = await signRescheduleToken(bookingId, email, secret)
-  assert.ok(token.length === 64, 'expected 64-char hex HMAC-SHA256 token')
+  assert.match(token, /^\d+\.[0-9a-f]{64}$/, 'expected <exp>.<64-char hex HMAC-SHA256> token')
 
   // Valid token (case-insensitive email)
   assert.equal(await verifyRescheduleToken(bookingId, 'client@example.com', token, secret), true)
@@ -26,8 +26,8 @@ test('signRescheduleToken / verifyRescheduleToken: valid, tampered bookingId, ta
   assert.equal(await verifyRescheduleToken(bookingId, email, token, 'wrong-secret'), false)
 })
 
-test('buildStudioIcsFeed: includes r59mediatesting@gmail.com and valid VCALENDAR structure', () => {
-  const ics = buildStudioIcsFeed(
+test('buildStudioIcsFeed: includes configured calendar email and omits hardcoded defaults when unset', () => {
+  const icsWithEmail = buildStudioIcsFeed(
     [
       {
         id: 101,
@@ -42,17 +42,21 @@ test('buildStudioIcsFeed: includes r59mediatesting@gmail.com and valid VCALENDAR
       }
     ],
     [{ id: 1, date: '2026-11-25', reason: 'Thanksgiving' }],
-    'America/New_York'
+    'America/New_York',
+    'studio@example.com'
   )
 
-  assert.ok(ics.startsWith('BEGIN:VCALENDAR\r\n'))
-  assert.ok(ics.trimEnd().endsWith('END:VCALENDAR'))
-  assert.ok(ics.includes('r59mediatesting@gmail.com'))
-  assert.ok(ics.includes('UID:booking-101@r59media'))
-  assert.ok(ics.includes('UID:blocked-2026-11-25@r59media'))
+  assert.ok(icsWithEmail.startsWith('BEGIN:VCALENDAR\r\n'))
+  assert.ok(icsWithEmail.trimEnd().endsWith('END:VCALENDAR'))
+  assert.ok(icsWithEmail.includes('studio@example.com'))
+  assert.ok(icsWithEmail.includes('UID:booking-101@r59media'))
+  assert.ok(icsWithEmail.includes('UID:blocked-2026-11-25@r59media'))
+
+  const icsDefault = buildStudioIcsFeed([], [], 'America/New_York')
+  assert.ok(!icsDefault.includes('r59mediatesting@gmail.com'))
 })
 
-test('buildGoogleCalendarTemplateUrl: includes r59mediatesting@gmail.com and booking details', () => {
+test('buildGoogleCalendarTemplateUrl: uses explicit targetEmail when provided and omits add param when unset', () => {
   const rescheduleUrl = 'https://r59media.com/reschedule?bookingId=101&token=abc'
   const urlStr = buildGoogleCalendarTemplateUrl(
     {
@@ -64,16 +68,30 @@ test('buildGoogleCalendarTemplateUrl: includes r59mediatesting@gmail.com and boo
       package_name: 'Portrait Session',
       location: 'Atlanta Studio'
     },
-    rescheduleUrl
+    rescheduleUrl,
+    'studio@example.com'
   )
 
   const parsed = new URL(urlStr)
   assert.equal(parsed.origin + parsed.pathname, 'https://calendar.google.com/calendar/render')
   assert.equal(parsed.searchParams.get('action'), 'TEMPLATE')
-  assert.equal(parsed.searchParams.get('add'), 'r59mediatesting@gmail.com')
+  assert.equal(parsed.searchParams.get('add'), 'studio@example.com')
   assert.ok((parsed.searchParams.get('text') || '').includes('Portrait Session'))
   assert.ok((parsed.searchParams.get('details') || '').includes(rescheduleUrl))
   assert.ok(parsed.searchParams.get('dates'))
+
+  const urlWithoutTarget = buildGoogleCalendarTemplateUrl(
+    {
+      id: 101,
+      date: '2026-11-20',
+      start_time: '14:00',
+      end_time: '16:00',
+      client_name: 'Jane Doe',
+      package_name: 'Portrait Session'
+    },
+    rescheduleUrl
+  )
+  assert.equal(new URL(urlWithoutTarget).searchParams.get('add'), null)
 })
 
 test('countRescheduleIdentityMatches: 0/3, 1/3 fail (< 2); 2/3 and 3/3 pass', () => {

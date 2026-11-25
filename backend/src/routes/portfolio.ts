@@ -1,17 +1,10 @@
 import { Hono } from 'hono'
 import type { Bindings } from '../index'
 import { adminAuth, hasForbiddenPaymentFields } from '../middleware/auth'
+import { isValidId, parseJsonObject } from '../utils/validation'
 import defaultPortfolioSeed from '../defaultPortfolioSeed.json'
-import {
-  buildEdgeCacheKey,
-  bumpPublicContentVersion,
-  getExecutionCtx,
-  getPublicContentVersion,
-  PUBLIC_READ_CACHE_CONTROL,
-  scheduleEdgeCachePut,
-  shouldBypassPublicEdgeCache,
-  tryEdgeCacheMatch
-} from '../lib/edgeCache'
+import { bumpPublicContentVersion, getPublicContentVersion, withPublicEdgeCache, withPublicJsonCache } from '../lib/edgeCache'
+import { runOncePerDb } from '../lib/billingSchema'
 
 // Which part of the public site a photo belongs to (one per admin "Photos" tab, plus hero)
 export const PORTFOLIO_SECTIONS = ['recent', 'gallery', 'about', 'hero'] as const
@@ -20,10 +13,6 @@ export const VALID_SECTIONS = new Set(['recent', 'gallery', 'about', 'hero'])
 
 const SELECT_COLUMNS =
   'id, media_key, section, category, title, alt_text, display_order, is_featured, is_active'
-
-function isValidId(id: string | undefined): boolean {
-  return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
-}
 
 function parseSection(value: unknown): PortfolioSection | null {
   if (typeof value !== 'string') return null
@@ -46,12 +35,10 @@ function optionalText(value: unknown, maxLength: number): string | null {
 
 export function resolveMediaUrl(key: string, version?: string): string {
   if (!key) return ''
-  let resolved: string
-  if (key.startsWith('https://') || key.startsWith('http://') || key.startsWith('/') || key.startsWith('data:image/')) {
-    resolved = key
-  } else {
-    resolved = `/api/media/${key.replace(/^\/+/, '')}`
-  }
+  const resolved =
+    key.startsWith('https://') || key.startsWith('http://') || key.startsWith('/') || key.startsWith('data:image/')
+      ? key
+      : `/api/media/${key.replace(/^\/+/, '')}`
 
   if (version && resolved.startsWith('/api/media/') && !/[?&](?:v|exp|sig)=/.test(resolved)) {
     const sep = resolved.includes('?') ? '&' : '?'
@@ -63,6 +50,63 @@ export function resolveMediaUrl(key: string, version?: string): string {
 function withUrls<T extends { media_key: string }>(row: T, mediaVersion?: string) {
   const url = resolveMediaUrl(row.media_key, mediaVersion)
   return { ...row, url, public_url: url }
+}
+
+function buildPortfolioSeedStatements(
+  db: D1Database,
+  sections: readonly PortfolioSection[],
+  seededFlags: Set<string>,
+  existingCounts: Map<string, number>
+): D1PreparedStatement[] {
+  const statements: D1PreparedStatement[] = []
+
+  for (const sec of sections) {
+    const defaults = (defaultPortfolioSeed as any)[sec] || []
+    for (const item of defaults) {
+      statements.push(
+        db.prepare(
+          "UPDATE Portfolio_Images SET media_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND media_key LIKE '/assets/%' AND media_key != ?"
+        ).bind(item.media_key, sec, item.title, item.display_order ?? item.order ?? 1, item.media_key)
+      )
+    }
+
+    const flagKey = `portfolio_seeded_${sec}`
+    const count = existingCounts.get(sec) ?? 0
+    if (count > 0 && seededFlags.has(flagKey)) continue
+
+    statements.push(
+      db.prepare(
+        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, 'true') ON CONFLICT(setting_key) DO NOTHING"
+      ).bind(flagKey)
+    )
+    if (count > 0) continue
+
+    for (const item of defaults) {
+      const displayOrder = item.display_order ?? item.order ?? 1
+      const featured = item.is_featured ? 1 : (sec === 'hero' ? 1 : 0)
+      statements.push(
+        db.prepare(
+          'INSERT INTO Portfolio_Images (media_key, section, category, title, alt_text, display_order, is_featured, is_active) ' +
+          'SELECT ?, ?, ?, ?, ?, ?, ?, 1 WHERE NOT EXISTS (' +
+          '  SELECT 1 FROM Portfolio_Images WHERE LOWER(section) = ? AND (title = ? OR display_order = ?)' +
+          ')'
+        ).bind(
+          item.media_key,
+          sec,
+          item.category || (sec === 'hero' ? 'hero' : 'Portrait'),
+          item.title || null,
+          item.alt_text || null,
+          displayOrder,
+          featured,
+          sec,
+          item.title || '',
+          displayOrder
+        )
+      )
+    }
+  }
+
+  return statements
 }
 
 /**
@@ -90,70 +134,17 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
       ')'
     ).run().catch(() => {})
 
-    const sections = ['hero', 'recent', 'gallery', 'about'] as const
-    const statements: any[] = []
-
-    // 1. Update any existing /assets/ rows whose hash changed on rebuild
-    for (const sec of sections) {
-      const defaults = (defaultPortfolioSeed as any)[sec] || []
-      for (const item of defaults) {
-        statements.push(
-          db.prepare(
-            "UPDATE Portfolio_Images SET media_key = ? WHERE LOWER(section) = ? AND title = ? AND display_order = ? AND media_key LIKE '/assets/%' AND media_key != ?"
-          ).bind(item.media_key, sec, item.title, item.display_order ?? item.order ?? 1, item.media_key)
-        )
-      }
-    }
-
-    // 2. Seed each section's default images exactly once. A flag in Admin_Settings records the
-    //    first run so photos the admin later deletes are not re-inserted. Sections that already
-    //    hold photos (databases seeded before the flag existed) are only marked, never re-seeded.
     const flagRows = await db.prepare(
       "SELECT setting_key FROM Admin_Settings WHERE setting_key LIKE 'portfolio_seeded_%'"
     ).all<{ setting_key: string }>().catch(() => ({ results: [] as { setting_key: string }[] }))
     const seededFlags = new Set((flagRows.results || []).map(row => row.setting_key))
+
     const countRows = await db.prepare(
       'SELECT LOWER(section) AS section, COUNT(*) AS cnt FROM Portfolio_Images GROUP BY LOWER(section)'
     ).all<{ section: string; cnt: number }>().catch(() => ({ results: [] as { section: string; cnt: number }[] }))
     const existingCounts = new Map((countRows.results || []).map(row => [row.section, Number(row.cnt) || 0]))
 
-    for (const sec of sections) {
-      const flagKey = `portfolio_seeded_${sec}`
-      const count = existingCounts.get(sec) ?? 0
-      if (count > 0 && seededFlags.has(flagKey)) continue
-      statements.push(
-        db.prepare(
-          "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES (?, 'true') ON CONFLICT(setting_key) DO NOTHING"
-        ).bind(flagKey)
-      )
-      if (count > 0) continue
-
-      const items = (defaultPortfolioSeed as any)[sec] || []
-      for (const item of items) {
-        const displayOrder = item.display_order ?? item.order ?? 1
-        const featured = item.is_featured ? 1 : (sec === 'hero' ? 1 : 0)
-        statements.push(
-          db.prepare(
-            'INSERT INTO Portfolio_Images (media_key, section, category, title, alt_text, display_order, is_featured, is_active) ' +
-            'SELECT ?, ?, ?, ?, ?, ?, ?, 1 WHERE NOT EXISTS (' +
-            '  SELECT 1 FROM Portfolio_Images WHERE LOWER(section) = ? AND (title = ? OR display_order = ?)' +
-            ')'
-          ).bind(
-            item.media_key,
-            sec,
-            item.category || (sec === 'hero' ? 'hero' : 'Portrait'),
-            item.title || null,
-            item.alt_text || null,
-            displayOrder,
-            featured,
-            sec,
-            item.title || '',
-            displayOrder
-          )
-        )
-      }
-    }
-
+    const statements = buildPortfolioSeedStatements(db, PORTFOLIO_SECTIONS, seededFlags, existingCounts)
     if (statements.length > 0) {
       await db.batch(statements)
     }
@@ -162,45 +153,43 @@ export async function ensurePortfolioDefaults(db: D1Database): Promise<void> {
   }
 }
 
+const portfolioSchemaByDb = new WeakMap<object, Promise<void>>()
+
 /**
  * Older databases were created before photos were tagged with a site section and title.
  * Add those columns on first use so existing local and remote D1 databases keep working
- * without a manual migration. Runs once per Worker isolate.
+ * without a manual migration. Runs once per D1Database instance.
  */
-let portfolioSchemaReady = false
-export async function ensurePortfolioSchema(db: D1Database): Promise<void> {
-  if (!portfolioSchemaReady) {
-    const info = await db.prepare('PRAGMA table_info(Portfolio_Images)').all<{ name: string }>().catch(() => ({ results: [] }))
-    const columns = new Set((info.results || []).map(col => col.name))
+async function runPortfolioSchemaMigration(targetDb: D1Database): Promise<void> {
+  const info = await targetDb.prepare('PRAGMA table_info(Portfolio_Images)').all<{ name: string }>().catch(() => ({ results: [] }))
+  const columns = new Set((info.results || []).map(col => col.name))
 
-    const migrations: string[] = []
-    // Databases created before the r2_object_key -> media_key rename still carry the old column
-    if (columns.has('r2_object_key') && !columns.has('media_key')) {
-      migrations.push('ALTER TABLE Portfolio_Images RENAME COLUMN r2_object_key TO media_key')
-    }
-    if (!columns.has('section')) {
-      migrations.push("ALTER TABLE Portfolio_Images ADD COLUMN section TEXT NOT NULL DEFAULT 'gallery'")
-    }
-    if (!columns.has('title')) {
-      migrations.push('ALTER TABLE Portfolio_Images ADD COLUMN title TEXT')
-    }
-
-    for (const sql of migrations) {
-      // Another isolate may win the race and add the column first; that is fine
-      await db.prepare(sql).run().catch(err => {
-        const message = String(err?.message || err)
-        if (!message.includes('duplicate column') && !message.includes('no such column')) throw err
-      })
-    }
-    await db.prepare(
-      'CREATE INDEX IF NOT EXISTS idx_portfolio_section_order ON Portfolio_Images(is_active, section, display_order)'
-    ).run().catch(() => {})
-
-    // Seed empty sections and refresh rebuilt asset hashes once per isolate (i.e. once per deploy)
-    await ensurePortfolioDefaults(db)
-
-    portfolioSchemaReady = true
+  const migrations: string[] = []
+  if (columns.has('r2_object_key') && !columns.has('media_key')) {
+    migrations.push('ALTER TABLE Portfolio_Images RENAME COLUMN r2_object_key TO media_key')
   }
+  if (!columns.has('section')) {
+    migrations.push("ALTER TABLE Portfolio_Images ADD COLUMN section TEXT NOT NULL DEFAULT 'gallery'")
+  }
+  if (!columns.has('title')) {
+    migrations.push('ALTER TABLE Portfolio_Images ADD COLUMN title TEXT')
+  }
+
+  for (const sql of migrations) {
+    await targetDb.prepare(sql).run().catch(err => {
+      const message = String(err?.message || err)
+      if (!message.includes('duplicate column') && !message.includes('no such column')) throw err
+    })
+  }
+  await targetDb.prepare(
+    'CREATE INDEX IF NOT EXISTS idx_portfolio_section_order ON Portfolio_Images(is_active, section, display_order)'
+  ).run().catch(() => {})
+
+  await ensurePortfolioDefaults(targetDb)
+}
+
+export async function ensurePortfolioSchema(db: D1Database): Promise<void> {
+  return runOncePerDb(portfolioSchemaByDb, db, runPortfolioSchemaMigration)
 }
 
 /** Confirm uploaded bytes actually exist before a record points at them, so the site never shows a broken image. */
@@ -214,7 +203,7 @@ async function mediaExists(db: D1Database, key: string): Promise<boolean> {
   }
 }
 
-async function deleteStoredMedia(db: D1Database, key: string | null | undefined): Promise<void> {
+export async function deleteStoredMedia(db: D1Database, key: string | null | undefined): Promise<void> {
   if (!key || isExternalUrl(key) || key.startsWith('/assets/')) return
   await db.prepare('DELETE FROM Media_Storage WHERE file_key IN (?, ?, ?)').bind(
     key,
@@ -234,16 +223,6 @@ function validationError(message: string, field: string) {
   }
 }
 
-// Public profile: no placeholder content. A field that was never saved is empty.
-export const EMPTY_PROFILE = {
-  bio: '',
-  email: '',
-  phone: '',
-  location: '',
-  travel: '',
-  social: [] as { platform: string; url: string }[]
-}
-
 export const DEFAULT_PROFILE = {
   bio: "I'm the photographer behind R59—drawn to quiet frames, honest light, and the small gestures that make a portrait feel lived-in.\n\nMost of my work sits between editorial portraiture and documentary storytelling. Whether we're in a studio or chasing late-afternoon sun on location, the goal is always the same: images that still feel like you ten years from now.",
   email: "hello@r59media.com",
@@ -257,85 +236,80 @@ export const DEFAULT_PROFILE = {
   ]
 }
 
+export interface StudioProfile {
+  bio: string
+  email: string
+  phone: string
+  location: string
+  travel: string
+  social: { platform: string; url: string }[]
+}
+
+function normalizeSocialList(rawSocial: unknown): { platform: string; url: string }[] {
+  if (Array.isArray(rawSocial)) return rawSocial
+  if (rawSocial && typeof rawSocial === 'object') {
+    return Object.entries(rawSocial as Record<string, unknown>)
+      .filter(([_, url]) => Boolean(url))
+      .map(([platform, url]) => ({
+        platform: platform.charAt(0).toUpperCase() + platform.slice(1),
+        url: String(url)
+      }))
+  }
+  return []
+}
+
+/**
+ * Reads the studio profile from Admin_Settings, preserving admin-saved fields as-is
+ * and falling back to DEFAULT_PROFILE only when no saved profile exists or JSON is invalid.
+ */
+export async function getStudioProfile(db: D1Database | undefined): Promise<StudioProfile> {
+  if (!db) return DEFAULT_PROFILE
+  const row = await db
+    .prepare("SELECT setting_value FROM Admin_Settings WHERE setting_key = 'profile'")
+    .first<{ setting_value: string }>()
+    .catch(() => null)
+
+  if (!row || row.setting_value === null || row.setting_value === undefined) {
+    return DEFAULT_PROFILE
+  }
+
+  let parsed: any = null
+  try {
+    parsed = JSON.parse(row.setting_value)
+  } catch {
+    return DEFAULT_PROFILE
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return DEFAULT_PROFILE
+  }
+
+  const text = (value: unknown): string =>
+    value === undefined || value === null ? '' : String(value)
+
+  return {
+    bio: text(parsed.bio),
+    email: text(parsed.email),
+    phone: text(parsed.phone),
+    location: text(parsed.location),
+    travel: text(parsed.travel),
+    social: normalizeSocialList(parsed.social)
+  }
+}
+
 export const portfolioRouter = new Hono<{ Bindings: Bindings }>()
 
 // GET: Public studio profile information
-portfolioRouter.get('/profile', async (c) => {
-  const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
-  const cacheControl = bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL
-  let cacheKeyUrl: string | null = null
-
-  if (!bypassEdgeCache) {
-    const version = await getPublicContentVersion(c.env.DB)
-    cacheKeyUrl = buildEdgeCacheKey(c.req.url, version)
-    const cached = await tryEdgeCacheMatch(cacheKeyUrl)
-    if (cached) {
-      return new Response(cached.body, {
-        status: cached.status,
-        statusText: cached.statusText,
-        headers: cached.headers
-      })
-    }
-  }
-
-  const respondProfile = (payload: Record<string, unknown>, cacheable = true) => {
-    c.header('Cache-Control', cacheControl)
-    const res = c.json(payload)
-    if (cacheable && !bypassEdgeCache && cacheKeyUrl) {
-      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
-    }
-    return res
-  }
-
-  try {
-    let parsed: any = null
-    if (c.env.DB) {
-      try {
-        const row = await c.env.DB.prepare(
-          "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'profile'"
-        ).first<{ setting_value: string }>()
-        if (row?.setting_value) {
-          parsed = JSON.parse(row.setting_value)
-        }
-      } catch {}
-    }
-
-    // A stored value (including '') is returned as stored; a missing or null field is empty
-    const text = (value: unknown): string =>
-      value === undefined || value === null ? '' : String(value).trim()
-
-    const bio = text(parsed?.bio)
-    const email = text(parsed?.email)
-
-    if (!bio || !email) {
-      return respondProfile({
-        status: 'success',
-        profile: DEFAULT_PROFILE,
-        data: DEFAULT_PROFILE
-      })
-    }
-
-    const profile = {
-      bio,
-      email,
-      phone: text(parsed?.phone) || DEFAULT_PROFILE.phone,
-      location: text(parsed?.location) || DEFAULT_PROFILE.location,
-      // The admin saves travel as a label (e.g. "Studio only"); keep that text instead of coercing it to true
-      travel: parsed?.travel !== undefined && parsed?.travel !== null && String(parsed.travel).trim()
-        ? (typeof parsed.travel === 'string' ? parsed.travel : Boolean(parsed.travel))
-        : DEFAULT_PROFILE.travel,
-      social: Array.isArray(parsed?.social) && parsed.social.length > 0 ? parsed.social : DEFAULT_PROFILE.social
-    }
-
-    return respondProfile({
-      status: 'success',
-      profile,
-      data: profile
-    })
-  } catch {
-    return respondProfile({ status: 'success', profile: DEFAULT_PROFILE, data: DEFAULT_PROFILE }, false)
-  }
-})
+portfolioRouter.get('/profile', (c) =>
+  withPublicJsonCache(
+    c,
+    async () => {
+      const profile = await getStudioProfile(c.env.DB)
+      return { status: 'success', profile, data: profile }
+    },
+    () => ({ status: 'success', profile: DEFAULT_PROFILE, data: DEFAULT_PROFILE })
+  )
+)
 
 export interface PortfolioListQuery {
   limit?: string
@@ -399,7 +373,6 @@ export async function listPortfolio(
     `SELECT ${SELECT_COLUMNS} FROM Portfolio_Images ${whereSql} ORDER BY display_order ASC, id ASC LIMIT ? OFFSET ?`
   ).bind(...params, limit, offset).all<any>()
 
-  // is_active is always 1 or 0 (the public list only ever holds 1)
   const resolvedVersion = !includeInactive ? (mediaVersion ?? await getPublicContentVersion(db)) : undefined
   const images = (queryRes.results || []).map((row: any) => withUrls({ ...row, is_active: row.is_active ? 1 : 0 }, resolvedVersion))
   return { ok: true, body: { images, limit, offset, status: 'success', data: images } }
@@ -415,44 +388,162 @@ export function portfolioListQuery(req: { query: (name: string) => string | unde
   }
 }
 
+export async function updatePortfolioRecord(
+  db: D1Database,
+  id: string,
+  body: Record<string, any>,
+  options: { verifyMediaExists?: boolean } = {}
+): Promise<
+  | { ok: true; data: any }
+  | { ok: false; status: 400 | 404 | 409; body: Record<string, unknown> }
+> {
+  await ensurePortfolioSchema(db)
+
+  const existing = await db.prepare(`SELECT ${SELECT_COLUMNS} FROM Portfolio_Images WHERE id = ?`).bind(id).first<any>()
+  if (!existing) {
+    return { ok: false, status: 404, body: { error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } } }
+  }
+
+  let section = existing.section || 'gallery'
+  if (body.section !== undefined) {
+    const parsed = parseSection(body.section)
+    if (!parsed) {
+      return {
+        ok: false,
+        status: 400,
+        body: validationError(`Unknown section. Use one of: ${PORTFOLIO_SECTIONS.join(', ')}.`, 'section')
+      }
+    }
+    section = parsed
+  }
+
+  let objectKey = existing.media_key
+  if (body.media_key !== undefined && body.media_key !== existing.media_key) {
+    if (!isValidObjectKey(body.media_key)) {
+      if (options.verifyMediaExists !== false) {
+        return {
+          ok: false,
+          status: 400,
+          body: validationError('A valid media_key (1-1024 characters, no path traversal) is required.', 'media_key')
+        }
+      }
+    } else {
+      const trimmedKey = body.media_key.trim()
+      if (options.verifyMediaExists !== false && !(await mediaExists(db, trimmedKey))) {
+        return {
+          ok: false,
+          status: 400,
+          body: validationError('The uploaded image could not be found. Please upload it again.', 'media_key')
+        }
+      }
+      objectKey = trimmedKey
+    }
+  }
+
+  let display_order = existing.display_order
+  if (body.display_order !== undefined) {
+    const parsedOrder = Number(body.display_order)
+    if (!Number.isFinite(parsedOrder)) {
+      if (options.verifyMediaExists === false) {
+        return {
+          ok: false,
+          status: 400,
+          body: {
+            error: {
+              code: 'VALIDATION_FAILED',
+              message: 'display_order must be a finite number.',
+              details: [{ field: 'display_order', message: 'Must be a finite number.', code: 'INVALID_VALUE' }]
+            }
+          }
+        }
+      }
+    } else {
+      display_order = options.verifyMediaExists === false ? Math.round(parsedOrder) : parsedOrder
+    }
+  }
+
+  const category = body.category !== undefined ? String(body.category) : existing.category
+  const title = body.title !== undefined ? optionalText(body.title, 200) : existing.title
+  const alt_text = body.alt_text !== undefined ? optionalText(body.alt_text, 500) : existing.alt_text
+  const is_active =
+    body.is_active !== undefined
+      ? (body.is_active ? 1 : 0)
+      : body.active !== undefined
+        ? (body.active ? 1 : 0)
+        : existing.is_active
+  const is_featured = body.is_featured !== undefined ? (body.is_featured ? 1 : 0) : existing.is_featured
+
+  await db.prepare(
+    'UPDATE Portfolio_Images SET media_key = ?, section = ?, category = ?, title = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
+  ).bind(objectKey, section, category, title, alt_text, is_active, is_featured, display_order, id).run()
+
+  if (objectKey !== existing.media_key) {
+    await deleteStoredMedia(db, existing.media_key)
+  }
+
+  await bumpPublicContentVersion(db)
+
+  return {
+    ok: true,
+    data: withUrls({
+      id: Number(id),
+      media_key: objectKey,
+      section,
+      category,
+      title,
+      alt_text,
+      is_active,
+      is_featured,
+      display_order
+    })
+  }
+}
+
+export async function deletePortfolioRecord(
+  db: D1Database,
+  id: string
+): Promise<{ ok: true } | { ok: false; status: 404; body: Record<string, unknown> }> {
+  const existing = await db.prepare(
+    'SELECT id, media_key FROM Portfolio_Images WHERE id = ?'
+  ).bind(id).first<{ id: number; media_key: string }>()
+
+  if (!existing) {
+    return { ok: false, status: 404, body: { error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } } }
+  }
+
+  await db.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
+  await deleteStoredMedia(db, existing.media_key)
+  await bumpPublicContentVersion(db)
+
+  return { ok: true }
+}
+
 // GET: Public gallery, optionally narrowed to one site section and/or category
 portfolioRouter.get('/', async (c) => {
-  try {
-    const bypassEdgeCache = shouldBypassPublicEdgeCache(c)
-    let cacheKeyUrl: string | null = null
+  return withPublicEdgeCache(c, async ({ cacheControl, version }) => {
+    try {
+      const result = await listPortfolio(c.env.DB, portfolioListQuery(c.req), { mediaVersion: version })
+      if (!result.ok) {
+        c.header('Cache-Control', 'no-store')
+        return { cacheable: false, response: c.json(result.body, result.status) }
+      }
 
-    let mediaVersion: string | undefined
-    if (!bypassEdgeCache) {
-      mediaVersion = await getPublicContentVersion(c.env.DB)
-      cacheKeyUrl = buildEdgeCacheKey(c.req.url, mediaVersion)
-      const cached = await tryEdgeCacheMatch(cacheKeyUrl)
-      if (cached) {
-        return new Response(cached.body, {
-          status: cached.status,
-          statusText: cached.statusText,
-          headers: cached.headers
-        })
+      c.header('Cache-Control', cacheControl)
+      return { response: c.json(result.body) }
+    } catch {
+      c.header('Cache-Control', 'no-store')
+      return {
+        cacheable: false,
+        response: c.json({
+          error: {
+            code: 'INTERNAL_SERVER_ERROR',
+            message: 'Could not fetch portfolio images.',
+            details: []
+          }
+        }, 500)
       }
     }
-
-    const result = await listPortfolio(c.env.DB, portfolioListQuery(c.req), { mediaVersion })
-    if (!result.ok) return c.json(result.body, result.status)
-
-    c.header('Cache-Control', bypassEdgeCache ? 'no-store' : PUBLIC_READ_CACHE_CONTROL)
-    const res = c.json(result.body)
-    if (!bypassEdgeCache && cacheKeyUrl) {
-      scheduleEdgeCachePut(getExecutionCtx(c), cacheKeyUrl, res)
-    }
-    return res
-  } catch (e: any) {
-    return c.json({
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Could not fetch portfolio images.',
-        details: []
-      }
-    }, 500)
-  }
+  })
 })
 
 // POST: Save a new image record (admin only)
@@ -484,7 +575,6 @@ portfolioRouter.post('/', adminAuth, async (c) => {
       return c.json(validationError('The uploaded image could not be found. Please upload it again.', 'media_key'), 400)
     }
 
-    // New photos go to the end of their section unless the caller asks for a specific position
     let displayOrder = Number(body.display_order)
     if (body.display_order === undefined || body.display_order === null || !Number.isFinite(displayOrder)) {
       const last = await c.env.DB.prepare(
@@ -567,7 +657,7 @@ portfolioRouter.put('/order', adminAuth, async (c) => {
     await bumpPublicContentVersion(c.env.DB)
 
     return c.json({ success: true, status: 'success' })
-  } catch (e: any) {
+  } catch {
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
@@ -581,13 +671,13 @@ portfolioRouter.put('/order', adminAuth, async (c) => {
 // PUT: Update one image's metadata, or swap in a newly uploaded file (admin only)
 portfolioRouter.put('/:id', adminAuth, async (c) => {
   try {
-    await ensurePortfolioSchema(c.env.DB)
-
     const id = c.req.param('id')
     if (!isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
-    const body = await c.req.json().catch(() => ({}))
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body = parsedBody.data
     if (hasForbiddenPaymentFields(body)) {
       return c.json({
         error: {
@@ -598,71 +688,10 @@ portfolioRouter.put('/:id', adminAuth, async (c) => {
       }, 400)
     }
 
-    const existing = await c.env.DB.prepare(`SELECT ${SELECT_COLUMNS} FROM Portfolio_Images WHERE id = ?`).bind(id).first<any>()
-    if (!existing) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
-    }
+    const result = await updatePortfolioRecord(c.env.DB, id, body, { verifyMediaExists: true })
+    if (!result.ok) return c.json(result.body, result.status)
 
-    let section = existing.section
-    if (body.section !== undefined) {
-      section = parseSection(body.section)
-      if (!section) {
-        return c.json(validationError(`Unknown section. Use one of: ${PORTFOLIO_SECTIONS.join(', ')}.`, 'section'), 400)
-      }
-    }
-
-    // Replacing the photo keeps its id, position and captions; only the stored file changes
-    let objectKey = existing.media_key
-    if (body.media_key !== undefined && body.media_key !== existing.media_key) {
-      if (!isValidObjectKey(body.media_key)) {
-        return c.json(validationError('A valid media_key (1-1024 characters, no path traversal) is required.', 'media_key'), 400)
-      }
-      objectKey = body.media_key.trim()
-      if (!(await mediaExists(c.env.DB, objectKey))) {
-        return c.json(validationError('The uploaded image could not be found. Please upload it again.', 'media_key'), 400)
-      }
-    }
-
-    const category = body.category !== undefined ? String(body.category) : existing.category
-    const title = body.title !== undefined ? optionalText(body.title, 200) : existing.title
-    const alt_text = body.alt_text !== undefined ? optionalText(body.alt_text, 500) : existing.alt_text
-    const is_active =
-      body.is_active !== undefined
-        ? (body.is_active ? 1 : 0)
-        : body.active !== undefined
-          ? (body.active ? 1 : 0)
-          : existing.is_active
-    const is_featured = body.is_featured !== undefined ? (body.is_featured ? 1 : 0) : existing.is_featured
-    const display_order = body.display_order !== undefined && Number.isFinite(Number(body.display_order))
-      ? Number(body.display_order)
-      : existing.display_order
-
-    await c.env.DB.prepare(
-      'UPDATE Portfolio_Images SET media_key = ?, section = ?, category = ?, title = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
-    ).bind(objectKey, section, category, title, alt_text, is_active, is_featured, display_order, id).run()
-
-    // The old file is no longer referenced by anything once it has been swapped out
-    if (objectKey !== existing.media_key) {
-      await deleteStoredMedia(c.env.DB, existing.media_key)
-    }
-
-    await bumpPublicContentVersion(c.env.DB)
-
-    return c.json({
-      success: true,
-      status: 'success',
-      data: withUrls({
-        id: Number(id),
-        media_key: objectKey,
-        section,
-        category,
-        title,
-        alt_text,
-        is_active,
-        is_featured,
-        display_order
-      })
-    })
+    return c.json({ success: true, status: 'success', data: result.data })
   } catch (e: any) {
     if (String(e?.message || e).includes('UNIQUE')) {
       return c.json({ error: { code: 'CONFLICT', message: 'That file is already used by another photo.', details: [] } }, 409)
@@ -684,20 +713,11 @@ portfolioRouter.delete('/:id', adminAuth, async (c) => {
     if (!isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
-    const existing = await c.env.DB.prepare(
-      'SELECT id, media_key FROM Portfolio_Images WHERE id = ?'
-    ).bind(id).first<{ id: number; media_key: string }>()
-
-    if (!existing) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
-    }
-
-    await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
-    await deleteStoredMedia(c.env.DB, existing.media_key)
-    await bumpPublicContentVersion(c.env.DB)
+    const result = await deletePortfolioRecord(c.env.DB, id)
+    if (!result.ok) return c.json(result.body, result.status)
 
     return c.json({ success: true, status: 'success', data: { id: Number(id), deleted: true } })
-  } catch (e: any) {
+  } catch {
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
