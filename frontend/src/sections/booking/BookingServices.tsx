@@ -1,11 +1,191 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { motion, useReducedMotion } from 'motion/react'
-import { computeSessionPricing } from '../../api/client'
+import { motion, useReducedMotion, useScroll, useSpring, useTransform, type MotionValue } from 'motion/react'
+import { computeSessionPricing, type PricingData } from '../../api/client'
 import { previewBookingServices } from '../../config/booking'
-import type { BookingServicesProps, ServiceSelection } from '../../types/booking'
+import type { BookingService, BookingServicesProps, ServiceSelection } from '../../types/booking'
 import { BookingProgressBar } from './BookingProgressBar'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import './BookingServices.css'
+
+const MOBILE_CAROUSEL_QUERY = '(max-width: 767px)'
+const DESKTOP_STACK_QUERY = '(min-width: 1181px)'
+
+type BookingLayoutMode = 'mobile' | 'tablet' | 'desktop'
+
+function getBookingLayoutMode(): BookingLayoutMode {
+  if (typeof window === 'undefined') return 'desktop'
+  if (window.matchMedia(MOBILE_CAROUSEL_QUERY).matches) return 'mobile'
+  if (window.matchMedia(DESKTOP_STACK_QUERY).matches) return 'desktop'
+  return 'tablet'
+}
+
+function useBookingLayoutMode(): BookingLayoutMode {
+  const [mode, setMode] = useState<BookingLayoutMode>(getBookingLayoutMode)
+
+  useEffect(() => {
+    const mobileQuery = window.matchMedia(MOBILE_CAROUSEL_QUERY)
+    const desktopQuery = window.matchMedia(DESKTOP_STACK_QUERY)
+    const update = () => setMode(getBookingLayoutMode())
+    update()
+    mobileQuery.addEventListener('change', update)
+    desktopQuery.addEventListener('change', update)
+    return () => {
+      mobileQuery.removeEventListener('change', update)
+      desktopQuery.removeEventListener('change', update)
+    }
+  }, [])
+
+  return mode
+}
+
+interface BookingServiceRowProps {
+  service: BookingService
+  index: number
+  total: number
+  scrollProgress: MotionValue<number>
+  layoutMode: BookingLayoutMode
+  reducedMotion: boolean
+  active: boolean
+  people: number
+  pricing: PricingData | null
+  inquiryHref?: string
+  onUpdateSelection: (next: ServiceSelection) => void
+}
+
+function BookingServiceRow({
+  service,
+  index,
+  total,
+  scrollProgress,
+  layoutMode,
+  reducedMotion,
+  active,
+  people,
+  pricing,
+  inquiryHref,
+  onUpdateSelection,
+}: BookingServiceRowProps) {
+  const span = Math.max(0.24, 0.4 - Math.max(0, total - 5) * 0.03)
+  const step = total > 1 ? (0.96 - span) / (total - 1) : 0
+  const start = index * step
+  const end = start + span
+
+  const desktopOpacity = useTransform(scrollProgress, [start, end], [0, 1], { clamp: true })
+  const desktopY = useTransform(scrollProgress, [start, end], [52, 0], { clamp: true })
+
+  // Mobile cards glide right-to-left matching horizontal swipe exploration,
+  // using standalone CSS `translate` so carousel 3D `transform` stays intact.
+  const mobileStart = index === 0 ? 0.0 : index === 1 ? 0.24 : Math.min(0.48, 0.34 + (index - 2) * 0.06)
+  const mobileEnd = Math.min(0.96, mobileStart + 0.56)
+  const mobileOpacity = useTransform(scrollProgress, [mobileStart, mobileEnd], [0, 1], { clamp: true })
+  const mobileTranslate = useTransform(scrollProgress, [mobileStart, mobileEnd], ['76px 0px', '0px 0px'], {
+    clamp: true,
+  })
+
+  const motionStyle = reducedMotion
+    ? undefined
+    : layoutMode === 'mobile'
+      ? { opacity: mobileOpacity, translate: mobileTranslate }
+      : { opacity: desktopOpacity, y: desktopY }
+
+  const extra = service.additionalPeople
+  const breakdown = computeSessionPricing(service, people, pricing)
+  const price =
+    breakdown.subtotalMinor === null
+      ? 'Custom pricing'
+      : new Intl.NumberFormat('en-US', {
+          style: 'currency',
+          currency: service.currency,
+          maximumFractionDigits: 2,
+        }).format(breakdown.subtotalMinor / 100)
+
+  return (
+    <motion.article
+      className="booking__service"
+      data-service-id={service.id}
+      data-selected={active}
+      style={motionStyle}
+    >
+      {service.image ? (
+        <ProtectedCanvasImage
+          src={service.image.url}
+          alt={service.image.alt}
+          className="booking__image-canvas"
+          containerClassName="booking__image"
+        />
+      ) : (
+        <div className="booking__image booking__placeholder" aria-hidden="true" />
+      )}
+      <div className="booking__description">
+        <h4>{service.name}</h4>
+        <p>{service.description}</p>
+      </div>
+      <p className="booking__best">Best for: {service.bestFor}</p>
+      <div className="booking__details">
+        <span>
+          {service.durationMinutes === null
+            ? 'Scope and timing tailored to you'
+            : `${service.durationMinutes >= 180 ? `${service.durationMinutes / 60} hours` : `${service.durationMinutes} min`}${service.photoCount ? ` · ${service.photoCount} photos` : ''}${service.outfits ? ` · ${service.outfits} outfit${service.outfits === 1 ? '' : 's'}` : ''}`}
+        </span>
+        {active && extra && (
+          <div className="booking__people">
+            <button
+              type="button"
+              aria-label={`Fewer people for ${service.name}`}
+              disabled={people <= extra.includedPeople}
+              onClick={() => onUpdateSelection({ serviceId: service.id, people: people - 1 })}
+            >
+              −
+            </button>
+            <output aria-label="Number of people">{people}</output>
+            <button
+              type="button"
+              aria-label={`More people for ${service.name}`}
+              disabled={people >= (extra.maxPeople ?? Number.MAX_SAFE_INTEGER)}
+              onClick={() => onUpdateSelection({ serviceId: service.id, people: people + 1 })}
+            >
+              +
+            </button>
+            <small>
+              +1 person{' '}
+              <strong>
+                {extra.extraPersonPriceMinor === undefined
+                  ? '+30%'
+                  : `+${new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(extra.extraPersonPriceMinor / 100)}`}
+              </strong>
+            </small>
+          </div>
+        )}
+      </div>
+      <strong className="booking__price" data-custom={service.priceMinor === null}>
+        {price}
+      </strong>
+      {service.bookingMode === 'inquiry' ? (
+        <div className="booking__inquiry">
+          {inquiryHref ? (
+            <a className="booking__button" href={inquiryHref}>
+              Request inquiry
+            </a>
+          ) : (
+            <button type="button" className="booking__button" disabled aria-describedby="booking-inquiry-note">
+              Request inquiry
+            </button>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="booking__button booking__select"
+          aria-pressed={active}
+          aria-label={`${active ? 'Selected' : 'Select'} ${service.name}`}
+          onClick={() => onUpdateSelection({ serviceId: service.id, people })}
+        >
+          {active ? 'Selected' : 'Select session'}
+        </button>
+      )}
+    </motion.article>
+  )
+}
 
 export function BookingServices({
   services = previewBookingServices,
@@ -27,7 +207,17 @@ export function BookingServices({
   const [visibleIndex, setVisibleIndex] = useState(0)
   const indicatorId = useId().replace(/:/g, '')
   const reducedMotion = useReducedMotion()
+  const layoutMode = useBookingLayoutMode()
   const track = useRef<HTMLDivElement>(null)
+  const { scrollYProgress } = useScroll({
+    target: track,
+    offset: layoutMode === 'mobile' ? ['start 0.86', 'start 0.42'] : ['start 0.8', 'start 0.38'],
+  })
+  const smoothProgress = useSpring(scrollYProgress, {
+    stiffness: 150,
+    damping: 24,
+    mass: 0.38,
+  })
 
   useEffect(() => {
     const container = track.current
@@ -174,104 +364,24 @@ export function BookingServices({
                   setVisibleIndex(nearest)
                 }}
               >
-                {services.map(service => {
+                {services.map((service, index) => {
                   const active = selected?.id === service.id
                   const people = active ? validSelection?.people ?? 1 : service.additionalPeople?.includedPeople ?? 1
-                  const extra = service.additionalPeople
-                  const breakdown = computeSessionPricing(service, people, pricing)
-                  const price =
-                    breakdown.subtotalMinor === null
-                      ? 'Custom pricing'
-                      : new Intl.NumberFormat('en-US', {
-                          style: 'currency',
-                          currency: service.currency,
-                          maximumFractionDigits: 2,
-                        }).format(breakdown.subtotalMinor / 100)
                   return (
-                    <article
+                    <BookingServiceRow
                       key={service.id}
-                      className="booking__service"
-                      data-service-id={service.id}
-                      data-selected={active}
-                    >
-                      {service.image ? (
-                        <ProtectedCanvasImage
-                          src={service.image.url}
-                          alt={service.image.alt}
-                          className="booking__image-canvas"
-                          containerClassName="booking__image"
-                        />
-                      ) : (
-                        <div className="booking__image booking__placeholder" aria-hidden="true" />
-                      )}
-                      <div className="booking__description">
-                        <h4>{service.name}</h4>
-                        <p>{service.description}</p>
-                      </div>
-                      <p className="booking__best">Best for: {service.bestFor}</p>
-                      <div className="booking__details">
-                        <span>
-                          {service.durationMinutes === null
-                            ? 'Scope and timing tailored to you'
-                            : `${service.durationMinutes >= 180 ? `${service.durationMinutes / 60} hours` : `${service.durationMinutes} min`}${service.photoCount ? ` · ${service.photoCount} photos` : ''}${service.outfits ? ` · ${service.outfits} outfit${service.outfits === 1 ? '' : 's'}` : ''}`}
-                        </span>
-                        {active && extra && (
-                          <div className="booking__people">
-                            <button
-                              type="button"
-                              aria-label={`Fewer people for ${service.name}`}
-                              disabled={people <= extra.includedPeople}
-                              onClick={() => updateSelection({ serviceId: service.id, people: people - 1 })}
-                            >
-                              −
-                            </button>
-                            <output aria-label="Number of people">{people}</output>
-                            <button
-                              type="button"
-                              aria-label={`More people for ${service.name}`}
-                              disabled={people >= (extra.maxPeople ?? Number.MAX_SAFE_INTEGER)}
-                              onClick={() => updateSelection({ serviceId: service.id, people: people + 1 })}
-                            >
-                              +
-                            </button>
-                            <small>
-                              +1 person{' '}
-                              <strong>
-                                {extra.extraPersonPriceMinor === undefined
-                                  ? '+30%'
-                                  : `+${new Intl.NumberFormat('en-US', { style: 'currency', currency: service.currency }).format(extra.extraPersonPriceMinor / 100)}`}
-                              </strong>
-                            </small>
-                          </div>
-                        )}
-                      </div>
-                      <strong className="booking__price" data-custom={service.priceMinor === null}>
-                        {price}
-                      </strong>
-                      {service.bookingMode === 'inquiry' ? (
-                        <div className="booking__inquiry">
-                          {inquiryHref ? (
-                            <a className="booking__button" href={inquiryHref}>
-                              Request inquiry
-                            </a>
-                          ) : (
-                            <button type="button" className="booking__button" disabled aria-describedby="booking-inquiry-note">
-                              Request inquiry
-                            </button>
-                          )}
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          className="booking__button booking__select"
-                          aria-pressed={active}
-                          aria-label={`${active ? 'Selected' : 'Select'} ${service.name}`}
-                          onClick={() => updateSelection({ serviceId: service.id, people })}
-                        >
-                          {active ? 'Selected' : 'Select session'}
-                        </button>
-                      )}
-                    </article>
+                      service={service}
+                      index={index}
+                      total={services.length}
+                      scrollProgress={smoothProgress}
+                      layoutMode={layoutMode}
+                      reducedMotion={Boolean(reducedMotion)}
+                      active={active}
+                      people={people}
+                      pricing={pricing}
+                      inquiryHref={inquiryHref}
+                      onUpdateSelection={updateSelection}
+                    />
                   )
                 })}
               </div>
