@@ -65,9 +65,9 @@ The **R59 Media Admin Dashboard** is a standalone, high-performance administrati
 ```
 
 ### Core Architecture Highlights
-* **Decoupled Security:** The Admin Dashboard (`/admin`) is isolated from public frontend routes and protected by cryptographic JWT tokens and hashed master credentials.
+* **Decoupled Security:** The Admin Dashboard (`/admin`) is isolated from public frontend routes and protected by **Google Sign-In** (restricted to the configured `ADMIN_EMAIL`) and HMAC-signed `HttpOnly` session cookies (`SESSION_SECRET`).
 * **Edge-Native Backend:** Powered by Cloudflare Workers and Cloudflare D1 (distributed SQL database), ensuring sub-50ms administrative response times worldwide.
-* **Direct-to-R2 Media Uploads:** Photos uploaded in the admin panel are converted to modern WebP in the browser and uploaded directly to Cloudflare R2 bucket storage via pre-signed authorization URLs.
+* **Direct-to-D1 Media Uploads:** Photos uploaded in the admin panel are converted to modern WebP in the browser and stored directly in **Cloudflare D1 (`Media_Storage`)**, served through HMAC-signed URLs (`MEDIA_SIGNING_SECRET`) with zero external bucket dependencies.
 
 ---
 
@@ -82,10 +82,9 @@ The **R59 Media Admin Dashboard** is a standalone, high-performance administrati
 2. If unauthenticated, the portal displays a dedicated, branded administrative login screen.
 
 ### 2.2 Logging In
-1. Enter the studio master administrative password.
-2. Click **Log In**.
-3. Upon validation, the server generates an encrypted session token stored securely in `sessionStorage` / secure browser storage.
-4. **Session Lifetime:** To protect business records, administrative sessions automatically expire upon browser closure or extended inactivity. A prominent **Log Out** button in the sidebar drawer allows immediate credential clearing.
+1. Click **Sign in with Google** and select the authorized studio Google account matching `ADMIN_EMAIL`.
+2. Upon verification of the Google ID token, the server issues a secure, HMAC-signed `HttpOnly` session cookie (`SESSION_SECRET`).
+3. **Session Lifetime:** To protect business records, administrative sessions automatically expire after their configured lifetime and can be revoked immediately using the **Log Out** button in the sidebar drawer.
 
 ---
 
@@ -248,7 +247,7 @@ When uploading photos straight from professional mirrorless cameras (often 20MB�
 ### 7.4 Curating the Portfolio Gallery
 1. Filter by category: **Portraits**, **Events**, or **Editorial**.
 2. Upload new photographic works or mark specific images as **Featured** (`is_featured = 1`) to highlight them on the main stage.
-3. To delete an image, click the trash icon and confirm deletion. The system deletes the database record and frees storage on Cloudflare R2.
+3. To delete an image, click the trash icon and confirm deletion. The system deletes the database record and frees storage in **Cloudflare D1 (`Media_Storage`)**.
 
 ---
 
@@ -288,21 +287,24 @@ To ensure the platform operates hands-free for years without administrative inte
 
 ### 10.1 Google Cloud OAuth "In Production" Status
 > **CRITICAL CONFIGURATION:**
-> Open **Google Cloud Console → APIs & Services → OAuth consent screen**.
+> Ensure the OAuth client lives in a **client-owned Google Cloud project** and open **Google Cloud Console → APIs & Services → OAuth consent screen**.
 > Confirm the publishing status is set to **In Production** (not *Testing*).
-> When set to *Testing*, Google automatically revokes the calendar refresh token every **7 days**, which would disconnect automatic Google Calendar sync. Setting it to *In Production* ensures permanent, unattended synchronization.
+> When set to *Testing*, Google automatically revokes `GOOGLE_CALENDAR_REFRESH_TOKEN` every **7 days**, which would disconnect automatic Google Calendar sync. Setting it to *In Production* ensures permanent, unattended synchronization.
 
-### 10.2 Square Production Credentials & Webhook Verification
-* In Cloudflare Dashboard, ensure `SQUARE_ENVIRONMENT` is set to `production`.
-* Confirm `SQUARE_WEBHOOK_URL` matches `https://<your-domain>/api/webhooks/square`.
-* Confirm `SQUARE_WEBHOOK_SIGNATURE_KEY` matches the key in the Square Developer Dashboard to validate all deposit transactions.
+### 10.2 Cloudflare Variables, Secrets & Square Webhook Verification
+* **Deploy Safety (`--keep-vars`):** Automated deployments use `wrangler deploy --minify --keep-vars` with mutable `[vars]` omitted from `backend/wrangler.toml`, ensuring production values in the Cloudflare Dashboard are never overwritten.
+* **Required Auth & Signing Secrets:** Confirm `SESSION_SECRET` (`>= 32` chars), `MEDIA_SIGNING_SECRET` (`>= 32` chars), `ADMIN_EMAIL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_CALENDAR_REFRESH_TOKEN`, `GOOGLE_CALENDAR_ID`, `RESEND_API_KEY`, and `EMAIL_FROM` are set under non-expiring client accounts.
+* **Square Production Credentials:** In Cloudflare Dashboard, ensure `SQUARE_ENVIRONMENT` is set to `production` alongside `SQUARE_APPLICATION_ID`, `SQUARE_ACCESS_TOKEN`, and `SQUARE_LOCATION_ID`.
+* **Square Webhook:** Confirm `SQUARE_WEBHOOK_URL` matches `https://<your-domain>/api/square/webhook` and `SQUARE_WEBHOOK_SIGNATURE_KEY` matches the Square Developer Dashboard signing key.
+* **Optional Protections & Overrides:** Set `TURNSTILE_SECRET_KEY` (2-minute Cloudflare Turnstile widget setup) for bot protection on contact/booking endpoints, and optional `PUBLIC_ORIGIN` if you need an explicit canonical origin for links and `.ics` calendar URLs (`/api/bookings/:id/calendar.ics`).
 
-### 10.3 Automated Rollback Safety Net
-Every deployment via GitHub Actions curls `/api/health` 3 times. If any health check fails, the deployment script automatically runs:
+### 10.3 Automated Backups, Rollback Safety Net & Uptime Monitoring
+* Every deployment via GitHub Actions exports a pre-migration D1 SQL backup artifact (`30-day` retention), runs remote D1 migrations (failing closed on permission errors), deploys with `--keep-vars`, and smoke-checks `/api/health`, `/`, and `/admin/` 3 times. If any check fails, the deployment script automatically runs:
 ```bash
 wrangler rollback --yes
 ```
-This guarantees that an unexpected error will never leave the live site or admin panel in an inoperable state.
+and sends a Resend alert email (when `RESEND_API_KEY` and `ADMIN_EMAIL` are set). This guarantees that an unexpected error will never leave the live site or admin panel in an inoperable state.
+* **GitHub Actions 60-Day Inactivity Caveat:** GitHub pauses scheduled `cron` workflows after 60 days without commits. Pair weekly Dependabot runs with a free external monitor (such as **UptimeRobot** or **Cloudflare Health Checks**) pinging `GET https://<your-domain>/api/health` every 5 minutes so downtime alerts always trigger immediately.
 
 ---
 
