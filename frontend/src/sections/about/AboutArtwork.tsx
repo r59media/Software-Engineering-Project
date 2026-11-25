@@ -1,4 +1,5 @@
 import { useEffect, type PointerEvent } from 'react'
+import { motion, useReducedMotion, type MotionStyle } from 'motion/react'
 import { ProtectedCanvasImage, prewarmProtectedImages } from '../../components/ProtectedCanvasImage'
 import { aboutDecorations, aboutImages } from '../../config/about'
 import type { AboutImage } from '../../types/about'
@@ -21,6 +22,7 @@ let activePrewarmController: AbortController | null = null
 export interface AboutArtworkProps {
   image: AboutImage
   className?: string
+  motionStyle?: MotionStyle
   onPointerMove?: (e: PointerEvent<HTMLDivElement>) => void
   onPointerLeave?: (e: PointerEvent<HTMLDivElement>) => void
   onPointerCancel?: (e: PointerEvent<HTMLDivElement>) => void
@@ -29,10 +31,13 @@ export interface AboutArtworkProps {
 export function AboutArtwork({
   image,
   className = '',
+  motionStyle,
   onPointerMove,
   onPointerLeave,
   onPointerCancel,
 }: AboutArtworkProps) {
+  const prefersReducedMotion = useReducedMotion()
+
   useEffect(() => {
     mountedArtworkCount += 1
 
@@ -55,6 +60,18 @@ export function AboutArtwork({
     }
   }, [])
 
+  const content = (
+    <ProtectedCanvasImage
+      src={image.imageUrl}
+      alt={image.alt}
+      className="about__art"
+      containerClassName="about__art-container"
+      width={image.width}
+      height={image.height}
+      rootMargin="600px"
+    />
+  )
+
   return (
     <div
       className={`about__artwork ${className}`}
@@ -64,17 +81,19 @@ export function AboutArtwork({
       onPointerLeave={onPointerLeave}
       onPointerCancel={onPointerCancel}
     >
-      <div className="about__motion" data-about-motion={image.id}>
-        <ProtectedCanvasImage
-          src={image.imageUrl}
-          alt={image.alt}
-          className="about__art"
-          containerClassName="about__art-container"
-          width={image.width}
-          height={image.height}
-          rootMargin="600px"
-        />
-      </div>
+      {motionStyle && !prefersReducedMotion ? (
+        <motion.div
+          className="about__motion"
+          data-about-motion={image.id}
+          style={motionStyle}
+        >
+          {content}
+        </motion.div>
+      ) : (
+        <div className="about__motion" data-about-motion={image.id}>
+          {content}
+        </div>
+      )}
     </div>
   )
 }
