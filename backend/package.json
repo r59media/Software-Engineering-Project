@@ -25,7 +25,7 @@
     "ub:check": "node scripts/check-ub-metrics.mjs --strict --max-cc=50"
   },
   "dependencies": {
-    "hono": "4.13.18",
+    "hono": "4.13.19",
     "square": "46.0.0"
   },
   "devDependencies": {
