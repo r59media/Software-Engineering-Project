@@ -6,9 +6,8 @@ import topLens from '../assets/aboutMeImages/r59media-large-lens.webp'
 import rightLens from '../assets/aboutMeImages/r59media-medium-lens.webp'
 import camera from '../assets/aboutMeImages/r59media-dslr.webp'
 import flash from '../assets/aboutMeImages/r59media-speedlight.webp'
-import leftCard from '../assets/aboutMeImages/r59media-32memCard.webp'
-import topCard from '../assets/aboutMeImages/r59media-32memCard.webp'
-import bottomCard from '../assets/aboutMeImages/r59media-32memCard.webp'
+import sdCard32 from '../assets/aboutMeImages/R59_SD_32gb.webp'
+import sdCard128 from '../assets/aboutMeImages/R59_SD_128gb.webp'
 import paper from '../assets/aboutMeImages/about-paper.webp'
 import type { AboutContent, AboutImage } from '../types/about'
 
@@ -33,7 +32,7 @@ export const aboutDecorations: readonly AboutImage[] = [
   { id: 'top-right-lens', imageUrl: rightLens, alt: '', width: 760, height: 760 },
   { id: 'bottom-right-camera', imageUrl: camera, alt: '', width: 1100, height: 1247 },
   { id: 'left-flash', imageUrl: flash, alt: '', width: 520, height: 803 },
-  { id: 'left-memory-card', imageUrl: leftCard, alt: '', width: 256, height: 256 },
-  { id: 'top-memory-card', imageUrl: topCard, alt: '', width: 256, height: 256 },
-  { id: 'bottom-memory-card', imageUrl: bottomCard, alt: '', width: 256, height: 256 },
+  { id: 'left-memory-card', imageUrl: sdCard32, alt: '', width: 935, height: 1311 },
+  { id: 'top-memory-card', imageUrl: sdCard128, alt: '', width: 920, height: 1203 },
+  { id: 'bottom-memory-card', imageUrl: sdCard128, alt: '', width: 920, height: 1203 },
 ]

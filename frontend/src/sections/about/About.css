@@ -70,11 +70,11 @@
 .about__decorations [data-about-part="bottom-right-camera"] .about__art { transform: rotate(25.65deg) scale(1.25); }
 .about__decorations [data-about-part="left-flash"] { width: 10.46%; left: -4.4%; bottom: 1.9cqw; }
 .about__decorations [data-about-part="left-flash"] .about__art { transform: rotate(8.98deg); }
-.about__decorations [data-about-part="left-memory-card"] { width: 3.46%; left: -1.2%; top: 1.65cqw; }
+.about__decorations [data-about-part="left-memory-card"] { width: 2.6%; left: -1.05%; top: 1.65cqw; }
 .about__decorations [data-about-part="left-memory-card"] .about__art { transform: rotate(4.71deg); }
-.about__decorations [data-about-part="top-memory-card"] { width: 4.01%; left: 67.7%; top: 3.6cqw; }
+.about__decorations [data-about-part="top-memory-card"] { width: 3.05%; left: 67.7%; top: 3.6cqw; }
 .about__decorations [data-about-part="top-memory-card"] .about__art { transform: rotate(-6.4deg); }
-.about__decorations [data-about-part="bottom-memory-card"] { width: 3.3%; left: 79.9%; bottom: 12.4cqw; }
+.about__decorations [data-about-part="bottom-memory-card"] { width: 2.5%; left: 79.9%; bottom: 12.4cqw; }
 .about__decorations [data-about-part="bottom-memory-card"] .about__art { transform: rotate(18.45deg); }
 @media (max-width: 1000px) {
   .about__decorations .about__art {
@@ -93,9 +93,9 @@
   .about__decorations [data-about-part="top-lens"] { width: 20%; left: 30.2%; top: -7cqw; }
   .about__decorations [data-about-part="top-right-lens"] { width: 26%; right: 3%; top: 18cqw; }
   .about__decorations [data-about-part="left-flash"] { width: 15%; bottom: auto; top: calc(55cqw + clamp(3rem, 8vw, 5rem)); }
-  .about__decorations [data-about-part="left-memory-card"] { width: clamp(2rem, 5vw, 3rem); left: -.625rem; top: 1.25rem; }
-  .about__decorations [data-about-part="top-memory-card"] { width: clamp(2.25rem, 5.5vw, 3.5rem); top: 1rem; }
-  .about__decorations [data-about-part="bottom-memory-card"] { width: clamp(2rem, 5vw, 3rem); left: 58%; bottom: 8rem; }
+  .about__decorations [data-about-part="left-memory-card"] { width: clamp(1.6rem, 3.8vw, 2.3rem); left: -.625rem; top: 1.25rem; }
+  .about__decorations [data-about-part="top-memory-card"] { width: clamp(1.75rem, 4.2vw, 2.65rem); top: 1rem; }
+  .about__decorations [data-about-part="bottom-memory-card"] { width: clamp(1.6rem, 3.8vw, 2.3rem); left: 58%; bottom: 8rem; }
   .about__decorations [data-about-part="bottom-right-camera"] { width: 24%; bottom: -4cqw; }
 }
 
