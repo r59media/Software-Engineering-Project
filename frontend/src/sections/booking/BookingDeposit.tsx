@@ -323,8 +323,14 @@ export function BookingDeposit({
 
     async function initPayment() {
       if (!isSquareConfigured) {
-        setIsSandboxMode(true)
-        setCardLoading(false)
+        if (import.meta.env.DEV) {
+          setIsSandboxMode(true)
+          setCardLoading(false)
+        } else {
+          setIsSandboxMode(false)
+          setCardLoading(false)
+          setCardError('Payment form is temporarily unavailable. Please refresh or contact us.')
+        }
         return
       }
 
@@ -590,9 +596,9 @@ export function BookingDeposit({
     setBusy(true)
 
     try {
-      let sourceId = 'cnon:card-nonce-ok'
+      let sourceId = import.meta.env.DEV ? 'cnon:card-nonce-ok' : ''
 
-      if (!isSandboxMode && cardRef.current) {
+      if (cardRef.current) {
         const result = await cardRef.current.tokenize()
         if (result.status !== 'OK' || !result.token) {
           const errorMsg =
@@ -604,6 +610,10 @@ export function BookingDeposit({
           return
         }
         sourceId = result.token
+      } else if (!(import.meta.env.DEV && isSandboxMode)) {
+        setError('Payment form is not ready. Please reload and try again.')
+        setBusy(false)
+        return
       }
 
       const slotId = dateTime.slotId ? Number(dateTime.slotId) : 1
@@ -666,6 +676,7 @@ export function BookingDeposit({
 
         onSuccess?.(confirmedSummary)
       } else if (
+        import.meta.env.DEV &&
         isSandboxMode &&
         (res.status === 'error' || res.code === 'NETWORK_ERROR')
       ) {
@@ -687,7 +698,7 @@ export function BookingDeposit({
         )
       }
     } catch {
-      if (isSandboxMode) {
+      if (import.meta.env.DEV && isSandboxMode) {
         const simulatedId = Math.floor(1000 + Math.random() * 9000)
         const confirmedSummary: ConfirmedBookingSummary = {
           bookingId: simulatedId,
@@ -1130,7 +1141,7 @@ export function BookingDeposit({
                     className="booking-deposit__card-container"
                     hidden={!isSquareConfigured || isSandboxMode}
                   />
-                  {(!isSquareConfigured || isSandboxMode) && (
+                  {import.meta.env.DEV && (!isSquareConfigured || isSandboxMode) && (
                     <div className="booking-deposit__card-inputs-row">
                       <input
                         type="text"
@@ -1367,11 +1378,11 @@ export function BookingDeposit({
                   !city.trim() ||
                   !stateCode.trim() ||
                   !/^\d{5}(?:-\d{4})?$/.test(postalCode.trim()))) ||
-              (!isSquareConfigured || isSandboxMode
+              (import.meta.env.DEV && (!isSquareConfigured || isSandboxMode)
                 ? cardNum.replace(/\D/g, '').length < 13 ||
                   !/^\d{2}\/\d{2}$/.test(cardExp) ||
                   cardCvv.length < 3
-                : cardLoading || Boolean(cardError) || !squareCardValid)
+                : !isSquareConfigured || cardLoading || Boolean(cardError) || !squareCardValid)
             }
           >
             {busy
