@@ -9,7 +9,6 @@ import lightLogo from '../../assets/footer/r59-media-logo-light.svg'
 import cameraLogo from '../../assets/footer/logo-camera-state.svg'
 import revealLogo from '../../assets/footer/logo-reveal-state.svg'
 import divider from '../../assets/footer/divider.svg'
-import upArrow from '../../assets/footer/back-to-top.svg'
 import { FooterBackground } from './FooterBackground'
 import { usePublicProfile } from '../../hooks/usePublicProfile'
 import './SiteFooter.css'
@@ -123,7 +122,12 @@ export function SiteFooter({
           <img src={adminIcon} alt="" width="44" height="37" />
         </a>
         <a href="#top" className="site-footer__top" aria-label="Back to top" title="Back to top">
-          <img src={upArrow} alt="" width="59.4292" height="59.4292" />
+          <svg width="59.4292" height="59.4292" viewBox="0 0 59.4292 59.4292" fill="none" aria-hidden="true">
+            <path
+              d="M26.0003 59.4292V14.2073L5.20005 35.0075L0 29.7146L29.7146 0L59.4292 29.7146L54.2291 35.0075L33.4289 14.2073V59.4292H26.0003Z"
+              fill="currentColor"
+            />
+          </svg>
         </a>
       </div>
       <div className="site-footer__content">
