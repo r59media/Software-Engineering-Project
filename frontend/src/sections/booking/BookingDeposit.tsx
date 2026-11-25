@@ -1070,47 +1070,47 @@ export function BookingDeposit({
                     ref={cardContainerRef}
                     id="card-container"
                     className="booking-deposit__card-container"
-                  >
-                    {!cardRef.current && (
-                      <div className="booking-deposit__card-inputs-row">
+                    hidden={!isSquareConfigured || isSandboxMode}
+                  />
+                  {(!isSquareConfigured || isSandboxMode) && (
+                    <div className="booking-deposit__card-inputs-row">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="cc-number"
+                        className="booking-deposit__card-field booking-deposit__card-field--num"
+                        placeholder="Card number"
+                        value={cardNum}
+                        onChange={e => setCardNum(formatCardNumber(e.target.value))}
+                        maxLength={19}
+                        disabled={busy}
+                      />
+                      <div className="booking-deposit__card-meta-wrap">
                         <input
                           type="text"
                           inputMode="numeric"
-                          autoComplete="cc-number"
-                          className="booking-deposit__card-field booking-deposit__card-field--num"
-                          placeholder="Card number"
-                          value={cardNum}
-                          onChange={e => setCardNum(formatCardNumber(e.target.value))}
-                          maxLength={19}
+                          autoComplete="cc-exp"
+                          className="booking-deposit__card-field booking-deposit__card-field--exp"
+                          placeholder="MM/YY"
+                          value={cardExp}
+                          onChange={e => setCardExp(formatExpDate(e.target.value))}
+                          maxLength={5}
                           disabled={busy}
                         />
-                        <div className="booking-deposit__card-meta-wrap">
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            autoComplete="cc-exp"
-                            className="booking-deposit__card-field booking-deposit__card-field--exp"
-                            placeholder="MM/YY"
-                            value={cardExp}
-                            onChange={e => setCardExp(formatExpDate(e.target.value))}
-                            maxLength={5}
-                            disabled={busy}
-                          />
-                          <input
-                            type="text"
-                            inputMode="numeric"
-                            autoComplete="cc-csc"
-                            className="booking-deposit__card-field booking-deposit__card-field--cvv"
-                            placeholder="CVV"
-                            value={cardCvv}
-                            onChange={e => setCardCvv(e.target.value.replace(/\D/g, '').slice(0, 4))}
-                            maxLength={4}
-                            disabled={busy}
-                          />
-                        </div>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="cc-csc"
+                          className="booking-deposit__card-field booking-deposit__card-field--cvv"
+                          placeholder="CVV"
+                          value={cardCvv}
+                          onChange={e => setCardCvv(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                          maxLength={4}
+                          disabled={busy}
+                        />
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
 
                 {cardLoading && isSquareConfigured && (
