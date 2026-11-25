@@ -1,25 +1,9 @@
 import type { Context, Next } from 'hono'
 import type { Bindings } from '../index'
+import { timingSafeEqual, bytesToHex } from '../utils/crypto.ts'
+import { checkInMemoryBucket, upsertD1RateLimitBucket, type MemoryBucketEntry } from './rateLimit.ts'
 
-/**
- * Constant-time string comparison to prevent timing attacks without length leaks.
- */
-export function timingSafeEqual(a: string, b: string): boolean {
-  if (typeof a !== 'string' || typeof b !== 'string') return false
-  const encoder = new TextEncoder()
-  const aBytes = encoder.encode(a)
-  const bBytes = encoder.encode(b)
-
-  // Compare all bytes without early return on length mismatch to prevent length-leak timing branches
-  let mismatch = aBytes.byteLength === bBytes.byteLength ? 0 : 1
-  const maxLen = Math.max(aBytes.byteLength, bBytes.byteLength)
-  for (let i = 0; i < maxLen; i++) {
-    const aByte = i < aBytes.byteLength ? aBytes[i] : 0
-    const bByte = i < bBytes.byteLength ? bBytes[i] : 0
-    mismatch |= aByte ^ bByte
-  }
-  return mismatch === 0
-}
+export { timingSafeEqual }
 
 // ── Google ID Token Verification (Web Crypto RS256 + JWKS cache) ──
 export interface GoogleJwksKey {
@@ -320,10 +304,6 @@ const PBKDF2_KEY_BITS = 256
  */
 const SALT_BYTES = 16
 
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('')
-}
-
 function hexToBytes(hex: string): Uint8Array | null {
   if (!hex || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) return null
   const out = new Uint8Array(hex.length / 2)
@@ -437,13 +417,14 @@ export async function getMediaSigningSecret(env?: Bindings): Promise<string | nu
 }
 
 /**
- * Creates an HMAC-SHA256 signed session token containing the authenticated email, issuedAt timestamp, and expiration.
+ * Creates an HMAC-SHA256 signed session token containing the authenticated email, issuedAt timestamp, expiration, and jti.
  * Fixed positional args: (secret: string, email: string).
  */
 export async function createSessionToken(secret: string, email: string): Promise<string> {
   const now = Date.now()
   const expiry = now + SESSION_TTL_MS
-  const payload = `${email}:${now}:${expiry}`
+  const jti = crypto.randomUUID()
+  const payload = `${email}:${now}:${expiry}:${jti}`
   const encoder = new TextEncoder()
   const key = await crypto.subtle.importKey(
     'raw',
@@ -453,38 +434,53 @@ export async function createSessionToken(secret: string, email: string): Promise
     ['sign']
   )
   const signatureBytes = await crypto.subtle.sign('HMAC', key, encoder.encode(payload))
-  const signatureHex = Array.from(new Uint8Array(signatureBytes))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('')
+  const signatureHex = bytesToHex(new Uint8Array(signatureBytes))
   const payloadB64 = btoa(payload)
   return `${payloadB64}.${signatureHex}`
 }
 
 /**
- * Verifies an HMAC-SHA256 signed session token.
+ * Verifies an HMAC-SHA256 signed session token (supports both 4-part email:issuedAt:expiry:jti and legacy 3-part format).
  */
 export async function verifySessionToken(
   token: string,
   secret: string
-): Promise<{ valid: boolean; email?: string; issuedAt?: number }> {
+): Promise<{ valid: boolean; email?: string; issuedAt?: number; jti?: string }> {
   try {
     const parts = token.split('.')
     if (parts.length !== 2) return { valid: false }
     const [payloadB64, providedSigHex] = parts
     const payload = atob(payloadB64)
-    const colonLast = payload.lastIndexOf(':')
-    if (colonLast === -1) return { valid: false }
-    const expiryStr = payload.substring(colonLast + 1)
-    const rem = payload.substring(0, colonLast)
-    const colonSecondLast = rem.lastIndexOf(':')
-    if (colonSecondLast === -1) return { valid: false }
-    const issuedAtStr = rem.substring(colonSecondLast + 1)
-    const email = rem.substring(0, colonSecondLast)
+    const segments = payload.split(':')
+    if (segments.length < 3) return { valid: false }
 
+    const lastSegment = segments[segments.length - 1]
+    const isThreePartNumericExpiry = /^\d+$/.test(lastSegment)
+
+    let email: string
+    let issuedAtStr: string
+    let expiryStr: string
+    let jti: string | undefined
+
+    if (isThreePartNumericExpiry) {
+      expiryStr = lastSegment
+      issuedAtStr = segments[segments.length - 2]
+      email = segments.slice(0, -2).join(':')
+    } else {
+      if (segments.length < 4 || !lastSegment) return { valid: false }
+      jti = lastSegment
+      expiryStr = segments[segments.length - 2]
+      issuedAtStr = segments[segments.length - 3]
+      email = segments.slice(0, -3).join(':')
+    }
+
+    if (!/^\d+$/.test(issuedAtStr) || !/^\d+$/.test(expiryStr)) {
+      return { valid: false }
+    }
     const issuedAt = Number(issuedAtStr)
     const expiry = Number(expiryStr)
 
-    if (!email || !issuedAt || !expiry || isNaN(issuedAt) || isNaN(expiry) || Date.now() > expiry) {
+    if (!email || !issuedAt || !expiry || !Number.isFinite(issuedAt) || !Number.isFinite(expiry) || Date.now() > expiry) {
       return { valid: false }
     }
     const encoder = new TextEncoder()
@@ -496,13 +492,11 @@ export async function verifySessionToken(
       ['sign']
     )
     const signatureBytes = await crypto.subtle.sign('HMAC', key, encoder.encode(payload))
-    const expectedSigHex = Array.from(new Uint8Array(signatureBytes))
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join('')
+    const expectedSigHex = bytesToHex(new Uint8Array(signatureBytes))
     if (!timingSafeEqual(providedSigHex, expectedSigHex)) {
       return { valid: false }
     }
-    return { valid: true, email, issuedAt }
+    return { valid: true, email, issuedAt, ...(jti ? { jti } : {}) }
   } catch {
     return { valid: false }
   }
@@ -511,17 +505,9 @@ export async function verifySessionToken(
 const MAX_REVOKED_TOKENS = 1000
 const revokedTokens = new Map<string, number>()
 
-// Short-lived positive cache for tokens confirmed NOT revoked (≤30s TTL per token)
-const POSITIVE_REVOCATION_CACHE_TTL_MS = 30_000
-const MAX_NOT_REVOKED_CACHE = 1000
-const notRevokedTokens = new Map<string, number>()
-
-function pruneTokenCaches(now: number): void {
+function pruneRevokedTokens(now: number): void {
   for (const [k, exp] of revokedTokens.entries()) {
     if (now > exp) revokedTokens.delete(k)
-  }
-  for (const [k, validUntil] of notRevokedTokens.entries()) {
-    if (now > validUntil) notRevokedTokens.delete(k)
   }
 }
 
@@ -536,7 +522,7 @@ function getTokenKey(token: string): string {
 export function revokeSessionToken(token: string, ttlMs: number = SESSION_TTL_MS): void {
   if (!token) return
   const now = Date.now()
-  pruneTokenCaches(now)
+  pruneRevokedTokens(now)
   const key = getTokenKey(token)
   if (revokedTokens.size >= MAX_REVOKED_TOKENS) {
     const oldestKey = revokedTokens.keys().next().value
@@ -545,8 +531,6 @@ export function revokeSessionToken(token: string, ttlMs: number = SESSION_TTL_MS
   const expiry = now + ttlMs
   revokedTokens.set(token, expiry)
   revokedTokens.set(key, expiry)
-  notRevokedTokens.delete(token)
-  notRevokedTokens.delete(key)
 }
 
 /**
@@ -628,31 +612,7 @@ export function hasForbiddenPaymentFields(obj: unknown): boolean {
 
 // ── Atomic D1 Distributed Rate Limiter for Admin Authentication (Finding 2) ──
 const MAX_IN_MEMORY_LOGIN_BUCKETS = 1000
-const inMemoryLoginAttempts = new Map<string, { attempts: number; windowStart: number }>()
-
-function recordInMemoryAttempt(bucket: string, now: number, windowMs: number, maxAttempts: number): { allowed: boolean; retryAfterSeconds: number } {
-  const existing = inMemoryLoginAttempts.get(bucket)
-  if (!existing || now - existing.windowStart > windowMs) {
-    if (!existing && inMemoryLoginAttempts.size >= MAX_IN_MEMORY_LOGIN_BUCKETS) {
-      for (const [k, v] of inMemoryLoginAttempts.entries()) {
-        if (now - v.windowStart > windowMs) inMemoryLoginAttempts.delete(k)
-      }
-      if (inMemoryLoginAttempts.size >= MAX_IN_MEMORY_LOGIN_BUCKETS) {
-        const oldestKey = inMemoryLoginAttempts.keys().next().value
-        if (oldestKey) inMemoryLoginAttempts.delete(oldestKey)
-      }
-    }
-    inMemoryLoginAttempts.set(bucket, { attempts: 1, windowStart: now })
-    return { allowed: 1 <= maxAttempts, retryAfterSeconds: 1 <= maxAttempts ? 0 : Math.ceil(windowMs / 1000) }
-  }
-
-  existing.attempts += 1
-  if (existing.attempts > maxAttempts) {
-    const remainingMs = Math.max(1000, windowMs - (now - existing.windowStart))
-    return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
-  }
-  return { allowed: true, retryAfterSeconds: 0 }
-}
+const inMemoryLoginAttempts = new Map<string, MemoryBucketEntry>()
 
 function checkAndRecordLoginAttemptInMemory(
   ipBucket: string,
@@ -663,9 +623,15 @@ function checkAndRecordLoginAttemptInMemory(
   accountWindowMs: number,
   maxAccountAttempts: number
 ): { allowed: boolean; retryAfterSeconds: number } {
-  const ipRes = recordInMemoryAttempt(ipBucket, now, ipWindowMs, maxIpAttempts)
+  const ipRes = checkInMemoryBucket(inMemoryLoginAttempts, ipBucket, maxIpAttempts, ipWindowMs, now, {
+    maxBuckets: MAX_IN_MEMORY_LOGIN_BUCKETS,
+    strictExpiry: true
+  })
   if (!ipRes.allowed) return ipRes
-  return recordInMemoryAttempt(accountBucket, now, accountWindowMs, maxAccountAttempts)
+  return checkInMemoryBucket(inMemoryLoginAttempts, accountBucket, maxAccountAttempts, accountWindowMs, now, {
+    maxBuckets: MAX_IN_MEMORY_LOGIN_BUCKETS,
+    strictExpiry: true
+  })
 }
 
 async function ensureLoginAttemptsTable(db: D1Database): Promise<void> {
@@ -690,39 +656,67 @@ async function queryD1LoginAttempts(
   accountWindowMs: number,
   maxAccountAttempts: number
 ): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
-  const ipRow = await db.prepare(
-    `INSERT INTO Login_Attempts (bucket, attempts, window_start) VALUES (?1, 1, ?2)
-     ON CONFLICT(bucket) DO UPDATE SET
-       attempts = CASE WHEN ?2 - window_start > ?3 THEN 1 ELSE attempts + 1 END,
-       window_start = CASE WHEN ?2 - window_start > ?3 THEN ?2 ELSE window_start END
-     RETURNING attempts, window_start`
-  ).bind(ipBucket, now, ipWindowMs).first<{ attempts: number; window_start: number }>()
+  const ipRes = await upsertD1RateLimitBucket(
+    db, 'Login_Attempts', 'attempts', ipBucket, maxIpAttempts, ipWindowMs, now, true
+  )
+  if (!ipRes.allowed) return ipRes
 
-  if (ipRow && ipRow.attempts > maxIpAttempts) {
-    const remainingMs = Math.max(1000, ipWindowMs - (now - ipRow.window_start))
-    return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
+  return upsertD1RateLimitBucket(
+    db, 'Login_Attempts', 'attempts', accountBucket, maxAccountAttempts, accountWindowMs, now, true
+  )
+}
+
+function expandIpv6Groups(rawIp: string): string[] | null {
+  const ip = rawIp.split('%')[0].trim().toLowerCase()
+  if (!ip.includes(':')) return null
+
+  const doubleColonParts = ip.split('::')
+  if (doubleColonParts.length > 2) return null
+
+  const parseSegment = (segment: string): string[] | null => {
+    if (!segment) return []
+    const parts = segment.split(':')
+    const out: string[] = []
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]
+      if (part.includes('.')) {
+        if (i !== parts.length - 1) return null
+        const v4 = part.split('.')
+        if (v4.length !== 4) return null
+        const octets = v4.map((o) => (/^\d+$/.test(o) ? Number(o) : NaN))
+        if (octets.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null
+        out.push(((octets[0] << 8) | octets[1]).toString(16).padStart(4, '0'))
+        out.push(((octets[2] << 8) | octets[3]).toString(16).padStart(4, '0'))
+      } else if (/^[0-9a-f]{1,4}$/.test(part)) {
+        out.push(part.padStart(4, '0'))
+      } else {
+        return null
+      }
+    }
+    return out
   }
 
-  const accRow = await db.prepare(
-    `INSERT INTO Login_Attempts (bucket, attempts, window_start) VALUES (?1, 1, ?2)
-     ON CONFLICT(bucket) DO UPDATE SET
-       attempts = CASE WHEN ?2 - window_start > ?3 THEN 1 ELSE attempts + 1 END,
-       window_start = CASE WHEN ?2 - window_start > ?3 THEN ?2 ELSE window_start END
-     RETURNING attempts, window_start`
-  ).bind(accountBucket, now, accountWindowMs).first<{ attempts: number; window_start: number }>()
-
-  if (accRow && accRow.attempts > maxAccountAttempts) {
-    const remainingMs = Math.max(1000, accountWindowMs - (now - accRow.window_start))
-    return { allowed: false, retryAfterSeconds: Math.ceil(remainingMs / 1000) }
+  if (doubleColonParts.length === 1) {
+    const groups = parseSegment(doubleColonParts[0])
+    return groups && groups.length === 8 ? groups : null
   }
 
-  return { allowed: true, retryAfterSeconds: 0 }
+  const head = parseSegment(doubleColonParts[0])
+  const tail = parseSegment(doubleColonParts[1])
+  if (!head || !tail || head.length + tail.length > 7) return null
+
+  const zeros = Array.from({ length: 8 - head.length - tail.length }, () => '0000')
+  return [...head, ...zeros, ...tail]
 }
 
 export function normalizeIpBucket(ip: string): string {
   const cleanIp = (ip || 'unknown').trim()
   if (cleanIp.includes(':')) {
-    // Group IPv6 addresses by /64 prefix to prevent prefix cycling
+    // Expand IPv6 (including :: compression) and group by /64 prefix to prevent prefix cycling
+    const expanded = expandIpv6Groups(cleanIp)
+    if (expanded) {
+      return `ip:${expanded.slice(0, 4).join(':')}::/64`
+    }
     const parts = cleanIp.split(':')
     return `ip:${parts.slice(0, 4).join(':')}::/64`
   }
@@ -826,8 +820,6 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
   // Immediately update local in-memory cache
   revokeSessionToken(token)
   const key = getTokenKey(token)
-  notRevokedTokens.delete(token)
-  notRevokedTokens.delete(key)
 
   if (!db) return
 
@@ -857,9 +849,8 @@ export async function revokeTokenInDb(db: D1Database | undefined, token: string)
 }
 
 /**
- * Checks whether a token is revoked, consulting both the per-token in-memory caches and D1 database.
- * Positive ("not revoked") results are cached ≤30s per token.
- * Revoked results are cached until token expiry.
+ * Checks whether a token is revoked directly against D1 (and in-memory known-revoked set).
+ * Fails closed by rejecting/throwing on D1 errors or missing DB binding.
  */
 export async function isTokenRevokedInDb(db: D1Database | undefined, token: string): Promise<boolean> {
   if (!token) return true
@@ -870,186 +861,175 @@ export async function isTokenRevokedInDb(db: D1Database | undefined, token: stri
   const key = getTokenKey(token)
   if (isTokenRevoked(key)) return true
 
-  // 2. Per-token short-lived positive cache ("not revoked" ≤30s)
-  const notRevokedUntil = notRevokedTokens.get(key) ?? notRevokedTokens.get(token)
-  if (notRevokedUntil !== undefined && now < notRevokedUntil) {
-    return false
+  if (!db) {
+    throw new Error('D1 database binding is required for revocation check')
   }
 
-  if (!db) return false
+  const row = await db.prepare(
+    'SELECT 1 FROM Revoked_Sessions WHERE signature = ? AND expires_at > ? LIMIT 1'
+  ).bind(key, now).first()
 
-  try {
-    const row = await db.prepare(
-      'SELECT 1 FROM Revoked_Sessions WHERE signature = ? AND expires_at > ? LIMIT 1'
-    ).bind(key, now).first()
-
-    if (row) {
-      revokeSessionToken(token)
-      revokeSessionToken(key)
-      return true
-    }
-
-    // Token confirmed not revoked in DB; cache positive result up to 30s
-    pruneTokenCaches(now)
-    if (notRevokedTokens.size >= MAX_NOT_REVOKED_CACHE) {
-      const oldestKey = notRevokedTokens.keys().next().value
-      if (oldestKey) notRevokedTokens.delete(oldestKey)
-    }
-    notRevokedTokens.set(key, now + POSITIVE_REVOCATION_CACHE_TTL_MS)
-  } catch (err) {
-    // Graceful fallback if table query fails
+  if (row) {
+    revokeSessionToken(token)
+    revokeSessionToken(key)
+    return true
   }
 
   return false
 }
 
-// ── In-memory cache for Admin_Settings: sessions_valid_after (Task 10) ──
-let cachedSessionsValidAfter: number | null = null
-let sessionsValidAfterCachedAt = 0
-const SESSIONS_VALID_AFTER_TTL_MS = 60_000
+/**
+ * Retrieves sessions_valid_after timestamp directly from D1 (no stale isolate cache).
+ * Fails closed by rejecting/throwing on D1 errors or missing DB binding.
+ */
+export async function getSessionsValidAfter(db: D1Database | undefined): Promise<number> {
+  if (!db) {
+    throw new Error('D1 database binding is required for sessions_valid_after check')
+  }
 
-export function invalidateSessionsValidAfterCache(): void {
-  cachedSessionsValidAfter = null
-  sessionsValidAfterCachedAt = 0
+  const row = await db.prepare(
+    "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'sessions_valid_after'"
+  ).first<{ setting_value: string }>()
+
+  if (!row || row.setting_value === null || row.setting_value === undefined || row.setting_value === '') {
+    return 0
+  }
+
+  const parsed = Number(row.setting_value)
+  if (!Number.isFinite(parsed)) {
+    throw new Error('Invalid sessions_valid_after setting value')
+  }
+  return parsed
 }
 
-export function setSessionsValidAfterInMemory(val: number): void {
-  cachedSessionsValidAfter = val
-  sessionsValidAfterCachedAt = Date.now()
-}
+export type AdminSessionVerificationResult =
+  | { ok: true; email: string; issuedAt: number; jti?: string; token: string }
+  | { ok: false; status: 401 | 500 | 503; code: string; message: string }
 
 /**
- * Retrieves sessions_valid_after timestamp, caching in memory for 60s per isolate.
+ * Performs complete admin session verification:
+ * Bearer extraction, signing secret check, HMAC signature & expiry, constant-time ADMIN_EMAIL match,
+ * and fail-closed D1 revocation + sessions_valid_after checks.
  */
-export async function getSessionsValidAfter(db: D1Database | undefined): Promise<number | null> {
-  ensureDbWriteHook(db)
-  const now = Date.now()
-  if (cachedSessionsValidAfter !== null && now - sessionsValidAfterCachedAt < SESSIONS_VALID_AFTER_TTL_MS) {
-    return cachedSessionsValidAfter
+export async function verifyAdminSessionRequest(
+  c: Context<{ Bindings: Bindings }>
+): Promise<AdminSessionVerificationResult> {
+  const signingSecret = getSigningSecret(c.env)
+  if (!signingSecret) {
+    return {
+      ok: false,
+      status: 500,
+      code: 'INTERNAL_SERVER_ERROR',
+      message: 'Server authentication is not configured.'
+    }
   }
-  if (!db) return cachedSessionsValidAfter
 
+  const adminEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
+  if (!adminEmail) {
+    console.error('[auth] Server misconfigured: ADMIN_EMAIL is unset or empty')
+    return {
+      ok: false,
+      status: 500,
+      code: 'SERVER_MISCONFIGURED',
+      message: 'Server misconfigured'
+    }
+  }
+
+  const { token } = extractSessionToken(c)
+  if (!token) {
+    return {
+      ok: false,
+      status: 401,
+      code: 'UNAUTHORIZED',
+      message: 'Authentication required. Provide a valid Authorization header.'
+    }
+  }
+
+  const session = await verifySessionToken(token, signingSecret)
+  if (!session.valid) {
+    return {
+      ok: false,
+      status: 401,
+      code: 'UNAUTHORIZED',
+      message: 'Invalid or expired session token.'
+    }
+  }
+
+  const sessionEmail = session.email ? session.email.trim().toLowerCase() : ''
+  if (!sessionEmail || !timingSafeEqual(sessionEmail, adminEmail)) {
+    return {
+      ok: false,
+      status: 401,
+      code: 'UNAUTHORIZED',
+      message: 'Invalid or expired session token.'
+    }
+  }
+
+  let isRevoked: boolean
+  let validAfter: number
   try {
-    const row = await db.prepare(
-      "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'sessions_valid_after'"
-    ).first<{ setting_value: string }>()
-    if (row?.setting_value) {
-      const parsed = Number(row.setting_value)
-      cachedSessionsValidAfter = isNaN(parsed) ? 0 : parsed
-    } else {
-      cachedSessionsValidAfter = 0
-    }
-    sessionsValidAfterCachedAt = now
-    return cachedSessionsValidAfter
+    ;[isRevoked, validAfter] = await Promise.all([
+      isTokenRevokedInDb(c.env.DB, token),
+      getSessionsValidAfter(c.env.DB)
+    ])
   } catch (err) {
-    console.warn('[auth] DB sessions_valid_after check warning:', err)
-    return cachedSessionsValidAfter ?? 0
-  }
-}
-
-const wrappedDbs = new WeakSet<object>()
-function ensureDbWriteHook(db: D1Database | undefined): void {
-  if (!db || typeof db !== 'object' || wrappedDbs.has(db)) return
-  wrappedDbs.add(db)
-  const origPrepare = db.prepare.bind(db)
-  db.prepare = function (sql: string) {
-    if (
-      /Admin_Settings/i.test(sql) &&
-      /sessions_valid_after/i.test(sql) &&
-      /(INSERT|UPDATE|DELETE|REPLACE)/i.test(sql)
-    ) {
-      invalidateSessionsValidAfterCache()
+    console.error('[auth] D1 session state verification failed (failing closed):', err)
+    return {
+      ok: false,
+      status: 503,
+      code: 'SERVICE_UNAVAILABLE',
+      message: 'Authentication verification is temporarily unavailable.'
     }
-    return origPrepare(sql)
+  }
+
+  if (isRevoked) {
+    return {
+      ok: false,
+      status: 401,
+      code: 'UNAUTHORIZED',
+      message: 'Invalid or expired session token.'
+    }
+  }
+
+  if (validAfter && session.issuedAt !== undefined && session.issuedAt < validAfter) {
+    return {
+      ok: false,
+      status: 401,
+      code: 'UNAUTHORIZED',
+      message: 'Session has been revoked due to password change or logout everywhere.'
+    }
+  }
+
+  return {
+    ok: true,
+    email: sessionEmail,
+    issuedAt: session.issuedAt ?? 0,
+    ...(session.jti ? { jti: session.jti } : {}),
+    token
   }
 }
 
 /**
  * Middleware that strictly checks for a valid HMAC-signed session token.
  * Fails closed if session signing secret is not configured or < 32 characters,
- * or if ADMIN_EMAIL is unset/empty.
+ * if ADMIN_EMAIL is unset/empty, or if D1 session verification fails.
  */
 export const adminAuth = async (c: Context<{ Bindings: Bindings }>, next: Next) => {
-  const signingSecret = getSigningSecret(c.env)
-  if (!signingSecret) {
+  const result = await verifyAdminSessionRequest(c)
+  if (!result.ok) {
+    if (result.code === 'SERVER_MISCONFIGURED') {
+      return c.json({
+        error: 'Server misconfigured',
+        message: 'Server misconfigured'
+      }, 500)
+    }
     return c.json({
       error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Server authentication is not configured.',
+        code: result.code,
+        message: result.message,
         details: []
       }
-    }, 500)
-  }
-
-  const adminEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
-  if (!adminEmail) {
-    console.error('[auth] Server misconfigured: ADMIN_EMAIL is unset or empty')
-    return c.json({
-      error: 'Server misconfigured',
-      message: 'Server misconfigured'
-    }, 500)
-  }
-
-  const { token } = extractSessionToken(c)
-  if (!token) {
-    return c.json({
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Authentication required. Provide a valid Authorization header.',
-        details: []
-      }
-    }, 401)
-  }
-
-  const session = await verifySessionToken(token, signingSecret)
-  if (!session.valid) {
-    return c.json({
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Invalid or expired session token.',
-        details: []
-      }
-    }, 401)
-  }
-
-  const sessionEmail = session.email ? session.email.trim().toLowerCase() : ''
-  if (!sessionEmail || !timingSafeEqual(sessionEmail, adminEmail)) {
-    return c.json({
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Invalid or expired session token.',
-        details: []
-      }
-    }, 401)
-  }
-
-  // Hook DB to auto-invalidate sessions_valid_after cache if updated in this isolate
-  ensureDbWriteHook(c.env.DB)
-
-  // Run revocation check and sessions_valid_after lookup in parallel with Promise.all
-  const [isRevoked, validAfter] = await Promise.all([
-    isTokenRevokedInDb(c.env.DB, token),
-    getSessionsValidAfter(c.env.DB)
-  ])
-
-  if (isRevoked) {
-    return c.json({
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Invalid or expired session token.',
-        details: []
-      }
-    }, 401)
-  }
-
-  if (validAfter && session.issuedAt !== undefined && session.issuedAt < validAfter) {
-    return c.json({
-      error: {
-        code: 'UNAUTHORIZED',
-        message: 'Session has been revoked due to password change or logout everywhere.',
-        details: []
-      }
-    }, 401)
+    }, result.status)
   }
 
   return await next()

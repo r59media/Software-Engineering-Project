@@ -200,7 +200,7 @@ ctx.onconnect = (event: MessageEvent) => {
         const fetchInit: RequestInit = {
           ...init,
           headers,
-          credentials: 'omit'
+          credentials: init?.credentials === 'same-origin' ? 'same-origin' : 'omit'
         };
 
         try {

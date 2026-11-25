@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 
-const PUBLIC_HEADERS = `/assets/*.js
+const PUBLIC_HEADERS = `/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+
+/assets/*.js
   Cache-Control: public, max-age=31536000, immutable
 
 /assets/*.css

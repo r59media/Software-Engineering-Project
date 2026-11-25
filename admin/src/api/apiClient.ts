@@ -268,7 +268,8 @@
       body = null,
       params = null,
       suppressUnauthorized = false,
-      responseType = null
+      responseType = null,
+      credentials = 'omit'
     } = options;
 
     const baseUrl = getBaseUrl();
@@ -329,7 +330,8 @@
             method,
             headers,
             body: serializedBody,
-            responseType
+            responseType,
+            credentials: credentials === 'same-origin' ? 'same-origin' : 'omit'
           }
         });
 
@@ -381,7 +383,7 @@
 
     const fetchConfig: RequestInit = {
       method,
-      credentials: 'omit',
+      credentials: credentials === 'same-origin' ? 'same-origin' : 'omit',
       headers
     };
 
@@ -479,6 +481,18 @@
   }
 
   /**
+   * Fetches a server-bound cryptographic nonce for Google Sign-In.
+   */
+  async function fetchAuthNonce(): Promise<string> {
+    const data = await request('/admin/auth/nonce', {
+      method: 'GET',
+      credentials: 'same-origin',
+      suppressUnauthorized: true
+    });
+    return typeof data?.nonce === 'string' ? data.nonce : '';
+  }
+
+  /**
    * Authenticates with Google Identity Services ID token and nonce.
    */
   async function loginWithGoogle(tokenOrPayload, maybeNonce) {
@@ -499,6 +513,7 @@
       const data = await request('/admin/google-login', {
         method: 'POST',
         body,
+        credentials: 'same-origin',
         suppressUnauthorized: true
       });
       if (data && (data.ok !== false && !data.error)) {
@@ -869,6 +884,7 @@
     setAuthToken,
     clearAuthToken,
     fetchAuthConfig,
+    fetchAuthNonce,
     loginWithGoogle,
     login,
     forgotPassword,
