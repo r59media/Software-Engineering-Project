@@ -46,7 +46,7 @@ squareWebhookRouter.post('/', async (c) => {
     return errorResponse(c, 413, 'PAYLOAD_TOO_LARGE', 'Webhook body is too large.')
   }
   const rawBody = await c.req.text()
-  if (rawBody.length > MAX_WEBHOOK_BYTES) {
+  if (new TextEncoder().encode(rawBody).byteLength > MAX_WEBHOOK_BYTES) {
     return errorResponse(c, 413, 'PAYLOAD_TOO_LARGE', 'Webhook body is too large.')
   }
 

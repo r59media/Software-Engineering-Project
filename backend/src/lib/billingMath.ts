@@ -16,6 +16,7 @@ export const OPEN_INVOICE_STATUSES: readonly string[] = [
   'PAYMENT_PENDING'
 ]
 export const PAID_LIKE_STATUSES: readonly string[] = ['PAID', 'PARTIALLY_REFUNDED', 'REFUNDED']
+export const PAYMENT_SYNC_STATUSES: readonly string[] = [...PAID_LIKE_STATUSES, 'PARTIALLY_PAID']
 export const MAX_CHARGE_CENTS = 100000000
 export const DESCRIPTION_MAX = 120
 export const DEFAULT_TIMEZONE = 'America/New_York'
@@ -197,9 +198,16 @@ export function localDateTimeToRFC3339(dateISO: string, timeStr: string, timeZon
   ) {
     return null
   }
-  if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+  let effectiveDateISO = dateISO.trim()
+  let effectiveHour = hour
+  if (hour === 24 && minute === 0 && second === 0) {
+    effectiveDateISO = addDaysISO(effectiveDateISO, 1)
+    effectiveHour = 0
+  } else if (hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
     return null
   }
+
+  const [effYear, effMonth, effDay] = effectiveDateISO.split('-').map(Number)
 
   let dtf: Intl.DateTimeFormat
   try {
@@ -227,7 +235,7 @@ export function localDateTimeToRFC3339(dateISO: string, timeStr: string, timeZon
     return asUtc - utcMs
   }
 
-  const utcGuess = Date.UTC(year, month - 1, day, hour, minute, second)
+  const utcGuess = Date.UTC(effYear, effMonth - 1, effDay, effectiveHour, minute, second)
   const offset1 = getOffsetMs(utcGuess)
   let candidate = utcGuess - offset1
   const offset2 = getOffsetMs(candidate)
@@ -262,6 +270,22 @@ export function parseMoneyToCents(text: unknown): number | null {
   const [whole, frac = ''] = text.split('.')
   const cents = Number(whole) * 100 + Number(frac.padEnd(2, '0'))
   if (!Number.isSafeInteger(cents) || cents < 1 || cents > MAX_CHARGE_CENTS) return null
+  return cents
+}
+
+/** Dollars as text or finite number ("0", "19.99", 75) to integer cents; null unless valid and 0..MAX_CHARGE_CENTS. */
+export function parseNonNegativeMoneyToCents(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null
+  const text =
+    typeof raw === 'number'
+      ? (Number.isFinite(raw) ? raw.toFixed(2) : '')
+      : typeof raw === 'string'
+        ? raw.trim()
+        : ''
+  if (!/^\d{1,7}(\.\d{1,2})?$/.test(text)) return null
+  const [whole, frac = ''] = text.split('.')
+  const cents = Number(whole) * 100 + Number(frac.padEnd(2, '0'))
+  if (!Number.isSafeInteger(cents) || cents < 0 || cents > MAX_CHARGE_CENTS) return null
   return cents
 }
 
