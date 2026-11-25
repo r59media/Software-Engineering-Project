@@ -126,7 +126,6 @@ export function BookingDeposit({
   customerInfo,
   photoPermissions,
   selectedFeeIds = [],
-  onBack,
   onEdit,
   onSuccess,
 }: BookingDepositProps) {
