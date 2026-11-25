@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { Hono } from 'hono'
+import realApp from '../src/index.ts'
 import {
   BOOKING_PAYMENTS_TABLE_SQL,
   BILLING_SCHEMA_STEPS,
@@ -451,53 +451,25 @@ test('Audit 1: /admin/assets/wasm/*.wasm and /admin/assets/js/webpEncoder.worker
 
   const env = { ASSETS: mockAssets } as any
 
-  const testApp = new Hono<{ Bindings: { ASSETS: any } }>()
-
-  testApp.get('/admin/assets/wasm/*', async (c) => {
-    if (!c.env.ASSETS) return c.text('Internal server error.', 500)
-    const url = new URL(c.req.url)
-    if (!url.pathname.endsWith('.wasm')) return c.notFound()
-    const assetRes = await c.env.ASSETS.fetch(c.req.raw)
-    if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
-      return c.notFound()
-    }
-    const headers = new Headers(assetRes.headers)
-    headers.set('Content-Type', 'application/wasm')
-    headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
-    headers.set('X-Content-Type-Options', 'nosniff')
-    return new Response(assetRes.body, { status: assetRes.status, statusText: assetRes.statusText, headers })
-  })
-
-  testApp.get('/admin/assets/js/webpEncoder.worker.js', async (c) => {
-    if (!c.env.ASSETS) return c.text('Internal server error.', 500)
-    const assetRes = await c.env.ASSETS.fetch(c.req.raw)
-    if (!assetRes.ok || assetRes.status >= 300 || assetRes.headers.get('content-type')?.includes('text/html')) {
-      return c.notFound()
-    }
-    const headers = new Headers(assetRes.headers)
-    headers.set('Content-Type', 'application/javascript')
-    headers.set('Cache-Control', 'no-store, no-cache, must-revalidate')
-    headers.set('X-Content-Type-Options', 'nosniff')
-    return new Response(assetRes.body, { status: assetRes.status, statusText: assetRes.statusText, headers })
-  })
-
-  // 1. Valid wasm asset returns 200 with application/wasm
-  const wasmRes = await testApp.request('/admin/assets/wasm/webp_enc.wasm', {}, env)
+  // 1. Valid wasm asset returns 200 with application/wasm and nosniff
+  const wasmRes = await realApp.fetch(new Request('http://localhost/admin/assets/wasm/webp_enc.wasm'), env)
   assert.equal(wasmRes.status, 200)
   assert.equal(wasmRes.headers.get('Content-Type'), 'application/wasm')
+  assert.equal(wasmRes.headers.get('X-Content-Type-Options'), 'nosniff')
 
-  // 2. Valid worker script returns 200 with application/javascript
-  const workerRes = await testApp.request('/admin/assets/js/webpEncoder.worker.js', {}, env)
+  // 2. Valid worker script returns 200 with application/javascript and no-store
+  const workerRes = await realApp.fetch(new Request('http://localhost/admin/assets/js/webpEncoder.worker.js'), env)
   assert.equal(workerRes.status, 200)
   assert.equal(workerRes.headers.get('Content-Type'), 'application/javascript')
+  assert.equal(workerRes.headers.get('Cache-Control'), 'no-store, no-cache, must-revalidate')
 
   // 3. Wasm request returning HTML fallback from ASSETS is rejected with 404
-  const wasmHtmlFallbackRes = await testApp.request('/admin/assets/wasm/missing.wasm', {}, env)
+  const wasmHtmlFallbackRes = await realApp.fetch(new Request('http://localhost/admin/assets/wasm/missing.wasm'), env)
   assert.equal(wasmHtmlFallbackRes.status, 404)
   assert.notEqual(wasmHtmlFallbackRes.headers.get('Content-Type'), 'text/html')
 
   // 4. Worker request returning HTML fallback from ASSETS is rejected with 404
-  const workerHtmlFallbackRes = await testApp.request('/admin/assets/js/missing.worker.js', {}, env)
+  const workerHtmlFallbackRes = await realApp.fetch(new Request('http://localhost/admin/assets/js/missing.worker.js'), env)
   assert.equal(workerHtmlFallbackRes.status, 404)
   assert.notEqual(workerHtmlFallbackRes.headers.get('Content-Type'), 'text/html')
 })

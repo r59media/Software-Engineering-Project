@@ -1,8 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
+import realApp, { type Bindings } from '../src/index.ts'
 import {
   buildEdgeCacheKey,
   bumpPublicContentVersion,
@@ -12,23 +11,6 @@ import {
   shouldBypassPublicEdgeCache,
   tryEdgeCacheMatch
 } from '../src/lib/edgeCache.ts'
-import type { Bindings } from '../src/index.ts'
-
-function loadRealBackendApp(): { fetch: (req: Request, env?: any) => Promise<Response> } {
-  const req = createRequire(import.meta.url)
-  const esbuild = createRequire(req.resolve('wrangler'))('esbuild')
-  const out = esbuild.buildSync({
-    entryPoints: [fileURLToPath(new URL('../src/index.ts', import.meta.url))],
-    bundle: true,
-    write: false,
-    format: 'cjs',
-    platform: 'node',
-    packages: 'external'
-  })
-  const mod = { exports: {} as any }
-  new Function('require', 'exports', 'module', out.outputFiles[0].text)(req, mod.exports, mod)
-  return mod.exports.default
-}
 
 function createD1(sqlite: DatabaseSync): any {
   const plain = (row: any) => (row ? { ...row } : null)
@@ -170,7 +152,7 @@ test('public read routes return edge Cache-Control on normal GET and no-store on
     );
   `)
   const env = { DB: createD1(sqlite), SESSION_SECRET: 'a'.repeat(32) } as Bindings
-  const app = loadRealBackendApp()
+  const app = realApp
 
   for (const path of ['/api/profile', '/api/portfolio', '/api/services', '/api/pricing']) {
     const res = await app.fetch(new Request(`http://localhost${path}`), env)

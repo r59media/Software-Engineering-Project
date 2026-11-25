@@ -1,35 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
-import { stripTypeScriptTypes } from 'node:module'
 import { Hono } from 'hono'
 import type { Bindings } from '../src/index.ts'
 import { addressRouter, resetAddressRateLimit } from '../src/routes/address.ts'
+import { stripControlChars, sanitizeCheckoutIdentityAndLocation } from '../src/routes/checkout.ts'
 
 const app = new Hono<{ Bindings: Bindings }>()
 app.route('/api/address-autocomplete', addressRouter)
-
-function loadCheckoutSanitizer() {
-  const src = readFileSync(new URL('../src/routes/checkout.ts', import.meta.url), 'utf8')
-  const start = src.indexOf('export function stripControlChars')
-  const end = src.indexOf('// Per-IP rate limiter for checkout')
-  assert.ok(start !== -1 && end !== -1 && end > start, 'Expected checkout sanitizer helpers in checkout.ts')
-  assert.ok(src.includes('sanitizeCheckoutIdentityAndLocation(body)'), 'Expected checkoutRouter to call sanitizeCheckoutIdentityAndLocation(body)')
-  const js = stripTypeScriptTypes(src.slice(start, end))
-    .replace(/export function /g, 'function ')
-  const factory = new Function(`${js}; return { stripControlChars, sanitizeCheckoutIdentityAndLocation };`)
-  return factory() as {
-    stripControlChars: (value: unknown) => string
-    sanitizeCheckoutIdentityAndLocation: (body: Record<string, unknown>) => {
-      clientName: string
-      locationMode: 'studio' | 'on_location'
-      isOnLocation: boolean
-      trimmedEventLocation: string
-      eventLocation: string
-      agreementSignatureName: string
-    }
-  }
-}
 
 function makeEnv(overrides: Partial<Bindings> = {}): Bindings {
   return {
@@ -268,8 +245,6 @@ test('GET /api/address-autocomplete enforces 30 requests / 60s rate limit with 4
 })
 
 test('checkout.ts forces R59 Media Studio in studio mode and strips CR/LF/control chars', () => {
-  const { stripControlChars, sanitizeCheckoutIdentityAndLocation } = loadCheckoutSanitizer()
-
   assert.equal(stripControlChars('  Hello\r\nWorld\x00\x1F\x7F  '), 'HelloWorld')
 
   const studioSanitized = sanitizeCheckoutIdentityAndLocation({

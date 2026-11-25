@@ -1,11 +1,16 @@
 import { Hono, type Context } from 'hono'
 import type { Bindings } from '../index.ts'
 import { getTrustedClientIp } from '../middleware/auth.ts'
+import { createMemoryRateLimiter } from '../middleware/rateLimit.ts'
 
 const MAX_ADDRESS_IPS = 1000
 const ADDRESS_WINDOW_MS = 60 * 1000
 const MAX_ADDRESS_REQUESTS = 30
-const addressRateMap = new Map<string, { count: number; resetAt: number }>()
+const addressRateLimiter = createMemoryRateLimiter({
+  maxRequests: MAX_ADDRESS_REQUESTS,
+  windowMs: ADDRESS_WINDOW_MS,
+  maxBuckets: MAX_ADDRESS_IPS
+})
 
 const PLACE_ID_REGEX = /^[A-Za-z0-9_-]{4,200}$/
 const PHOTON_USER_AGENT = 'R59MediaBookingVerifier/1.0'
@@ -81,31 +86,11 @@ export function buildGoogleMapsSearchUrl(formattedAddress: string): string {
 }
 
 export function resetAddressRateLimit(): void {
-  addressRateMap.clear()
+  addressRateLimiter.reset()
 }
 
 export function checkAddressRateLimit(ip: string, now = Date.now()): { allowed: boolean; retryAfterSeconds: number } {
-  for (const [k, v] of addressRateMap.entries()) {
-    if (now > v.resetAt) addressRateMap.delete(k)
-  }
-
-  const entry = addressRateMap.get(ip)
-  if (!entry || now > entry.resetAt) {
-    if (addressRateMap.size >= MAX_ADDRESS_IPS) {
-      const oldest = addressRateMap.keys().next().value
-      if (oldest) addressRateMap.delete(oldest)
-    }
-    addressRateMap.set(ip, { count: 1, resetAt: now + ADDRESS_WINDOW_MS })
-    return { allowed: true, retryAfterSeconds: 0 }
-  }
-
-  if (entry.count >= MAX_ADDRESS_REQUESTS) {
-    const retryAfterSeconds = Math.max(1, Math.ceil((entry.resetAt - now) / 1000))
-    return { allowed: false, retryAfterSeconds }
-  }
-
-  entry.count++
-  return { allowed: true, retryAfterSeconds: 0 }
+  return addressRateLimiter.check(ip, now)
 }
 
 function enforceAddressRateLimit(c: Context<{ Bindings: Bindings }>): Response | null {

@@ -1,12 +1,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 import { Hono, type Context } from 'hono'
 import { signMediaKey, verifyMediaSignature, parseRangeHeader } from '../src/utils/signedUrl.ts'
 import { adminAuth, createSessionToken, getSigningSecret, getMediaSigningSecret, verifySessionToken, isTokenRevokedInDb } from '../src/middleware/auth.ts'
-import type { Bindings } from '../src/index.ts'
+import realApp, { type Bindings } from '../src/index.ts'
 
 function createD1(sqlite: DatabaseSync): any {
   const plain = (row: any) => (row ? { ...row } : null)
@@ -411,21 +409,7 @@ test('Media handler validates HMAC signature and streams chunks via HTTP Range',
   assert.equal(res416.headers.get('Content-Range'), 'bytes */20')
 })
 
-function loadRealBackendApp(): { fetch: (req: Request, env?: any) => Promise<Response> } {
-  const req = createRequire(import.meta.url)
-  const esbuild = createRequire(req.resolve('wrangler'))('esbuild')
-  const out = esbuild.buildSync({
-    entryPoints: [fileURLToPath(new URL('../src/index.ts', import.meta.url))],
-    bundle: true,
-    write: false,
-    format: 'cjs',
-    platform: 'node',
-    packages: 'external'
-  })
-  const mod = { exports: {} as any }
-  new Function('require', 'exports', 'module', out.outputFiles[0].text)(req, mod.exports, mod)
-  return mod.exports.default
-}
+// Uses realApp imported natively from ../src/index.ts
 
 test('Private Media Bypass Probe: enforces Portfolio_Images.is_active and admin Bearer auth on /api/media/*', async () => {
   const { sqlite, env } = setupTestEnv()
@@ -454,7 +438,7 @@ test('Private Media Bypass Probe: enforces Portfolio_Images.is_active and admin 
   sqlite.prepare('INSERT INTO Portfolio_Images (media_key, is_active) VALUES (?, ?)').run('hidden-photo.webp', 0)
   sqlite.prepare('INSERT INTO Portfolio_Images (media_key, is_active) VALUES (?, ?)').run('active-photo.webp', 1)
 
-  const realApp = loadRealBackendApp()
+  // realApp already imported
 
   // 1. Unlisted private media with X-R59-Client: media-viewer and NO admin token -> 302 redirect, no bytes leaked
   const resPrivate = await realApp.fetch(
@@ -582,7 +566,7 @@ test('Media Fast-Path, ETag/304, and Chunk-Bounded Range Requests preserve secur
   )
   sqlite.prepare('INSERT INTO Portfolio_Images (media_key, is_active) VALUES (?, ?)').run('chunked.webp', 1)
 
-  const realApp = loadRealBackendApp()
+  // realApp already imported
 
   // 1. 200 OK returns ETag and security headers
   const res200 = await realApp.fetch(
@@ -676,7 +660,7 @@ test('Static /assets/* and /models/* allow same-origin subresource requests and 
     } as any
   }
 
-  const realApp = loadRealBackendApp()
+  // realApp already imported
   const paths = ['/assets/session-paper.webp', '/models/r59-memory-card-preview.webp']
 
   for (const path of paths) {
@@ -777,7 +761,7 @@ test('HMAC-signed ?w=640|1280 media variants: signature validation, tampered w r
   sqlite.prepare('INSERT INTO Portfolio_Images (media_key, is_active) VALUES (?, ?)').run(fileKey, 1)
   const insertedRow = sqlite.prepare('SELECT id FROM Portfolio_Images WHERE media_key = ?').get(fileKey) as { id: number }
 
-  const realApp = loadRealBackendApp()
+  // realApp already imported
   const adminToken = await createSessionToken(env.SESSION_SECRET!, env.ADMIN_EMAIL!)
 
   // 2. POST /api/media-token with w=640
@@ -834,18 +818,19 @@ test('HMAC-signed ?w=640|1280 media variants: signature validation, tampered w r
   assert.ok(!adminJsonInvalidW.url.includes('&w='), 'Invalid width must be ignored and treated as original')
 
   // 7. PUT /api/admin/media/<key>?variant=1280 stores __w1280 and bumps public_cache_version
+  const w1280Payload = Buffer.concat([Buffer.from('RIFF\x1a\x00\x00\x00WEBPVP8 '), Buffer.from('W1280-UPLOADED')])
   const putVariantRes = await realApp.fetch(
     new Request(`http://localhost/api/admin/media/${fileKey}?variant=1280`, {
       method: 'PUT',
       headers: { 'Content-Type': 'image/webp', Authorization: `Bearer ${adminToken}` },
-      body: Buffer.from('W1280-UPLOADED')
+      body: w1280Payload
     }),
     env
   )
   assert.equal(putVariantRes.status, 200)
   const stored1280 = sqlite.prepare('SELECT data FROM Media_Storage WHERE file_key = ?').get(`${fileKey}__w1280`) as { data: Uint8Array } | undefined
   assert.ok(stored1280, 'PUT ?variant=1280 must store chunks under __w1280')
-  assert.equal(Buffer.from(stored1280!.data).toString(), 'W1280-UPLOADED')
+  assert.ok(Buffer.from(stored1280!.data).equals(w1280Payload))
 
   // 8. DELETE /api/admin/portfolio/:id removes original + __w640 + __w1280
   const delRes = await realApp.fetch(
@@ -907,7 +892,7 @@ test('Static /assets/* overwrites upstream Cache-Control with immutable, omits V
   })
 
   try {
-    const realApp = loadRealBackendApp()
+    // realApp already imported
 
     // 1. Authorized /assets/test-hash.webp overwrites upstream max-age=0 with immutable and strips Vary: Origin
     const res1 = await realApp.fetch(
@@ -1048,7 +1033,7 @@ test('HTML responses on / set bfcache-safe Cache-Control and emit up to 3 Link r
     } as any
   }
 
-  const realApp = loadRealBackendApp()
+  // realApp already imported
 
   const resRoot = await realApp.fetch(new Request('http://localhost/'), htmlEnv)
   assert.equal(resRoot.status, 200)
@@ -1114,7 +1099,7 @@ test('Media edge cache security: non-public/auth-gated media uses private, no-st
   })
 
   try {
-    const realApp = loadRealBackendApp()
+    // realApp already imported
     const secret = await getMediaSigningSecret(env)
     const { exp, sig } = await signMediaKey('hidden-secret.webp', secret!, 60)
 
@@ -1217,7 +1202,7 @@ test('Public is_active = 1 media with ?v= serves immutable Cache-Control, preser
   })
 
   try {
-    const realApp = loadRealBackendApp()
+    // realApp already imported
 
     // 1. /api/portfolio appends ?v=7 to internal /api/media/ URLs and leaves external URLs untouched
     const portfolioRes = await realApp.fetch(new Request('http://localhost/api/portfolio'), env)
@@ -1293,7 +1278,7 @@ test('/admin/assets/* serves immutable Cache-Control when ?v= is present and no-
     }
   }
 
-  const realApp = loadRealBackendApp()
+  // realApp already imported
 
   // GET /admin keeps 301 redirect to /admin/
   const redirectRes = await realApp.fetch(new Request('http://localhost/admin'), adminEnv)

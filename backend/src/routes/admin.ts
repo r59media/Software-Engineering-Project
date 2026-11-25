@@ -1,4 +1,4 @@
-import { Hono, Context } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { Bindings } from '../index'
 import {
   adminAuth,
@@ -17,17 +17,21 @@ import {
   checkAndRecordLoginAttempt,
   clearLoginAttempts
 } from '../middleware/auth'
-import { DEFAULT_PROFILE, ensurePortfolioDefaults, listPortfolio, portfolioListQuery } from './portfolio'
+import {
+  DEFAULT_PROFILE,
+  deletePortfolioRecord,
+  ensurePortfolioDefaults,
+  getStudioProfile,
+  listPortfolio,
+  portfolioListQuery,
+  updatePortfolioRecord
+} from './portfolio'
 import { bumpPublicContentVersion } from '../lib/edgeCache'
 import {
-  getBufferMinutesFromRules,
-  lockSlotsAtomically,
   parseTimeToMinutes,
   releaseBookingSlots,
   resolveBookingSlotIds,
-  resolveSlotWindow,
-  syncRollingScheduleSlots,
-  type SlotRowLike
+  syncRollingScheduleSlots
 } from '../lib/scheduleSync'
 import { isEmailConfigured, sendEmail } from '../email'
 import {
@@ -35,17 +39,21 @@ import {
   bookingTotalCents,
   computeTotals,
   DEFAULT_BOOKING_POLICY,
-  DEFAULT_DEPOSIT_PERCENT,
   DESCRIPTION_MAX,
   normalizeBookingPolicy,
   normalizeDepositPercent,
   normalizeFeeRules,
-  parseMoneyToCents
+  parseMoneyToCents,
+  parseNonNegativeMoneyToCents
 } from '../lib/billingMath'
+import {
+  deleteOrDeactivateService,
+  parseServicePayload,
+  saveServiceRecord
+} from './services'
 import {
   BillingError,
   cancelOpenInvoice,
-  getSquare,
   getStudioTimeZone,
   loadBookingTotals,
   OPEN_INVOICE_EXISTS_SQL,
@@ -58,74 +66,67 @@ import {
   toPayment
 } from '../lib/squareBilling'
 import { signCalendarFeedToken } from './reschedule'
-import { syncBookingToGoogleCalendarApi } from '../lib/googleCalendar'
+import { hmacSha256Hex, timingSafeEqual } from '../utils/crypto'
+import { isValidId, isRealCalendarDate, parseJsonObject } from '../utils/validation'
+import { handleValidatedMediaPut } from '../utils/mediaUpload'
+import { getCalendarFeedVersion, rotateCalendarFeedVersion, signMediaKey, parseMediaVariantWidth } from '../utils/signedUrl'
+import { mapRowToCalendarBooking, syncBookingToGoogleCalendarApi } from '../lib/googleCalendar'
 import {
   BOOKING_PAYMENTS_TABLE_SQL,
   BOOKING_PAYMENTS_INDEX_SQL,
   BILLING_SCHEMA_STEPS,
   ensurePhotoPermissionsColumns,
-  replaceMediaStorageChunks
+  replaceMediaStorageChunks,
+  runOncePerDb
 } from '../lib/billingSchema'
-import { signMediaKey, parseMediaVariantWidth } from '../utils/signedUrl'
-
-function isValidId(id: string | undefined): boolean {
-  return typeof id === 'string' && /^[1-9]\d{0,9}$/.test(id)
-}
-
-const ADMIN_CALENDAR_BOOKING_SELECT = `SELECT b.id, b.client_name, b.client_email, b.customer_phone,
-        COALESCE(NULLIF(b.event_location, ''), b.location) AS location,
-        b.notes, b.attendees, b.status,
-        ss.date, ss.start_time, ss.end_time,
-        s.name AS service_name
- FROM Bookings b
- INNER JOIN Schedule_Slots ss ON b.slot_id = ss.id
- LEFT JOIN Services s ON b.service_id = s.id`
-
-function mapRowToCalendarBooking(row: any, timeZone: string) {
-  return {
-    id: row.id,
-    date: row.date,
-    start_time: row.start_time,
-    end_time: row.end_time,
-    client_name: row.client_name,
-    client_email: row.client_email,
-    customer_phone: row.customer_phone,
-    package_name: row.service_name,
-    service_name: row.service_name,
-    status: row.status,
-    notes: row.notes,
-    location: row.location,
-    attendees: row.attendees,
-    timeZone
-  }
-}
-
-function scheduleGoogleCalendarSync(
-  c: Context<{ Bindings: Bindings }>,
-  bookingId: number | string,
-  action: 'upsert' | 'delete'
-) {
-  const task = (async () => {
-    if (action === 'delete') {
-      await syncBookingToGoogleCalendarApi(c.env, { id: bookingId, date: '', start_time: '' }, 'delete')
-      return
-    }
-    const row = await c.env.DB.prepare(`${ADMIN_CALENDAR_BOOKING_SELECT} WHERE b.id = ?`).bind(bookingId).first<any>()
-    if (!row || !row.date || !row.start_time) return
-    const timeZone = await getStudioTimeZone(c.env.DB)
-    await syncBookingToGoogleCalendarApi(c.env, mapRowToCalendarBooking(row, timeZone), 'upsert')
-  })().catch((err) => {
-    console.warn('Non-blocking admin calendar sync error:', err)
-  })
-
-  try {
-    c.executionCtx?.waitUntil(task)
-  } catch {
-    // Ignore when executionCtx is unavailable (e.g. unit tests)
-  }
-}
+import {
+  ADMIN_CALENDAR_BOOKING_SELECT,
+  billingErrorResponse,
+  BOOKING_NOT_FOUND_RESPONSE,
+  bookingStatusFor,
+  cancelAdminBookingWithRefund,
+  createAdminManualBooking,
+  INVOICE_OPEN_RESPONSE,
+  scheduleGoogleCalendarSync,
+  updateAdminBooking
+} from '../lib/adminBookings'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+function isValidIanaTimeZone(tz: string): boolean {
+  if (!tz || typeof tz !== 'string' || !tz.trim()) return false
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz.trim() })
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function parseOptionalJsonObject(
+  c: Context
+): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; response: Response }> {
+  const rawText = await c.req.text()
+  if (!rawText.trim()) {
+    return { ok: true, data: {} }
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(rawText)
+  } catch {
+    return {
+      ok: false,
+      response: c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid JSON request body.', details: [] } }, 400)
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      ok: false,
+      response: c.json({ error: { code: 'VALIDATION_FAILED', message: 'Request body must be a JSON object.', details: [] } }, 400)
+    }
+  }
+  return { ok: true, data: parsed as Record<string, unknown> }
+}
 
 export const adminRouter = new Hono<{ Bindings: Bindings }>()
 export { DEFAULT_PROFILE, ensurePhotoPermissionsColumns, replaceMediaStorageChunks }
@@ -133,46 +134,33 @@ export { DEFAULT_PROFILE, ensurePhotoPermissionsColumns, replaceMediaStorageChun
 // ── Live D1 Schema Auto-Migration (OPT-02: once per db/isolate) ─────
 const schemaReadyByDb = new WeakMap<object, Promise<void>>()
 
-export async function ensureSchemaReady(db?: D1Database): Promise<void> {
-  if (!db) return
-  const existing = schemaReadyByDb.get(db)
-  if (existing) return existing
-
-  const promise = (async () => {
-    let allSucceeded = true
-    try {
-      await db.prepare(BOOKING_PAYMENTS_TABLE_SQL).run()
-      await db.prepare(BOOKING_PAYMENTS_INDEX_SQL).run()
-      for (const step of BILLING_SCHEMA_STEPS) {
-        try {
-          await db.prepare(step.sql).run()
-        } catch (err) {
-          if (!step.ignoreError) {
-            allSucceeded = false
-            console.warn('Schema step failed (non-fatal):', err)
-          }
+async function runAdminSchemaMigration(targetDb: D1Database): Promise<boolean> {
+  let allSucceeded = true
+  try {
+    await targetDb.prepare(BOOKING_PAYMENTS_TABLE_SQL).run()
+    await targetDb.prepare(BOOKING_PAYMENTS_INDEX_SQL).run()
+    for (const step of BILLING_SCHEMA_STEPS) {
+      try {
+        await targetDb.prepare(step.sql).run()
+      } catch (err) {
+        if (!step.ignoreError) {
+          allSucceeded = false
+          console.warn('Schema step failed (non-fatal):', err)
         }
       }
-      const photoOk = await ensurePhotoPermissionsColumns(db)
-      if (!photoOk) {
-        allSucceeded = false
-      }
-    } catch (err) {
-      allSucceeded = false
-      console.warn('ensureSchemaReady failed:', err)
-    } finally {
-      if (!allSucceeded) {
-        schemaReadyByDb.delete(db)
-      }
     }
-  })()
-
-  schemaReadyByDb.set(db, promise)
-  return promise
+    if (!(await ensurePhotoPermissionsColumns(targetDb))) {
+      allSucceeded = false
+    }
+  } catch (err) {
+    allSucceeded = false
+    console.warn('ensureSchemaReady failed:', err)
+  }
+  return allSucceeded
 }
 
-function toConsentFlag(val: unknown): number {
-  return val === true || val === 1 || val === '1' || val === 'true' ? 1 : 0
+export async function ensureSchemaReady(db?: D1Database): Promise<void> {
+  return runOncePerDb(schemaReadyByDb, db, runAdminSchemaMigration)
 }
 
 const BOOKINGS_ACTIVE_SLOT_INDEX_SQL =
@@ -185,7 +173,8 @@ const BOOKINGS_REBUILD_COLUMNS = [
   'square_payment_id', 'status', 'customer_phone', 'location', 'notes', 'attendees',
   'deposit_paid', 'coupon_code', 'custom_price', 'deposit_percent', 'created_at',
   'photo_permission_portfolio', 'photo_permission_social', 'photo_permission_accepted_at', 'photo_permission_version',
-  'event_location', 'agreement_signed_name', 'agreement_signed_at', 'applied_fees_json'
+  'event_location', 'agreement_signed_name', 'agreement_signed_at', 'applied_fees_json',
+  'checkout_idempotency_key', 'locked_slot_ids_json', 'gcal_sync_status', 'reschedule_count'
 ]
 
 const BOOKINGS_SLOT_UNIQUE_RE = /slot_id\s+INTEGER\s+NOT\s+NULL\s+UNIQUE/i
@@ -299,14 +288,106 @@ function noStore(c: Context): void {
 
 // ── Admin Google Sign-In Authentication ──────────────────────────
 
+const OAUTH_NONCE_COOKIE_NAME = 'r59_oauth_nonce'
+const OAUTH_NONCE_TTL_SECONDS = 300
+const OAUTH_NONCE_PREFIX = 'r59-oauth-nonce-v1'
+
+function isHttpsRequest(c: Context): boolean {
+  try {
+    if (new URL(c.req.url).protocol === 'https:') return true
+  } catch {}
+  return (c.req.header('x-forwarded-proto') || '').split(',')[0].trim().toLowerCase() === 'https'
+}
+
+function buildOAuthNonceSetCookie(value: string, maxAgeSeconds: number, secure: boolean): string {
+  return `${OAUTH_NONCE_COOKIE_NAME}=${value}; HttpOnly; SameSite=Lax; Path=/api/admin; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`
+}
+
+function extractCookieValue(cookieHeader: string | undefined, name: string): string | null {
+  if (!cookieHeader) return null
+  for (const part of cookieHeader.split(';')) {
+    const eqIdx = part.indexOf('=')
+    if (eqIdx === -1) continue
+    const k = part.slice(0, eqIdx).trim()
+    if (k === name) {
+      return part.slice(eqIdx + 1).trim()
+    }
+  }
+  return null
+}
+
+function generateRandomNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16))
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) {
+    bin += String.fromCharCode(bytes[i])
+  }
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+async function signOAuthNonceCookieValue(nonce: string, expMs: number, secret: string): Promise<string> {
+  const sig = await hmacSha256Hex(`${OAUTH_NONCE_PREFIX}:${nonce}:${expMs}`, secret)
+  return `${nonce}.${expMs}.${sig}`
+}
+
+async function verifyOAuthNonceCookie(
+  cookieHeader: string | undefined,
+  submittedNonce: string,
+  secret: string
+): Promise<boolean> {
+  const raw = extractCookieValue(cookieHeader, OAUTH_NONCE_COOKIE_NAME)
+  if (!raw || !submittedNonce || !secret) return false
+
+  const parts = raw.split('.')
+  if (parts.length !== 3) return false
+  const [cookieNonce, expStr, providedSig] = parts
+  if (!cookieNonce || !/^\d+$/.test(expStr) || !/^[0-9a-f]{64}$/i.test(providedSig)) {
+    return false
+  }
+
+  const expMs = Number(expStr)
+  if (!Number.isFinite(expMs) || Date.now() > expMs) {
+    return false
+  }
+
+  const expectedSig = await hmacSha256Hex(`${OAUTH_NONCE_PREFIX}:${cookieNonce}:${expMs}`, secret)
+  if (!timingSafeEqual(expectedSig, providedSig.toLowerCase())) {
+    return false
+  }
+
+  return timingSafeEqual(cookieNonce, submittedNonce)
+}
+
 // GET: Public authentication configuration for Google Sign-In
 adminRouter.get('/auth-config', (c) => {
   noStore(c)
   return c.json({ googleClientId: c.env.GOOGLE_CLIENT_ID || '' })
 })
 
+// GET: Issue server-bound cryptographic nonce for Google Sign-In
+adminRouter.get('/auth/nonce', async (c) => {
+  noStore(c)
+  const sessionSecret = getSigningSecret(c.env) || c.env.SESSION_SECRET
+  if (!sessionSecret || sessionSecret.length < 32) {
+    return c.json({
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Server authentication is not configured.',
+        details: []
+      }
+    }, 500)
+  }
+
+  const nonce = generateRandomNonce()
+  const expMs = Date.now() + OAUTH_NONCE_TTL_SECONDS * 1000
+  const cookieVal = await signOAuthNonceCookieValue(nonce, expMs, sessionSecret)
+  c.header('Set-Cookie', buildOAuthNonceSetCookie(cookieVal, OAUTH_NONCE_TTL_SECONDS, isHttpsRequest(c)))
+  return c.json({ nonce })
+})
+
 // POST: Google Sign-In authentication via Google ID token
 adminRouter.post('/google-login', async (c) => {
+  noStore(c)
   try {
     const sessionSecret = getSigningSecret(c.env) || c.env.SESSION_SECRET
     if (!sessionSecret || sessionSecret.length < 32) {
@@ -332,7 +413,9 @@ adminRouter.post('/google-login', async (c) => {
       }, 429)
     }
 
-    const body = await c.req.json().catch(() => ({}))
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
     const idToken = typeof body?.idToken === 'string' ? body.idToken.trim() : ''
     const nonce = typeof body?.nonce === 'string' ? body.nonce.trim() : ''
 
@@ -356,6 +439,12 @@ adminRouter.post('/google-login', async (c) => {
       }, 400)
     }
 
+    const nonceCookieValid = await verifyOAuthNonceCookie(c.req.header('Cookie'), nonce, sessionSecret)
+    if (!nonceCookieValid) {
+      c.header('Set-Cookie', buildOAuthNonceSetCookie('', 0, isHttpsRequest(c)))
+      return c.json({ error: 'Unauthorized' }, 401)
+    }
+
     const authorizedEmail = (c.env.ADMIN_EMAIL || '').trim().toLowerCase()
     if (!authorizedEmail) {
       console.error('[auth] Server misconfigured: ADMIN_EMAIL is unset or empty')
@@ -373,6 +462,9 @@ adminRouter.post('/google-login', async (c) => {
       console.warn('[auth] Google ID token replay rejected')
       return c.json({ error: 'Unauthorized' }, 401)
     }
+
+    // Clear nonce cookie after successful verification so it cannot be reused
+    c.header('Set-Cookie', buildOAuthNonceSetCookie('', 0, isHttpsRequest(c)))
 
     // Clear failed login attempts on success
     await clearLoginAttempts(c.env.DB, clientIp)
@@ -571,7 +663,9 @@ adminRouter.get('/schedule', async (c) => {
 // POST: Add a new available timeslot OR save schedule settings in batch
 adminRouter.post('/schedule', async (c) => {
   try {
-    const body = await c.req.json()
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
 
     // Case 1: Schedule settings batch update (slotDurationMinutes, bufferMinutes, timezone, weeklySchedule)
     if (
@@ -588,6 +682,18 @@ adminRouter.post('/schedule', async (c) => {
               code: 'VALIDATION_FAILED',
               message: 'slotDurationMinutes must be between 15 and 480.',
               details: [{ field: 'slotDurationMinutes', message: 'Must be between 15 and 480 minutes.', code: 'OUT_OF_RANGE' }]
+            }
+          }, 400)
+        }
+      }
+
+      if (body.timezone !== undefined) {
+        if (typeof body.timezone !== 'string' || !isValidIanaTimeZone(body.timezone)) {
+          return c.json({
+            error: {
+              code: 'VALIDATION_FAILED',
+              message: 'Valid IANA timezone is required (e.g., America/New_York).',
+              details: [{ field: 'timezone', message: 'Invalid IANA timezone.', code: 'INVALID_VALUE' }]
             }
           }, 400)
         }
@@ -620,16 +726,25 @@ adminRouter.post('/schedule', async (c) => {
     }
 
     // Case 2: Individual timeslot creation
-    const date = body.date
-    const start_time = body.start_time || body.startTime
-    const end_time = body.end_time || body.endTime
+    const date = typeof body.date === 'string' ? body.date.trim() : ''
+    const start_time = typeof (body.start_time ?? body.startTime) === 'string' ? String(body.start_time ?? body.startTime).trim() : ''
+    const end_time = typeof (body.end_time ?? body.endTime) === 'string' ? String(body.end_time ?? body.endTime).trim() : ''
 
     const errors = []
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
-      errors.push({ field: 'date', message: 'Date is required (YYYY-MM-DD).', code: 'REQUIRED_FIELD' })
+    if (!isRealCalendarDate(date)) {
+      errors.push({ field: 'date', message: 'Valid real calendar date is required (YYYY-MM-DD).', code: 'INVALID_FORMAT' })
     }
-    if (!start_time) errors.push({ field: 'start_time', message: 'Start time is required (HH:MM).', code: 'REQUIRED_FIELD' })
-    if (!end_time) errors.push({ field: 'end_time', message: 'End time is required (HH:MM).', code: 'REQUIRED_FIELD' })
+    const startMin = parseTimeToMinutes(start_time)
+    const endMin = parseTimeToMinutes(end_time)
+    if (startMin === null) {
+      errors.push({ field: 'start_time', message: 'Valid start time is required (HH:MM).', code: 'INVALID_FORMAT' })
+    }
+    if (endMin === null) {
+      errors.push({ field: 'end_time', message: 'Valid end time is required (HH:MM).', code: 'INVALID_FORMAT' })
+    }
+    if (startMin !== null && endMin !== null && endMin <= startMin) {
+      errors.push({ field: 'end_time', message: 'End time must be after start time.', code: 'INVALID_RANGE' })
+    }
 
     if (errors.length > 0) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not create slot.', details: errors } }, 400)
@@ -650,26 +765,41 @@ adminRouter.post('/schedule', async (c) => {
   }
 })
 
-// DELETE: Remove a timeslot (only if not booked)
-adminRouter.delete('/schedule/:id', async (c) => {
+// ── Shared Validated Delete Helper ───────────────────────────────
+async function deleteEntityById(
+  c: Context<{ Bindings: Bindings }>,
+  options: {
+    table: 'Schedule_Slots' | 'Blocked_Dates' | 'Coupons'
+    notFoundMessage: string
+    errorMessage: string
+    extraWhereSql?: string
+  }
+): Promise<Response> {
   try {
     const id = c.req.param('id')
     if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
-    const result = await c.env.DB.prepare(
-      'DELETE FROM Schedule_Slots WHERE id = ? AND is_booked = 0'
-    ).bind(id).run()
-
+    const whereClause = options.extraWhereSql ? `id = ? AND ${options.extraWhereSql}` : 'id = ?'
+    const result = await c.env.DB.prepare(`DELETE FROM ${options.table} WHERE ${whereClause}`).bind(id).run()
     if (result.meta.changes === 0) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Slot not found or already booked.', details: [] } }, 404)
+      return c.json({ error: { code: 'NOT_FOUND', message: options.notFoundMessage, details: [] } }, 404)
     }
-
     return c.json({ success: true, status: 'success' })
-  } catch (e: any) {
-    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete slot.', details: [] } }, 500)
+  } catch {
+    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: options.errorMessage, details: [] } }, 500)
   }
-})
+}
+
+// DELETE: Remove a timeslot (only if not booked)
+adminRouter.delete('/schedule/:id', (c) =>
+  deleteEntityById(c, {
+    table: 'Schedule_Slots',
+    extraWhereSql: 'is_booked = 0',
+    notFoundMessage: 'Slot not found or already booked.',
+    errorMessage: 'Could not delete slot.'
+  })
+)
 
 // ── Availability Rules ──────────────────────────────────────────
 
@@ -690,27 +820,52 @@ adminRouter.get('/availability', async (c) => {
 // PUT: Save weekly recurring availability rules
 adminRouter.put('/availability', async (c) => {
   try {
-    const body = await c.req.json()
-    const rawAvailability = body.availability !== undefined ? body.availability : body
+    let body: any
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid JSON request body.', details: [] } }, 400)
+    }
+    const rawAvailability = body && typeof body === 'object' && !Array.isArray(body) && body.availability !== undefined ? body.availability : body
     if (!Array.isArray(rawAvailability)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Availability must be an array.', details: [] } }, 400)
     }
 
     const ALLOWED_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    const cleanAvailability = rawAvailability.map((item: any) => {
+    const cleanAvailability: any[] = []
+    for (const item of rawAvailability) {
+      if (!item || typeof item !== 'object') {
+        return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Each availability entry must be an object.', details: [] } }, 400)
+      }
       const day = ALLOWED_DAYS.includes(item.day) ? item.day : 'Monday'
       const available = Boolean(item.available)
-      const timeframes = Array.isArray(item.timeframes)
-        ? item.timeframes.map((tf: any) => ({
-            id: Number(tf.id) || Date.now(),
-            start: String(tf.start || '09:00').slice(0, 5),
-            end: String(tf.end || '17:00').slice(0, 5),
-            label: String(tf.label || `${tf.start} - ${tf.end}`).slice(0, 50),
-            repeat: tf.repeat === 'none' ? 'none' : 'weekly'
-          }))
-        : []
-      return { day, available, timeframes }
-    })
+      const timeframes: any[] = []
+      if (Array.isArray(item.timeframes)) {
+        for (const tf of item.timeframes) {
+          const start = String(tf?.start || '09:00').trim().slice(0, 5)
+          const end = String(tf?.end || '17:00').trim().slice(0, 5)
+          const startMin = parseTimeToMinutes(start)
+          const endMin = parseTimeToMinutes(end)
+          if (startMin === null || endMin === null || endMin <= startMin) {
+            return c.json({
+              error: {
+                code: 'VALIDATION_FAILED',
+                message: `Invalid timeframe for ${day}: end time must be after start time.`,
+                details: []
+              }
+            }, 400)
+          }
+          timeframes.push({
+            id: Number(tf?.id) || Date.now(),
+            start,
+            end,
+            label: String(tf?.label || `${start} - ${end}`).slice(0, 50),
+            repeat: tf?.repeat === 'none' ? 'none' : 'weekly'
+          })
+        }
+      }
+      cleanAvailability.push({ day, available, timeframes })
+    }
 
     const val = JSON.stringify(cleanAvailability)
     await c.env.DB.prepare(
@@ -749,24 +904,26 @@ adminRouter.get('/blocked-dates', async (c) => {
 // POST: Add a blocked date (or inclusive vacation date range)
 adminRouter.post('/blocked-dates', async (c) => {
   try {
-    const body = await c.req.json()
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
     const date = String(body.date || body.dateStr || '').trim()
     const endDate = String(body.endDate || body.end_date || '').trim()
     const reason = String(body.reason || '').trim()
 
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    if (!isRealCalendarDate(date)) {
       return c.json({
         error: {
           code: 'VALIDATION_FAILED',
           message: 'Valid date (YYYY-MM-DD) is required.',
-          details: [{ field: 'date', message: 'Date must be in YYYY-MM-DD format.', code: 'INVALID_FORMAT' }]
+          details: [{ field: 'date', message: 'Date must be a valid calendar date in YYYY-MM-DD format.', code: 'INVALID_FORMAT' }]
         }
       }, 400)
     }
 
     let dates: string[]
     if (endDate) {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < date) {
+      if (!isRealCalendarDate(endDate) || endDate < date) {
         return c.json({
           error: {
             code: 'VALIDATION_FAILED',
@@ -847,105 +1004,21 @@ adminRouter.post('/blocked-dates', async (c) => {
 })
 
 // DELETE: Remove a blocked date
-adminRouter.delete('/blocked-dates/:id', async (c) => {
-  try {
-    const id = c.req.param('id')
-    if (!id || !isValidId(id)) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
-    }
-    const result = await c.env.DB.prepare('DELETE FROM Blocked_Dates WHERE id = ?').bind(id).run()
-
-    if (result.meta.changes === 0) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Blocked date not found.', details: [] } }, 404)
-    }
-
-    return c.json({ success: true, status: 'success' })
-  } catch (e: any) {
-    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete blocked date.', details: [] } }, 500)
-  }
-})
+adminRouter.delete('/blocked-dates/:id', (c) =>
+  deleteEntityById(c, {
+    table: 'Blocked_Dates',
+    notFoundMessage: 'Blocked date not found.',
+    errorMessage: 'Could not delete blocked date.'
+  })
+)
 
 // ── Bookings ─────────────────────────────────────────────────────
 
 const NO_PACKAGE_LABEL = 'No package'
-const BOOKING_STATUSES = ['pending', 'confirmed', 'cancelled']
-const INVALID_STATUS_RESPONSE = {
-  error: {
-    code: 'VALIDATION_FAILED',
-    message: 'Status must be pending, confirmed or cancelled.',
-    details: [{ field: 'status', message: 'Status must be pending, confirmed or cancelled.', code: 'INVALID_VALUE' }]
-  }
-}
-
-/** Lower-cased booking status, or null when it is not pending, confirmed or cancelled. */
-function parseBookingStatus(raw: unknown): string | null {
-  const value = String(raw ?? '').trim().toLowerCase()
-  return BOOKING_STATUSES.includes(value) ? value : null
-}
 const PAYMENT_METHODS = ['Cash', 'Card', 'Square', 'Zelle', 'Venmo', 'Cash App', 'Other']
 const MAX_PAYMENT_CENTS = 100_000_000
 const PAYMENT_NOTE_MAX = 500
-const INVOICE_OPEN_MESSAGE = 'An invoice is out for this booking. Cancel it to change amounts.'
-const INVOICE_OPEN_RESPONSE = { error: { code: 'INVOICE_OPEN', message: INVOICE_OPEN_MESSAGE, details: [] } }
-const BOOKING_NOT_FOUND_RESPONSE = { error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }
 const INVALID_ID_RESPONSE = { error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }
-
-function isPresentNumber(value: unknown): boolean {
-  return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
-}
-
-/** BillingError -> its own code and status; anything else -> the usual 500 with `fallbackMessage`. */
-function billingErrorResponse(c: Context, err: unknown, fallbackMessage = 'Something went wrong.') {
-  if (err instanceof BillingError) {
-    return c.json(
-      { error: { code: err.code, message: err.message, details: err.details } },
-      err.httpStatus as 400 | 404 | 409 | 500 | 502 | 503
-    )
-  }
-  return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: fallbackMessage, details: [] } }, 500)
-}
-
-/** After a guarded write changed nothing: 404 when the booking is gone, else null (the caller picks the 409). */
-async function bookingStatusFor(db: D1Database, bookingId: string | number): Promise<string | null> {
-  const row = await db.prepare('SELECT status FROM Bookings WHERE id = ?').bind(bookingId).first<{ status: string | null }>()
-  return row ? String(row.status || '').toLowerCase() : null
-}
-
-/** Real calendar date check for YYYY-MM-DD (rejects 2026-02-30 etc.). */
-function isRealCalendarDate(value: string): boolean {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
-  if (!m) return false
-  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
-  const dt = new Date(Date.UTC(y, mo - 1, d))
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d
-}
-
-type NormalizedPackage = { kind: 'none' } | { kind: 'id'; id: number } | { kind: 'invalid' }
-
-/** packageId/service_id: empty, null, 'none' or 'custom' = no package; otherwise a positive integer id. */
-function normalizePackageInput(raw: unknown): NormalizedPackage {
-  if (raw === undefined || raw === null) return { kind: 'none' }
-  const text = String(raw).trim()
-  if (text === '' || text.toLowerCase() === 'none' || text.toLowerCase() === 'custom') return { kind: 'none' }
-  if (!/^[1-9]\d{0,9}$/.test(text)) return { kind: 'invalid' }
-  return { kind: 'id', id: Number(text) }
-}
-
-const SCHEMA_PENDING_RESPONSE = {
-  error: {
-    code: 'SCHEMA_PENDING',
-    message: "The database update for bookings without a package hasn't run yet. Try again in a minute.",
-    details: []
-  }
-}
-
-const PACKAGE_MISSING_RESPONSE = {
-  error: {
-    code: 'VALIDATION_FAILED',
-    message: 'The selected package no longer exists.',
-    details: [{ field: 'packageId', message: 'The selected package no longer exists.', code: 'INVALID_VALUE' }]
-  }
-}
 
 const FORBIDDEN_PAYMENT_RESPONSE = {
   error: {
@@ -1030,304 +1103,16 @@ adminRouter.get('/bookings', async (c) => {
   }
 })
 
-function normalizeSlotRow(row: SlotRowLike): SlotRowLike {
-  return {
-    ...row,
-    is_booked: Number(row.is_booked) === 1 || (row.is_booked as unknown) === true ? 1 : 0
-  }
-}
-
-async function validateAndLockBookingSlotWindow(
-  db: D1Database,
-  params: {
-    slotId: number | string
-    durationMinutes: number | null
-    fullDay: boolean
-    overrideDate?: string | null
-    overrideStartTime?: string | null
-    overrideEndTime?: string | null
-  }
-): Promise<{ ok: true; newlyLockedIds: number[] } | { ok: false; message: string }> {
-  const rawSlot = await db
-    .prepare('SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots WHERE id = ?')
-    .bind(params.slotId)
-    .first<SlotRowLike>()
-  if (!rawSlot) {
-    return { ok: false, message: 'The selected slot is already booked or does not exist.' }
-  }
-
-  const startSlot: SlotRowLike = normalizeSlotRow({
-    ...rawSlot,
-    date: params.overrideDate || rawSlot.date,
-    start_time: params.overrideStartTime || rawSlot.start_time,
-    end_time: params.overrideEndTime || rawSlot.end_time
-  })
-
-  const daySlotsRes = await db
-    .prepare(
-      'SELECT id, date, start_time, end_time, is_booked FROM Schedule_Slots WHERE date = ? ORDER BY start_time ASC, id ASC'
-    )
-    .bind(startSlot.date)
-    .all<SlotRowLike>()
-  const daySlots = (daySlotsRes.results || []).map((row) =>
-    row.id === startSlot.id ? startSlot : normalizeSlotRow(row)
-  )
-  if (!daySlots.some((row) => row.id === startSlot.id)) {
-    daySlots.push(startSlot)
-  }
-
-  let effectiveDuration = Number(params.durationMinutes) > 0 ? Number(params.durationMinutes) : 0
-  if (!effectiveDuration) {
-    const sStart = parseTimeToMinutes(startSlot.start_time)
-    const sEnd = parseTimeToMinutes(startSlot.end_time)
-    if (sStart !== null && sEnd !== null && sEnd > sStart) {
-      effectiveDuration = (sEnd === 1439 ? 1440 : sEnd) - sStart
-    } else {
-      effectiveDuration = 60
-    }
-  }
-
-  const bufferMinutes = await getBufferMinutesFromRules(db)
-  const windowRes = resolveSlotWindow({
-    daySlots,
-    startSlot,
-    durationMinutes: effectiveDuration,
-    fullDay: params.fullDay,
-    bufferMinutes
-  })
-  if (!windowRes.ok) {
-    const message =
-      windowRes.reason === 'SLOT_OVERLAPS_BOOKED'
-        ? 'The selected slot overlaps an existing booking.'
-        : 'The selected slot does not have enough continuous availability for this service duration.'
-    return { ok: false, message }
-  }
-
-  const lockRes = await lockSlotsAtomically(db, windowRes.slotIds)
-  if (!lockRes.ok) {
-    return { ok: false, message: 'The selected slot is already booked or unavailable.' }
-  }
-  return { ok: true, newlyLockedIds: lockRes.newlyLockedIds }
-}
-
-async function rollbackLockedSlots(db: D1Database, slotIds: readonly number[]): Promise<void> {
-  if (slotIds.length === 0) return
-  const ph = slotIds.map(() => '?').join(', ')
-  await db
-    .prepare(`UPDATE Schedule_Slots SET is_booked = 0 WHERE id IN (${ph})`)
-    .bind(...slotIds)
-    .run()
-    .catch(() => {})
-}
-
 // POST: Create a manual booking (admin)
 adminRouter.post('/bookings', async (c) => {
   try {
-    const body = await c.req.json()
-    if (hasForbiddenPaymentFields(body)) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
-          details: []
-        }
-      }, 400)
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    if (hasForbiddenPaymentFields(parsedBody.data)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
     }
-    const client_name = String(body.client_name || body.customer_name || body.customer || body.client || '').trim()
-    const client_email = String(body.client_email || body.customer_email || body.email || '').trim()
-    const customer_phone = String(body.customer_phone || body.phone || '').trim()
-    const location = String(body.location || '').trim()
-    const notes = String(body.notes || '').trim()
-    const attendees = Math.max(1, Math.round(Number(body.people ?? body.attendees ?? 1) || 1))
-    const deposit_paid =
-      body.deposit_paid !== undefined
-        ? Math.max(0, Math.round(Number(body.deposit_paid) || 0))
-        : body.deposit !== undefined
-          ? Math.max(0, Math.round((Number(body.deposit) || 0) * 100))
-          : 0
-    const coupon_code =
-      typeof body.coupon === 'object' && body.coupon !== null
-        ? String(body.coupon.code || '').trim()
-        : String(body.coupon_code || body.coupon || '').trim()
-    let custom_price: number | null =
-      body.custom_price !== undefined && body.custom_price !== null
-        ? Math.max(0, Math.round(Number(body.custom_price) || 0))
-        : body.totalPrice !== undefined
-          ? Math.max(0, Math.round((Number(body.totalPrice) || 0) * 100))
-          : body.price !== undefined
-            ? Math.max(0, Math.round((Number(body.price) || 0) * 100))
-            : null
-
-    const packageInput = normalizePackageInput(body.service_id ?? body.packageId)
-    const slot_id = body.slot_id ?? body.slotId
-    const photo_permission_portfolio = toConsentFlag(
-      body.photo_permission_portfolio ?? body.photoPermissions?.websitePortfolio ?? body.photoPermissions?.website_portfolio
-    )
-    const photo_permission_social = toConsentFlag(
-      body.photo_permission_social ?? body.photoPermissions?.socialMedia ?? body.photoPermissions?.social_media
-    )
-    const photo_permission_accepted_at =
-      photo_permission_portfolio || photo_permission_social ? new Date().toISOString() : null
-    const photo_permission_version = 'v1'
-    const status = body.status === undefined || body.status === null || body.status === ''
-      ? 'confirmed'
-      : parseBookingStatus(body.status)
-    if (status === null) {
-      return c.json(INVALID_STATUS_RESPONSE, 400)
-    }
-    const date = body.date
-    const start_time = body.start_time || body.startTime || body.time || '09:00'
-    const end_time = body.end_time || body.endTime || '10:00'
-
-    if (!client_name || !client_email) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Client name and email are required.', details: [] } }, 400)
-    }
-
-    // Resolve the package before touching any slot. No package -> service_id NULL and a custom
-    // price is required; a numeric id must point at a real service (foreign key).
-    let targetServiceId: number | null = null
-    let serviceDurationMinutes: number | null = null
-    let serviceFullDay = false
-    let finalPrice =
-      body.price_at_booking !== undefined && body.price_at_booking !== null
-        ? Math.max(0, Math.round(Number(body.price_at_booking) || 0))
-        : custom_price
-
-    if (packageInput.kind === 'none') {
-      // The custom price must be given explicitly (cents in custom_price, or dollars in totalPrice/price) and be >= 0
-      const rawDollars = body.totalPrice !== undefined ? body.totalPrice : body.price
-      const noPackageCents = isPresentNumber(body.custom_price)
-        ? Math.round(Number(body.custom_price))
-        : isPresentNumber(rawDollars)
-          ? Math.round(Number(rawDollars) * 100)
-          : null
-      if (noPackageCents === null || noPackageCents < 0) {
-        return c.json({
-          error: {
-            code: 'VALIDATION_FAILED',
-            message: 'Enter a custom price for a booking without a package.',
-            details: [{ field: 'custom_price', message: 'Enter a custom price for a booking without a package.', code: 'REQUIRED_FIELD' }]
-          }
-        }, 400)
-      }
-      if (!(await bookingsServiceIdNullable(c.env.DB))) {
-        return c.json(SCHEMA_PENDING_RESPONSE, 503)
-      }
-      custom_price = noPackageCents
-      if (body.price_at_booking === undefined || body.price_at_booking === null) finalPrice = noPackageCents
-    } else {
-      const svc = packageInput.kind === 'id'
-        ? await c.env.DB.prepare('SELECT id, price, duration_minutes, full_day FROM Services WHERE id = ?').bind(packageInput.id).first<any>()
-        : null
-      if (!svc) {
-        return c.json(PACKAGE_MISSING_RESPONSE, 400)
-      }
-      targetServiceId = Number(svc.id)
-      serviceDurationMinutes = Number(svc.duration_minutes) > 0 ? Number(svc.duration_minutes) : null
-      serviceFullDay = Number(svc.full_day) === 1
-      if (finalPrice == null) finalPrice = svc.price
-    }
-
-    let targetSlotId = slot_id
-    let slotWasCreated = false
-    let lockedSlotIds: number[] = []
-
-    if (targetSlotId) {
-      const lockRes = await validateAndLockBookingSlotWindow(c.env.DB, {
-        slotId: targetSlotId,
-        durationMinutes: serviceDurationMinutes,
-        fullDay: serviceFullDay
-      })
-      if (!lockRes.ok) {
-        return c.json({
-          error: {
-            code: 'SLOT_ALREADY_BOOKED',
-            message: lockRes.message,
-            details: []
-          }
-        }, 409)
-      }
-      lockedSlotIds = lockRes.newlyLockedIds
-    } else if (date) {
-      // Reuse an open slot the weekly availability already created at this time; only add a new one when none exists
-      const existingSlot = await c.env.DB.prepare(
-        'SELECT id, is_booked FROM Schedule_Slots WHERE date = ? AND start_time = ? ORDER BY is_booked ASC LIMIT 1'
-      ).bind(date, start_time).first<{ id: number; is_booked: number }>()
-
-      if (existingSlot) {
-        const lockRes = await c.env.DB.prepare(
-          'UPDATE Schedule_Slots SET is_booked = 1, end_time = ? WHERE id = ? AND is_booked = 0'
-        ).bind(end_time, existingSlot.id).run()
-        if (!lockRes.success || lockRes.meta.changes === 0) {
-          return c.json({
-            error: { code: 'SLOT_ALREADY_BOOKED', message: 'That date and time is already booked.', details: [] }
-          }, 409)
-        }
-        targetSlotId = existingSlot.id
-        lockedSlotIds = [existingSlot.id]
-      } else {
-        const slotResult = await c.env.DB.prepare(
-          'INSERT INTO Schedule_Slots (date, start_time, end_time, is_booked) VALUES (?, ?, ?, 1)'
-        ).bind(date, start_time, end_time).run()
-        targetSlotId = slotResult.meta.last_row_id
-        slotWasCreated = true
-      }
-    }
-
-    if (!targetSlotId) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Slot ID or date/time details required.', details: [] } }, 400)
-    }
-
-    let bookingResult: D1Result
-    try {
-      bookingResult = await c.env.DB.prepare(
-        `INSERT INTO Bookings (
-          service_id, slot_id, client_name, client_email, price_at_booking, status,
-          customer_phone, location, notes, attendees, deposit_paid, coupon_code, custom_price,
-          photo_permission_portfolio, photo_permission_social, photo_permission_accepted_at, photo_permission_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(
-        targetServiceId,
-        targetSlotId,
-        client_name,
-        client_email,
-        finalPrice ?? 0,
-        status,
-        customer_phone,
-        location,
-        notes,
-        attendees,
-        deposit_paid,
-        coupon_code,
-        custom_price,
-        photo_permission_portfolio,
-        photo_permission_social,
-        photo_permission_accepted_at,
-        photo_permission_version
-      ).run()
-    } catch (insertErr) {
-      // Undo the slot work so the time doesn't stay blocked by a booking that was never saved
-      if (slotWasCreated) {
-        await c.env.DB.prepare('DELETE FROM Schedule_Slots WHERE id = ?').bind(targetSlotId).run().catch(() => {})
-      } else if (lockedSlotIds.length > 0) {
-        await rollbackLockedSlots(c.env.DB, lockedSlotIds)
-      } else {
-        await c.env.DB.prepare('UPDATE Schedule_Slots SET is_booked = 0 WHERE id = ?').bind(targetSlotId).run().catch(() => {})
-      }
-      throw insertErr
-    }
-
-    if (bookingResult.meta.last_row_id) {
-      scheduleGoogleCalendarSync(c, bookingResult.meta.last_row_id, 'upsert')
-    }
-
-    return c.json({
-      success: true,
-      status: 'success',
-      id: bookingResult.meta.last_row_id,
-      data: { id: bookingResult.meta.last_row_id, slot_id: targetSlotId }
-    })
-  } catch (e: any) {
+    return await createAdminManualBooking(c, c.env.DB, parsedBody.data)
+  } catch {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not create booking.', details: [] } }, 500)
   }
 })
@@ -1337,280 +1122,14 @@ async function updateBookingHandler(c: Context<{ Bindings: Bindings }>) {
   try {
     const id = c.req.param('id')
     if (!id || !isValidId(id)) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+      return c.json(INVALID_ID_RESPONSE, 400)
     }
-    const body = await c.req.json()
-    if (hasForbiddenPaymentFields(body)) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
-          details: []
-        }
-      }, 400)
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    if (hasForbiddenPaymentFields(parsedBody.data)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
     }
-
-    // service_price feeds bookingTotalCents for the invoice lock below
-    const existing = await c.env.DB.prepare(
-      'SELECT b.*, s.price AS service_price, s.duration_minutes AS service_duration_minutes, s.full_day AS service_full_day FROM Bookings b LEFT JOIN Services s ON s.id = b.service_id WHERE b.id = ?'
-    ).bind(id).first<any>()
-    if (!existing) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
-    }
-
-    const rawName = body.client_name ?? body.customer_name ?? body.customer ?? body.client
-    const client_name = rawName !== undefined ? String(rawName).trim() : existing.client_name
-
-    const rawEmail = body.client_email ?? body.customer_email ?? body.email
-    if (rawEmail !== undefined && rawEmail !== null && String(rawEmail).trim() !== '') {
-      if (!EMAIL_REGEX.test(String(rawEmail).trim())) {
-        return c.json({
-          error: {
-            code: 'VALIDATION_FAILED',
-            message: 'Please enter a valid client email address.',
-            details: [{ field: 'client_email', message: 'Invalid email format.', code: 'INVALID_FORMAT' }]
-          }
-        }, 400)
-      }
-    }
-    const client_email = rawEmail !== undefined ? String(rawEmail).trim() : existing.client_email
-
-    const newDate = body.date
-    if (newDate !== undefined && newDate !== null && String(newDate).trim() !== '') {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(newDate).trim())) {
-        return c.json({
-          error: {
-            code: 'VALIDATION_FAILED',
-            message: 'Date must be in YYYY-MM-DD format.',
-            details: [{ field: 'date', message: 'Invalid date format.', code: 'INVALID_FORMAT' }]
-          }
-        }, 400)
-      }
-    }
-
-    const rawPhone = body.customer_phone ?? body.phone
-    const customer_phone = rawPhone !== undefined ? String(rawPhone).trim() : (existing.customer_phone || '')
-
-    const location = body.location !== undefined ? String(body.location).trim() : (existing.location || '')
-    const notes = body.notes !== undefined ? String(body.notes).trim() : (existing.notes || '')
-
-    const rawAttendees = body.people ?? body.attendees
-    const attendees = rawAttendees !== undefined ? Math.max(1, Math.round(Number(rawAttendees) || 1)) : (existing.attendees ?? 1)
-
-    const deposit_paid =
-      body.deposit_paid !== undefined
-        ? Math.max(0, Math.round(Number(body.deposit_paid) || 0))
-        : body.deposit !== undefined
-          ? Math.max(0, Math.round((Number(body.deposit) || 0) * 100))
-          : (existing.deposit_paid ?? 0)
-
-    const coupon_code =
-      body.coupon !== undefined || body.coupon_code !== undefined
-        ? typeof body.coupon === 'object' && body.coupon !== null
-          ? String(body.coupon.code || '').trim()
-          : String(body.coupon_code ?? body.coupon ?? '').trim()
-        : (existing.coupon_code || '')
-
-    let custom_price = existing.custom_price
-    if (body.custom_price !== undefined) {
-      custom_price = body.custom_price === null ? null : Math.max(0, Math.round(Number(body.custom_price) || 0))
-    } else if (body.totalPrice !== undefined) {
-      custom_price = Math.max(0, Math.round((Number(body.totalPrice) || 0) * 100))
-    } else if (body.price !== undefined) {
-      custom_price = Math.max(0, Math.round((Number(body.price) || 0) * 100))
-    }
-
-    const price_at_booking =
-      body.price_at_booking !== undefined
-        ? Math.max(0, Math.round(Number(body.price_at_booking) || 0))
-        : custom_price !== null && custom_price !== undefined
-          ? custom_price
-          : existing.price_at_booking
-
-    // Package: only changed when service_id/packageId is sent. 'none' / null / '' -> no package (NULL);
-    // a numeric id must point at an existing service.
-    let service_id: number | null = existing.service_id ?? null
-    let service_price: unknown = existing.service_price
-    let service_duration_minutes: number | null = existing.service_duration_minutes ?? null
-    let service_full_day: number | null = existing.service_full_day ?? null
-    const packageSent = body.service_id !== undefined || body.packageId !== undefined
-    if (packageSent) {
-      const packageInput = normalizePackageInput(body.service_id !== undefined ? body.service_id : body.packageId)
-      if (packageInput.kind === 'none') {
-        if (existing.service_id !== null && existing.service_id !== undefined && !(await bookingsServiceIdNullable(c.env.DB))) {
-          return c.json(SCHEMA_PENDING_RESPONSE, 503)
-        }
-        service_id = null
-        service_price = null
-        service_duration_minutes = null
-        service_full_day = null
-      } else {
-        const svc = packageInput.kind === 'id'
-          ? await c.env.DB.prepare('SELECT id, price, duration_minutes, full_day FROM Services WHERE id = ?').bind(packageInput.id).first<{ id: number; price: unknown; duration_minutes: number | null; full_day: number | null }>()
-          : null
-        if (!svc) {
-          return c.json(PACKAGE_MISSING_RESPONSE, 400)
-        }
-        service_id = Number(svc.id)
-        service_price = svc.price
-        service_duration_minutes = svc.duration_minutes ?? null
-        service_full_day = svc.full_day ?? null
-      }
-    }
-
-    const existingStatus = String(existing.status || '').toLowerCase()
-    let status: string = existing.status
-    if (body.status !== undefined) {
-      const requested = parseBookingStatus(body.status)
-      if (requested === null) {
-        return c.json(INVALID_STATUS_RESPONSE, 400)
-      }
-      status = requested
-    }
-    const statusLower = String(status || '').toLowerCase()
-
-    const rawPortfolioConsent =
-      body.photo_permission_portfolio !== undefined
-        ? body.photo_permission_portfolio
-        : body.photoPermissions?.websitePortfolio ?? body.photoPermissions?.website_portfolio
-    const rawSocialConsent =
-      body.photo_permission_social !== undefined
-        ? body.photo_permission_social
-        : body.photoPermissions?.socialMedia ?? body.photoPermissions?.social_media
-    const photo_permission_portfolio =
-      rawPortfolioConsent !== undefined ? toConsentFlag(rawPortfolioConsent) : (existing.photo_permission_portfolio ? 1 : 0)
-    const photo_permission_social =
-      rawSocialConsent !== undefined ? toConsentFlag(rawSocialConsent) : (existing.photo_permission_social ? 1 : 0)
-    const photo_permission_accepted_at =
-      photo_permission_portfolio || photo_permission_social
-        ? (existing.photo_permission_accepted_at || new Date().toISOString())
-        : null
-    const photo_permission_version = existing.photo_permission_version || 'v1'
-
-    const newStartTime = body.start_time ?? body.startTime
-    const newEndTime = body.end_time ?? body.endTime
-
-    // Cancelling withdraws the open invoice first; if Square refuses, nothing is changed
-    if (statusLower === 'cancelled' && existingStatus !== 'cancelled') {
-      await cancelOpenInvoice(c.env.DB, c.env, id)
-    }
-
-    // Reactivating a cancelled booking must validate & atomically lock all consecutive slots first
-    const reactivating = statusLower !== 'cancelled' && existingStatus === 'cancelled' && Boolean(existing.slot_id)
-    let reactivatedSlotIds: number[] = []
-    if (reactivating) {
-      const lockRes = await validateAndLockBookingSlotWindow(c.env.DB, {
-        slotId: existing.slot_id,
-        durationMinutes: Number(service_duration_minutes) > 0 ? Number(service_duration_minutes) : null,
-        fullDay: Number(service_full_day) === 1,
-        overrideDate: newDate ? String(newDate).trim() : null,
-        overrideStartTime: newStartTime ? String(newStartTime).trim() : null,
-        overrideEndTime: newEndTime ? String(newEndTime).trim() : null
-      })
-      if (!lockRes.ok) {
-        return c.json({
-          error: {
-            code: 'SLOT_ALREADY_BOOKED',
-            message: lockRes.message,
-            details: []
-          }
-        }, 409)
-      }
-      reactivatedSlotIds = lockRes.newlyLockedIds
-    }
-
-    // Invoice lock: only when the effective base, deposit_paid or service_id actually changes
-    // (resending the same price is not a change). The guard is inside the UPDATE, and the UPDATE
-    // runs before the slot writes, so a refused lock leaves nothing changed.
-    const beforeBase = bookingTotalCents(existing)
-    const afterBase = bookingTotalCents({ custom_price, price_at_booking, service_price })
-    const moneyChanged =
-      afterBase !== beforeBase ||
-      Number(deposit_paid) !== Number(existing.deposit_paid ?? 0) ||
-      String(service_id ?? '') !== String(existing.service_id ?? '')
-    // A cancel is guarded too, so a Send that claimed the booking after the withdraw above blocks it
-    const cancelling = statusLower === 'cancelled' && existingStatus !== 'cancelled'
-    const guarded = moneyChanged || cancelling
-    const lockSql = guarded ? ` AND NOT ${OPEN_INVOICE_EXISTS_SQL}` : ''
-    const lockBinds: unknown[] = guarded ? [id] : []
-
-    let update: D1Result
-    try {
-      update = await c.env.DB.prepare(
-        `UPDATE Bookings
-         SET client_name = ?,
-             client_email = ?,
-             customer_phone = ?,
-             location = ?,
-             event_location = ?,
-             notes = ?,
-             attendees = ?,
-             deposit_paid = ?,
-             coupon_code = ?,
-             custom_price = ?,
-             price_at_booking = ?,
-             service_id = ?,
-             status = ?,
-             photo_permission_portfolio = ?,
-             photo_permission_social = ?,
-             photo_permission_accepted_at = ?,
-             photo_permission_version = ?
-         WHERE id = ?${lockSql}`
-      ).bind(
-        client_name,
-        client_email,
-        customer_phone,
-        location,
-        location,
-        notes,
-        attendees,
-        deposit_paid,
-        coupon_code,
-        custom_price,
-        price_at_booking,
-        service_id,
-        status,
-        photo_permission_portfolio,
-        photo_permission_social,
-        photo_permission_accepted_at,
-        photo_permission_version,
-        id,
-        ...lockBinds
-      ).run()
-    } catch (updateErr) {
-      if (reactivatedSlotIds.length > 0) {
-        await rollbackLockedSlots(c.env.DB, reactivatedSlotIds)
-      }
-      throw updateErr
-    }
-    if (!update.meta.changes) {
-      if (reactivatedSlotIds.length > 0) {
-        await rollbackLockedSlots(c.env.DB, reactivatedSlotIds)
-      }
-      if ((await bookingStatusFor(c.env.DB, id)) === null) {
-        return c.json(BOOKING_NOT_FOUND_RESPONSE, 404)
-      }
-      return c.json(INVOICE_OPEN_RESPONSE, 409)
-    }
-
-    // Update associated Schedule_Slots row if date/startTime/endTime changed
-    if (existing.slot_id && (newDate !== undefined || newStartTime !== undefined || newEndTime !== undefined)) {
-      await c.env.DB.prepare(
-        `UPDATE Schedule_Slots
-         SET date = COALESCE(?, date),
-             start_time = COALESCE(?, start_time),
-             end_time = COALESCE(?, end_time)
-         WHERE id = ?`
-      ).bind(newDate || null, newStartTime || null, newEndTime || null, existing.slot_id).run()
-    }
-
-    if (statusLower === 'cancelled' && existing.slot_id) {
-      await releaseBookingSlots(c.env.DB, id, existing.slot_id)
-    }
-
-    scheduleGoogleCalendarSync(c, id, 'upsert')
-
-    return c.json({ success: true, status: 'success' })
+    return await updateAdminBooking(c, c.env.DB, id, parsedBody.data)
   } catch (e: any) {
     return billingErrorResponse(c, e, 'Could not update booking.')
   }
@@ -1624,96 +1143,11 @@ adminRouter.patch('/bookings/:id/cancel', async (c) => {
   try {
     const id = c.req.param('id')
     if (!id || !isValidId(id)) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+      return c.json(INVALID_ID_RESPONSE, 400)
     }
-
-    const booking = await c.env.DB.prepare(
-      'SELECT slot_id, status, square_payment_id, deposit_paid FROM Bookings WHERE id = ?'
-    )
-      .bind(id)
-      .first<{
-        slot_id: number | null
-        status: string | null
-        square_payment_id: string | null
-        deposit_paid: number | null
-      }>()
-    if (!booking) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Booking not found.', details: [] } }, 404)
-    }
-
-    const body = (await c.req.json().catch(() => ({}))) as { refund?: boolean; reason?: string } | null
-    const shouldRefund = body?.refund !== false
-
-    if (String(booking.status || '').toLowerCase() === 'cancelled') {
-      return c.json({ success: true, status: 'success', refundedCents: 0 })
-    }
-
-    // Withdraw any open invoice first; a BillingError leaves the booking unchanged
-    await cancelOpenInvoice(c.env.DB, c.env, id)
-
-    let refundedCents = 0
-    let squareRefundId: string | null = null
-
-    if (shouldRefund && booking.square_payment_id && Number(booking.deposit_paid || 0) > 0) {
-      try {
-        const { client } = await getSquare(c.env)
-        const paymentRes = await client.payments.get({ paymentId: booking.square_payment_id })
-        const payment = paymentRes?.payment
-        const refundableCents = Math.max(
-          0,
-          Number(payment?.amountMoney?.amount ?? booking.deposit_paid) - Number(payment?.refundedMoney?.amount ?? 0)
-        )
-
-        if (refundableCents > 0) {
-          const refundRes = await client.refunds.refundPayment({
-            idempotencyKey: `cancel_${id}_${booking.square_payment_id}`,
-            paymentId: booking.square_payment_id,
-            amountMoney: { amount: BigInt(refundableCents), currency: 'USD' },
-            reason: String(body?.reason || 'Photographer cancelled booking').slice(0, 192)
-          })
-          squareRefundId = refundRes?.refund?.id || null
-          refundedCents = refundableCents
-
-          const existingRefund = await c.env.DB.prepare(
-            "SELECT id FROM Booking_Payments WHERE booking_id = ? AND method = 'refund' AND amount = ? LIMIT 1"
-          )
-            .bind(id, -refundedCents)
-            .first<{ id: number }>()
-
-          if (!existingRefund) {
-            await c.env.DB.prepare(
-              'INSERT INTO Booking_Payments (booking_id, amount, method, paid_on, note) VALUES (?, ?, ?, ?, ?)'
-            )
-              .bind(
-                id,
-                -refundedCents,
-                'refund',
-                new Date().toISOString().slice(0, 10),
-                squareRefundId ? `Square refund (${squareRefundId})` : 'Square refund'
-              )
-              .run()
-          }
-        }
-      } catch (err: unknown) {
-        return billingErrorResponse(c, err, 'Could not refund Square payment.')
-      }
-    }
-
-    // Guarded like every lock: a Send that claimed the booking after the withdraw above blocks the cancel
-    const cancelled = await c.env.DB.prepare(
-      `UPDATE Bookings SET status = 'cancelled' WHERE id = ? AND NOT ${OPEN_INVOICE_EXISTS_SQL}`
-    ).bind(id, id).run()
-    if (!cancelled.meta?.changes) {
-      return c.json(INVOICE_OPEN_RESPONSE, 409)
-    }
-
-    if (booking.slot_id) {
-      await releaseBookingSlots(c.env.DB, id, booking.slot_id)
-    }
-
-    scheduleGoogleCalendarSync(c, id, 'delete')
-
-    return c.json({ success: true, status: 'success', refundedCents, squareRefundId })
+    const parsedBody = await parseOptionalJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    return await cancelAdminBookingWithRefund(c, c.env.DB, id, parsedBody.data as { refund?: boolean; reason?: string })
   } catch (e: any) {
     return billingErrorResponse(c, e, 'Could not cancel booking.')
   }
@@ -1822,20 +1256,19 @@ adminRouter.post('/bookings/:id/payments', async (c) => {
     if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
-    const body = await c.req.json().catch(() => ({}))
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
     if (hasForbiddenPaymentFields(body)) {
       return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
     }
-    const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+    const input = body
 
     // amount: dollars as text or number, up to 7 whole digits and 2 decimals
     const amountText = input.amount === undefined || input.amount === null ? '' : String(input.amount).trim()
-    if (!/^\d{1,7}(\.\d{1,2})?$/.test(amountText)) {
-      return c.json(paymentValidationError('amount', 'Enter an amount in dollars, like 150 or 19.99.', 'INVALID_FORMAT'), 400)
-    }
-    const amountCents = Math.round(Number(amountText) * 100)
-    if (!Number.isInteger(amountCents) || amountCents < 1 || amountCents > MAX_PAYMENT_CENTS) {
-      return c.json(paymentValidationError('amount', 'The amount must be between $0.01 and $1,000,000.00.', 'OUT_OF_RANGE'), 400)
+    const amountCents = parseMoneyToCents(amountText)
+    if (amountCents === null || amountCents > MAX_PAYMENT_CENTS) {
+      return c.json(paymentValidationError('amount', 'Enter an amount in dollars between $0.01 and $1,000,000.00.', 'INVALID_FORMAT'), 400)
     }
 
     const method = typeof input.method === 'string' ? input.method.trim() : ''
@@ -1909,8 +1342,9 @@ adminRouter.delete('/bookings/:id/payments/:paymentId', async (c) => {
     if (!isValidId(id) || !isValidId(paymentId)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
-    // A DELETE normally has no body; if one is sent it gets the same card-number guard as POST
-    const body = await c.req.json().catch(() => null)
+    const parsedBody = await parseOptionalJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body = parsedBody.data
     if (hasForbiddenPaymentFields(body)) {
       return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
     }
@@ -1989,11 +1423,13 @@ adminRouter.post('/bookings/:id/charges', async (c) => {
     if (!isValidId(id)) {
       return c.json(INVALID_ID_RESPONSE, 400)
     }
-    const body = await c.req.json().catch(() => ({}))
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
     if (hasForbiddenPaymentFields(body)) {
       return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
     }
-    const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+    const input = body
 
     const description = typeof input.description === 'string' ? input.description.trim() : ''
     if (description.length < 1 || description.length > DESCRIPTION_MAX) {
@@ -2089,11 +1525,13 @@ adminRouter.post('/bookings/:id/invoice', async (c) => {
     if (!isValidId(id)) {
       return c.json(INVALID_ID_RESPONSE, 400)
     }
-    const body = await c.req.json().catch(() => ({}))
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
     if (hasForbiddenPaymentFields(body)) {
       return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
     }
-    const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+    const input = body
 
     const { invoice, totals } = await sendBalanceInvoice(c.env.DB, c.env, id, input.expected_amount_cents)
     return c.json({ status: 'success', invoice, totals, data: { invoice, totals } })
@@ -2110,11 +1548,13 @@ adminRouter.post('/bookings/:id/terminal-checkout', async (c) => {
     if (!isValidId(id)) {
       return c.json(INVALID_ID_RESPONSE, 400)
     }
-    const body = await c.req.json().catch(() => ({}))
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
     if (hasForbiddenPaymentFields(body)) {
       return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
     }
-    const input = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
+    const input = body
     const deviceId = typeof input.device_id === 'string' ? input.device_id : undefined
 
     const { checkout } = await sendTerminalCheckout(c.env.DB, c.env, id, input.expected_amount_cents, deviceId)
@@ -2125,8 +1565,33 @@ adminRouter.post('/bookings/:id/terminal-checkout', async (c) => {
   }
 })
 
-// GET: Admin calendar feed URLs for Google Calendar / Apple Calendar subscription
-adminRouter.get('/calendar-feed', async (c) => {
+function buildCalendarFeedResponseData(c: Context<{ Bindings: Bindings }>, token: string, version: string) {
+  const origin = (c.env.PUBLIC_ORIGIN || '').trim().replace(/\/+$/, '') || new URL(c.req.url).origin
+  const icsFeedUrl = `${origin}/api/bookings/calendar.ics?token=${encodeURIComponent(token)}`
+  const webcalUrl = icsFeedUrl.replace(/^https?:\/\//i, 'webcal://')
+  const googleCalendarSubscribeUrl = `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(webcalUrl)}`
+  const targetCalendarEmail = (c.env.GOOGLE_CALENDAR_ID || '').trim()
+  return {
+    status: 'success',
+    version,
+    targetCalendarEmail,
+    icsFeedUrl,
+    webcalUrl,
+    googleCalendarSubscribeUrl,
+    data: {
+      version,
+      targetCalendarEmail,
+      icsFeedUrl,
+      webcalUrl,
+      googleCalendarSubscribeUrl
+    }
+  }
+}
+
+async function handleCalendarFeedRequest(
+  c: Context<{ Bindings: Bindings }>,
+  options: { rotate: boolean; errorMessage: string }
+): Promise<Response> {
   noStore(c)
   try {
     const secret = getSigningSecret(c.env) || (await getMediaSigningSecret(c.env))
@@ -2136,31 +1601,25 @@ adminRouter.get('/calendar-feed', async (c) => {
         503
       )
     }
-
-    const token = await signCalendarFeedToken(secret)
-    const origin = new URL(c.req.url).origin
-    const icsFeedUrl = `${origin}/api/bookings/calendar.ics?token=${encodeURIComponent(token)}`
-    const webcalUrl = icsFeedUrl.replace(/^https?:\/\//i, 'webcal://')
-    const googleCalendarSubscribeUrl = `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(webcalUrl)}`
-    const targetCalendarEmail = (c.env.GOOGLE_CALENDAR_ID || 'r59mediatesting@gmail.com').trim() || 'r59mediatesting@gmail.com'
-
-    return c.json({
-      status: 'success',
-      targetCalendarEmail,
-      icsFeedUrl,
-      webcalUrl,
-      googleCalendarSubscribeUrl,
-      data: {
-        targetCalendarEmail,
-        icsFeedUrl,
-        webcalUrl,
-        googleCalendarSubscribeUrl
-      }
-    })
+    const version = options.rotate
+      ? await rotateCalendarFeedVersion(c.env.DB)
+      : await getCalendarFeedVersion(c.env.DB)
+    const token = await signCalendarFeedToken(secret, version)
+    return c.json(buildCalendarFeedResponseData(c, token, version))
   } catch (e: any) {
-    return billingErrorResponse(c, e, 'Could not generate calendar feed URL.')
+    return billingErrorResponse(c, e, options.errorMessage)
   }
-})
+}
+
+// GET: Admin calendar feed URLs for Google Calendar / Apple Calendar subscription
+adminRouter.get('/calendar-feed', (c) =>
+  handleCalendarFeedRequest(c, { rotate: false, errorMessage: 'Could not generate calendar feed URL.' })
+)
+
+// POST: Rotate calendar feed version to immediately revoke previously shared subscription URLs
+adminRouter.post('/calendar-feed/rotate', (c) =>
+  handleCalendarFeedRequest(c, { rotate: true, errorMessage: 'Could not rotate calendar feed URL.' })
+)
 
 // POST: Backfill sync all active non-cancelled bookings to Google Calendar
 adminRouter.post('/calendar-sync', async (c) => {
@@ -2263,104 +1722,105 @@ async function handleGetPricing(c: Context<{ Bindings: Bindings }>) {
   }
 }
 
+function validatePricingUpdateBody(c: Context, body: Record<string, any>): Response | null {
+  if (hasForbiddenPaymentFields(body)) {
+    return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
+  }
+  if (body.feeRules !== undefined && !Array.isArray(body.feeRules)) {
+    return c.json({
+      error: {
+        code: 'VALIDATION_FAILED',
+        message: 'feeRules must be an array.',
+        details: [{ field: 'feeRules', message: 'feeRules must be an array.' }]
+      }
+    }, 400)
+  }
+  if (body.policy !== undefined && (!body.policy || typeof body.policy !== 'object' || Array.isArray(body.policy))) {
+    return c.json({
+      error: {
+        code: 'VALIDATION_FAILED',
+        message: 'policy must be an object.',
+        details: [{ field: 'policy', message: 'policy must be an object.' }]
+      }
+    }, 400)
+  }
+  return null
+}
+
+function normalizePricingSettingsPayload(body: Record<string, any>, existing: Record<string, any>) {
+  const depositPercent = body.depositPercent !== undefined
+    ? normalizeDepositPercent(body.depositPercent)
+    : normalizeDepositPercent(existing.depositPercent)
+
+  const parsedBaseFee = body.baseFee !== undefined ? Number(body.baseFee) : Number(existing.baseFee)
+  const baseFee = Number.isFinite(parsedBaseFee) && parsedBaseFee >= 0 ? Math.round(parsedBaseFee * 100) / 100 : 0
+
+  const parsedPerPerson = body.perPerson !== undefined ? Number(body.perPerson) : Number(existing.perPerson)
+  const perPerson = Number.isFinite(parsedPerPerson) && parsedPerPerson >= 0 ? Math.round(parsedPerPerson * 100) / 100 : 0
+
+  const feeRules = body.feeRules !== undefined ? normalizeFeeRules(body.feeRules) : normalizeFeeRules(existing.feeRules)
+  const policy = body.policy !== undefined
+    ? normalizeBookingPolicy({ ...normalizeBookingPolicy(existing.policy), ...body.policy })
+    : normalizeBookingPolicy(existing.policy ?? DEFAULT_BOOKING_POLICY)
+
+  return { baseFee, perPerson, depositPercent, feeRules, policy }
+}
+
+async function persistPricingAndPackages(
+  db: D1Database,
+  cleanPricing: ReturnType<typeof normalizePricingSettingsPayload>,
+  packages: unknown
+): Promise<void> {
+  const statements: D1PreparedStatement[] = [
+    db.prepare(
+      "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('pricing', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
+    ).bind(JSON.stringify(cleanPricing))
+  ]
+
+  if (Array.isArray(packages)) {
+    for (const pkg of packages) {
+      if (pkg && pkg.id && !String(pkg.id).startsWith('pkg_')) {
+        const priceCents = parseNonNegativeMoneyToCents(pkg.price) ?? Math.max(0, Math.round((Number(pkg.price) || 0) * 100))
+        statements.push(
+          db.prepare(
+            'UPDATE Services SET name = COALESCE(?, name), description = COALESCE(?, description), price = ?, is_active = ? WHERE id = ?'
+          ).bind(
+            pkg.name || pkg.title || null,
+            pkg.description !== undefined ? pkg.description : null,
+            priceCents,
+            pkg.active !== undefined ? (pkg.active ? 1 : 0) : 1,
+            pkg.id
+          )
+        )
+      }
+    }
+  }
+
+  await db.batch(statements)
+  await bumpPublicContentVersion(db)
+}
+
 async function handleUpdatePricing(c: Context<{ Bindings: Bindings }>) {
   try {
-    const body = await c.req.json().catch(() => ({}))
-    if (hasForbiddenPaymentFields(body)) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
-          details: []
-        }
-      }, 400)
-    }
-    if (body.feeRules !== undefined && !Array.isArray(body.feeRules)) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'feeRules must be an array.',
-          details: [{ field: 'feeRules', message: 'feeRules must be an array.' }]
-        }
-      }, 400)
-    }
-    if (body.policy !== undefined && (!body.policy || typeof body.policy !== 'object' || Array.isArray(body.policy))) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'policy must be an object.',
-          details: [{ field: 'policy', message: 'policy must be an object.' }]
-        }
-      }, 400)
-    }
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body = parsedBody.data
+    const validationErr = validatePricingUpdateBody(c, body)
+    if (validationErr) return validationErr
 
     const existingRow = await c.env.DB.prepare(
       "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'pricing'"
     ).first<{ setting_value: string }>()
-    let existing: any = {}
+    let existing: Record<string, any> = {}
     if (existingRow?.setting_value) {
-      try {
-        existing = JSON.parse(existingRow.setting_value) || {}
-      } catch {}
+      try { existing = JSON.parse(existingRow.setting_value) || {} } catch {}
     }
 
-    const depositPercent =
-      body.depositPercent !== undefined
-        ? normalizeDepositPercent(body.depositPercent)
-        : normalizeDepositPercent(existing.depositPercent)
-
-    const parsedBaseFee = body.baseFee !== undefined ? Number(body.baseFee) : Number(existing.baseFee)
-    const baseFee = Number.isFinite(parsedBaseFee) && parsedBaseFee >= 0 ? Math.round(parsedBaseFee * 100) / 100 : 0
-
-    const parsedPerPerson = body.perPerson !== undefined ? Number(body.perPerson) : Number(existing.perPerson)
-    const perPerson = Number.isFinite(parsedPerPerson) && parsedPerPerson >= 0 ? Math.round(parsedPerPerson * 100) / 100 : 0
-
-    const feeRules =
-      body.feeRules !== undefined ? normalizeFeeRules(body.feeRules) : normalizeFeeRules(existing.feeRules)
-    const policy =
-      body.policy !== undefined
-        ? normalizeBookingPolicy({ ...normalizeBookingPolicy(existing.policy), ...body.policy })
-        : normalizeBookingPolicy(existing.policy ?? DEFAULT_BOOKING_POLICY)
-
-    const cleanPricing = {
-      baseFee,
-      perPerson,
-      depositPercent,
-      feeRules,
-      policy
-    }
-    const val = JSON.stringify(cleanPricing)
-
-    const statements: D1PreparedStatement[] = [
-      c.env.DB.prepare(
-        "INSERT INTO Admin_Settings (setting_key, setting_value) VALUES ('pricing', ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value"
-      ).bind(val)
-    ]
-
-    if (Array.isArray(body.packages)) {
-      for (const pkg of body.packages) {
-        if (pkg && pkg.id && !String(pkg.id).startsWith('pkg_')) {
-          const priceCents = Math.round((Number(pkg.price) || 0) * 100)
-          statements.push(
-            c.env.DB.prepare(
-              'UPDATE Services SET name = COALESCE(?, name), description = COALESCE(?, description), price = ?, is_active = ? WHERE id = ?'
-            ).bind(
-              pkg.name || pkg.title || null,
-              pkg.description !== undefined ? pkg.description : null,
-              priceCents,
-              pkg.active !== undefined ? (pkg.active ? 1 : 0) : 1,
-              pkg.id
-            )
-          )
-        }
-      }
-    }
-
-    await c.env.DB.batch(statements)
-    await bumpPublicContentVersion(c.env.DB)
+    const cleanPricing = normalizePricingSettingsPayload(body, existing)
+    await persistPricingAndPackages(c.env.DB, cleanPricing, body.packages)
 
     return c.json({ success: true, status: 'success', pricing: cleanPricing, data: cleanPricing })
-  } catch (e: any) {
+  } catch {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not save pricing settings.', details: [] } }, 500)
   }
 }
@@ -2377,7 +1837,7 @@ adminRouter.put('/settings', handleUpdatePricing)
 adminRouter.get('/coupons', async (c) => {
   try {
     const { results } = await c.env.DB.prepare(
-      'SELECT id, code, discount_type, discount_value, description, is_active FROM Coupons ORDER BY id DESC'
+      'SELECT id, code, discount_type, discount_value, description, expires_at, max_uses, used_count, is_active FROM Coupons ORDER BY id DESC'
     ).all()
 
     const coupons = (results || []).map((r: any) => ({
@@ -2385,10 +1845,13 @@ adminRouter.get('/coupons', async (c) => {
       code: r.code,
       discount: r.discount_value,
       amount: r.discount_value,
-      type: r.discount_type,
-      discount_type: r.discount_type,
+      type: r.discount_type === 'percent' ? 'percent' : 'amount',
+      discount_type: r.discount_type === 'percent' ? 'percent' : 'amount',
       discount_value: r.discount_value,
       description: r.description || '',
+      expires_at: r.expires_at ?? null,
+      max_uses: r.max_uses ?? null,
+      used_count: Number(r.used_count) || 0,
       active: r.is_active === 1,
       is_active: r.is_active
     }))
@@ -2399,13 +1862,52 @@ adminRouter.get('/coupons', async (c) => {
   }
 })
 
+function parseCouponLimits(body: Record<string, any>, existing?: any):
+  | { ok: true; expiresAt: string | null; maxUses: number | null }
+  | { ok: false; message: string } {
+  let expiresAt: string | null = existing?.expires_at ?? null
+  if (body.expires_at !== undefined) {
+    if (body.expires_at === null || body.expires_at === '') {
+      expiresAt = null
+    } else if (typeof body.expires_at === 'string') {
+      const s = body.expires_at.trim()
+      const ms = /^\d{4}-\d{2}-\d{2}$/.test(s)
+        ? (isRealCalendarDate(s) ? Date.parse(`${s}T23:59:59.999Z`) : NaN)
+        : Date.parse(s)
+      if (!Number.isFinite(ms)) {
+        return { ok: false, message: 'expires_at must be a valid ISO date or timestamp.' }
+      }
+      expiresAt = s
+    } else {
+      return { ok: false, message: 'expires_at must be an ISO date string or null.' }
+    }
+  }
+
+  let maxUses: number | null = existing?.max_uses ?? null
+  if (body.max_uses !== undefined) {
+    if (body.max_uses === null || body.max_uses === '') {
+      maxUses = null
+    } else {
+      const n = Number(body.max_uses)
+      if (!Number.isInteger(n) || n < 1 || n > 1_000_000) {
+        return { ok: false, message: 'max_uses must be a positive integer.' }
+      }
+      maxUses = n
+    }
+  }
+  return { ok: true, expiresAt, maxUses }
+}
+
 // POST: Create coupon
 adminRouter.post('/coupons', async (c) => {
   try {
-    const body = await c.req.json()
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
     const code = typeof body.code === 'string' ? body.code.toUpperCase().trim() : ''
-    const discountType = body.type || body.discount_type || 'percent'
-    const discountVal = Number(body.discount ?? body.amount ?? body.discount_value)
+    const rawType = String(body.type || body.discount_type || 'percent').trim().toLowerCase()
+    const discountType = rawType === 'fixed' ? 'amount' : rawType
+    const rawDiscount = body.discount ?? body.amount ?? body.discount_value
     const description = String(body.description || '').trim()
     const isActive = body.active !== undefined ? (body.active ? 1 : 0) : (body.is_active !== undefined ? (body.is_active ? 1 : 0) : 1)
 
@@ -2419,29 +1921,55 @@ adminRouter.post('/coupons', async (c) => {
       }, 400)
     }
 
-    if (!code || !Number.isFinite(discountVal) || discountVal <= 0) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Coupon code and a positive discount amount are required.',
-          details: []
-        }
-      }, 400)
+    let discountVal: number
+    if (discountType === 'percent') {
+      discountVal = Number(rawDiscount)
+      if (!code || !Number.isFinite(discountVal) || discountVal <= 0) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Coupon code and a positive discount amount are required.',
+            details: []
+          }
+        }, 400)
+      }
+      if (discountVal > 100) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Percent discount cannot exceed 100%.',
+            details: []
+          }
+        }, 400)
+      }
+    } else {
+      const textAmt =
+        typeof rawDiscount === 'number'
+          ? (Number.isFinite(rawDiscount) ? rawDiscount.toFixed(2) : '')
+          : typeof rawDiscount === 'string'
+            ? rawDiscount.trim()
+            : ''
+      const cents = parseMoneyToCents(textAmt)
+      if (!code || cents === null) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Coupon code and a fixed dollar amount between $0.01 and $1,000,000.00 are required.',
+            details: []
+          }
+        }, 400)
+      }
+      discountVal = cents / 100
     }
 
-    if (discountType === 'percent' && discountVal > 100) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Percent discount cannot exceed 100%.',
-          details: []
-        }
-      }, 400)
+    const limits = parseCouponLimits(body)
+    if (!limits.ok) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: limits.message, details: [] } }, 400)
     }
 
     const result = await c.env.DB.prepare(
-      'INSERT INTO Coupons (code, discount_type, discount_value, description, is_active) VALUES (?, ?, ?, ?, ?)'
-    ).bind(code, discountType, discountVal, description, isActive).run()
+      'INSERT INTO Coupons (code, discount_type, discount_value, description, expires_at, max_uses, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).bind(code, discountType, discountVal, description, limits.expiresAt, limits.maxUses, isActive).run()
 
     const created = {
       id: result.meta.last_row_id,
@@ -2450,6 +1978,9 @@ adminRouter.post('/coupons', async (c) => {
       amount: discountVal,
       type: discountType,
       description,
+      expires_at: limits.expiresAt,
+      max_uses: limits.maxUses,
+      used_count: 0,
       active: isActive === 1
     }
 
@@ -2466,7 +1997,9 @@ adminRouter.put('/coupons/:id', async (c) => {
     if (!id || !isValidId(id)) {
       return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
     }
-    const body = await c.req.json()
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
     if (hasForbiddenPaymentFields(body)) {
       return c.json({
         error: {
@@ -2483,10 +2016,11 @@ adminRouter.put('/coupons/:id', async (c) => {
     }
 
     const code = body.code !== undefined ? String(body.code).toUpperCase().trim() : existing.code
-    const discountType = body.type || body.discount_type || existing.discount_type
+    const rawType = String(body.type || body.discount_type || existing.discount_type).trim().toLowerCase()
+    const discountType = rawType === 'fixed' ? 'amount' : rawType
 
     const rawDiscount = body.discount ?? body.amount ?? body.discount_value
-    const discountVal = rawDiscount !== undefined ? Number(rawDiscount) : Number(existing.discount_value)
+    const effectiveRawDiscount = rawDiscount !== undefined ? rawDiscount : existing.discount_value
 
     if (!['percent', 'amount'].includes(discountType)) {
       return c.json({
@@ -2498,24 +2032,50 @@ adminRouter.put('/coupons/:id', async (c) => {
       }, 400)
     }
 
-    if (!code || !Number.isFinite(discountVal) || discountVal <= 0) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Coupon code and a positive discount amount are required.',
-          details: []
-        }
-      }, 400)
+    let discountVal: number
+    if (discountType === 'percent') {
+      discountVal = Number(effectiveRawDiscount)
+      if (!code || !Number.isFinite(discountVal) || discountVal <= 0) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Coupon code and a positive discount amount are required.',
+            details: []
+          }
+        }, 400)
+      }
+      if (discountVal > 100) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Percent discount cannot exceed 100%.',
+            details: []
+          }
+        }, 400)
+      }
+    } else {
+      const textAmt =
+        typeof effectiveRawDiscount === 'number'
+          ? (Number.isFinite(effectiveRawDiscount) ? effectiveRawDiscount.toFixed(2) : '')
+          : typeof effectiveRawDiscount === 'string'
+            ? effectiveRawDiscount.trim()
+            : ''
+      const cents = parseMoneyToCents(textAmt)
+      if (!code || cents === null) {
+        return c.json({
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Coupon code and a fixed dollar amount between $0.01 and $1,000,000.00 are required.',
+            details: []
+          }
+        }, 400)
+      }
+      discountVal = cents / 100
     }
 
-    if (discountType === 'percent' && discountVal > 100) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Percent discount cannot exceed 100%.',
-          details: []
-        }
-      }, 400)
+    const limits = parseCouponLimits(body, existing)
+    if (!limits.ok) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: limits.message, details: [] } }, 400)
     }
 
     const description = body.description !== undefined ? String(body.description || '').trim() : (existing.description || '')
@@ -2527,8 +2087,8 @@ adminRouter.put('/coupons/:id', async (c) => {
           : existing.is_active
 
     await c.env.DB.prepare(
-      'UPDATE Coupons SET code = ?, discount_type = ?, discount_value = ?, description = ?, is_active = ? WHERE id = ?'
-    ).bind(code, discountType, discountVal, description, isActive, id).run()
+      'UPDATE Coupons SET code = ?, discount_type = ?, discount_value = ?, description = ?, expires_at = ?, max_uses = ?, is_active = ? WHERE id = ?'
+    ).bind(code, discountType, discountVal, description, limits.expiresAt, limits.maxUses, isActive, id).run()
 
     const updated = {
       id: Number(id),
@@ -2537,6 +2097,9 @@ adminRouter.put('/coupons/:id', async (c) => {
       amount: discountVal,
       type: discountType,
       description,
+      expires_at: limits.expiresAt,
+      max_uses: limits.maxUses,
+      used_count: Number(existing.used_count) || 0,
       active: isActive === 1
     }
 
@@ -2547,40 +2110,25 @@ adminRouter.put('/coupons/:id', async (c) => {
 })
 
 // DELETE: Delete coupon
-adminRouter.delete('/coupons/:id', async (c) => {
-  try {
-    const id = c.req.param('id')
-    if (!id || !isValidId(id)) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
-    }
-    const result = await c.env.DB.prepare('DELETE FROM Coupons WHERE id = ?').bind(id).run()
-
-    if (result.meta.changes === 0) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Coupon not found.', details: [] } }, 404)
-    }
-
-    return c.json({ success: true, status: 'success' })
-  } catch (e: any) {
-    return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete coupon.', details: [] } }, 500)
-  }
-})
+adminRouter.delete('/coupons/:id', (c) =>
+  deleteEntityById(c, {
+    table: 'Coupons',
+    notFoundMessage: 'Coupon not found.',
+    errorMessage: 'Could not delete coupon.'
+  })
+)
 
 // ── Packages (Services) Aliases for Admin ─────────────────────────
 adminRouter.put('/packages/:id', async (c) => {
   try {
     const id = c.req.param('id')
     if (!id || !isValidId(id)) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+      return c.json(INVALID_ID_RESPONSE, 400)
     }
-    const body = await c.req.json().catch(() => ({}))
-    if (hasForbiddenPaymentFields(body)) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
-          details: []
-        }
-      }, 400)
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    if (hasForbiddenPaymentFields(parsedBody.data)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
     }
 
     const existing = await c.env.DB.prepare('SELECT * FROM Services WHERE id = ?').bind(id).first<any>()
@@ -2588,134 +2136,14 @@ adminRouter.put('/packages/:id', async (c) => {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
     }
 
-    const rawName = body.name ?? body.title
-    const name = rawName !== undefined ? String(rawName).trim() : String(existing.name || '').trim()
-    const description = body.description !== undefined ? (body.description === null ? null : String(body.description)) : existing.description
-    const bookingMode = body.booking_mode !== undefined ? String(body.booking_mode) : (body.bookingMode !== undefined ? String(body.bookingMode) : (existing.booking_mode || 'direct'))
-
-    const rawPrice = body.priceMinor !== undefined ? body.priceMinor : (body.price !== undefined ? body.price : existing.price)
-    const rawDuration = body.duration_minutes !== undefined ? body.duration_minutes : (body.durationMinutes !== undefined ? body.durationMinutes : existing.duration_minutes)
-    const isActive =
-      body.is_active !== undefined
-        ? (body.is_active ? 1 : 0)
-        : body.active !== undefined
-          ? (body.active ? 1 : 0)
-          : existing.is_active
-
-    const errors = []
-    if (!name) {
-      errors.push({ field: 'name', message: 'Service name/title cannot be empty.', code: 'REQUIRED_FIELD' })
+    const parsed = parseServicePayload(parsedBody.data, existing)
+    if (!parsed.ok) {
+      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not update service.', details: parsed.errors } }, 400)
     }
 
-    let cleanPrice: number | null = null
-    if (rawPrice === null || (rawPrice === undefined && bookingMode === 'inquiry')) {
-      cleanPrice = null
-    } else {
-      const numPrice = Number(rawPrice)
-      if (!Number.isFinite(numPrice) || numPrice < 0) {
-        errors.push({ field: 'price', message: 'Price must be a valid number >= 0.', code: 'INVALID_VALUE' })
-      } else {
-        cleanPrice = Math.round(numPrice)
-      }
-    }
-
-    let cleanDuration: number | null = null
-    if (rawDuration === null || (rawDuration === undefined && bookingMode === 'inquiry')) {
-      cleanDuration = null
-    } else {
-      const effectiveDuration = rawDuration === undefined ? 60 : rawDuration
-      const numDuration = Number(effectiveDuration)
-      if (!Number.isFinite(numDuration) || numDuration < 0) {
-        errors.push({ field: 'duration_minutes', message: 'Duration in minutes must be >= 0.', code: 'INVALID_VALUE' })
-      } else {
-        cleanDuration = Math.round(numDuration)
-      }
-    }
-
-    if (errors.length > 0) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Could not update service.', details: errors } }, 400)
-    }
-
-    const rawFullDay = body.full_day !== undefined ? body.full_day : body.fullDay
-    const fullDay = rawFullDay !== undefined
-      ? (rawFullDay === true || Number(rawFullDay) === 1 ? 1 : 0)
-      : (existing.full_day ? 1 : 0)
-
-    const bestFor = body.best_for !== undefined ? (body.best_for === null ? null : String(body.best_for)) : (body.bestFor !== undefined ? (body.bestFor === null ? null : String(body.bestFor)) : existing.best_for)
-    const imageUrl = body.image_url !== undefined ? (body.image_url === null ? null : String(body.image_url)) : (body.image?.url !== undefined ? String(body.image.url) : existing.image_url)
-    const imageAlt = body.image_alt !== undefined ? (body.image_alt === null ? null : String(body.image_alt)) : (body.image?.alt !== undefined ? String(body.image.alt) : existing.image_alt)
-
-    let photoCount = existing.photo_count
-    const rawPhotoCount = body.photo_count !== undefined ? body.photo_count : body.photoCount
-    if (rawPhotoCount !== undefined) {
-      photoCount = rawPhotoCount === null ? null : Math.round(Number(rawPhotoCount))
-    }
-
-    let outfits = existing.outfits
-    const rawOutfits = body.outfits
-    if (rawOutfits !== undefined) {
-      outfits = rawOutfits === null ? null : Math.round(Number(rawOutfits))
-    }
-
-    const currency = body.currency !== undefined ? String(body.currency) : (existing.currency || 'USD')
-
-    let additionalPeople = existing.additional_people
-    const rawAdditionalPeople = body.additional_people !== undefined ? body.additional_people : body.additionalPeople
-    if (rawAdditionalPeople !== undefined) {
-      if (rawAdditionalPeople === null || rawAdditionalPeople === '') {
-        additionalPeople = null
-      } else if (typeof rawAdditionalPeople === 'string') {
-        additionalPeople = rawAdditionalPeople
-      } else if (typeof rawAdditionalPeople === 'object') {
-        additionalPeople = JSON.stringify(rawAdditionalPeople)
-      }
-    }
-
-    let displayOrder = existing.display_order ?? 0
-    const rawDisplayOrder = body.display_order !== undefined ? body.display_order : body.displayOrder
-    if (rawDisplayOrder !== undefined) {
-      displayOrder = rawDisplayOrder === null ? 0 : Math.round(Number(rawDisplayOrder))
-    }
-
-    await c.env.DB.prepare(
-      `UPDATE Services SET
-        name = ?, description = ?, price = ?, duration_minutes = ?, full_day = ?, is_active = ?,
-        best_for = ?, image_url = ?, image_alt = ?, photo_count = ?, outfits = ?,
-        currency = ?, booking_mode = ?, additional_people = ?, display_order = ?
-      WHERE id = ?`
-    ).bind(
-      name, description, cleanPrice, cleanDuration, fullDay, isActive,
-      bestFor, imageUrl, imageAlt, photoCount, outfits,
-      currency, bookingMode, additionalPeople, displayOrder,
-      id
-    ).run()
-
-    await bumpPublicContentVersion(c.env.DB)
-
-    return c.json({
-      success: true,
-      status: 'success',
-      data: {
-        id: Number(id),
-        name,
-        title: name,
-        description,
-        price: cleanPrice,
-        duration_minutes: cleanDuration,
-        full_day: fullDay === 1,
-        is_active: isActive,
-        best_for: bestFor,
-        image_url: imageUrl,
-        image_alt: imageAlt,
-        photo_count: photoCount,
-        outfits,
-        currency,
-        booking_mode: bookingMode,
-        additional_people: additionalPeople,
-        display_order: displayOrder
-      }
-    })
-  } catch (e: any) {
+    const saved = await saveServiceRecord(c.env.DB, parsed.data, existing)
+    return c.json({ success: true, status: 'success', data: saved.mapped })
+  } catch {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not update service.', details: [] } }, 500)
   }
 })
@@ -2724,21 +2152,14 @@ adminRouter.delete('/packages/:id', async (c) => {
   try {
     const id = c.req.param('id')
     if (!id || !isValidId(id)) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+      return c.json(INVALID_ID_RESPONSE, 400)
     }
 
-    const existing = await c.env.DB.prepare('SELECT id FROM Services WHERE id = ?').bind(id).first()
-    if (!existing) {
+    const result = await deleteOrDeactivateService(c.env.DB, id)
+    if (!result.ok) {
       return c.json({ error: { code: 'NOT_FOUND', message: 'Service not found.', details: [] } }, 404)
     }
-
-    const bookingCheck = await c.env.DB.prepare(
-      'SELECT id FROM Bookings WHERE service_id = ? LIMIT 1'
-    ).bind(id).first()
-
-    if (bookingCheck) {
-      await c.env.DB.prepare('UPDATE Services SET is_active = 0 WHERE id = ?').bind(id).run()
-      await bumpPublicContentVersion(c.env.DB)
+    if (result.deactivated) {
       return c.json({
         success: true,
         status: 'success',
@@ -2747,11 +2168,8 @@ adminRouter.delete('/packages/:id', async (c) => {
         data: { id: Number(id), deactivated: true }
       })
     }
-
-    await c.env.DB.prepare('DELETE FROM Services WHERE id = ?').bind(id).run()
-    await bumpPublicContentVersion(c.env.DB)
     return c.json({ success: true, status: 'success', data: { id: Number(id), deleted: true } })
-  } catch (e: any) {
+  } catch {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not delete service.', details: [] } }, 500)
   }
 })
@@ -2766,7 +2184,7 @@ adminRouter.get('/portfolio', async (c) => {
     const result = await listPortfolio(c.env.DB, portfolioListQuery(c.req), { includeInactive: true })
     if (!result.ok) return c.json(result.body, result.status)
     return c.json(result.body)
-  } catch (e: any) {
+  } catch {
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
@@ -2781,85 +2199,19 @@ adminRouter.put('/portfolio/:id', async (c) => {
   try {
     const id = c.req.param('id')
     if (!id || !isValidId(id)) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+      return c.json(INVALID_ID_RESPONSE, 400)
     }
-    const body = await c.req.json().catch(() => ({}))
-    if (hasForbiddenPaymentFields(body)) {
-      return c.json({
-        error: {
-          code: 'VALIDATION_FAILED',
-          message: 'Raw card or bank account numbers cannot be stored. Use Square tokenization.',
-          details: []
-        }
-      }, 400)
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    if (hasForbiddenPaymentFields(parsedBody.data)) {
+      return c.json(FORBIDDEN_PAYMENT_RESPONSE, 400)
     }
 
-    const existing = await c.env.DB.prepare('SELECT * FROM Portfolio_Images WHERE id = ?').bind(id).first<any>()
-    if (!existing) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
-    }
+    const result = await updatePortfolioRecord(c.env.DB, id, parsedBody.data, { verifyMediaExists: false })
+    if (!result.ok) return c.json(result.body, result.status)
 
-    let section = existing.section || 'gallery'
-    if (body.section !== undefined) {
-      const s = String(body.section).trim().toLowerCase()
-      if (!['recent', 'gallery', 'about', 'hero'].includes(s)) {
-        return c.json({
-          error: {
-            code: 'VALIDATION_FAILED',
-            message: 'Unknown section. Use one of: recent, gallery, about, hero.',
-            details: [{ field: 'section', message: 'Invalid section', code: 'INVALID_VALUE' }]
-          }
-        }, 400)
-      }
-      section = s
-    }
-
-    const title = body.title !== undefined ? (body.title === null ? null : String(body.title).slice(0, 200)) : existing.title
-    const category = body.category !== undefined ? String(body.category) : existing.category
-    const alt_text = body.alt_text !== undefined ? (body.alt_text === null ? null : String(body.alt_text).slice(0, 500)) : existing.alt_text
-    const is_active =
-      body.is_active !== undefined
-        ? (body.is_active ? 1 : 0)
-        : body.active !== undefined
-          ? (body.active ? 1 : 0)
-          : existing.is_active
-    const is_featured = body.is_featured !== undefined ? (body.is_featured ? 1 : 0) : existing.is_featured
-    const display_order = body.display_order !== undefined ? Number(body.display_order) : existing.display_order
-
-    const rawMediaKey = body.media_key !== undefined ? (typeof body.media_key === 'string' ? body.media_key.trim() : null) : undefined
-    const media_key = rawMediaKey !== undefined ? (rawMediaKey || existing.media_key) : existing.media_key
-
-    const updateStatements: D1PreparedStatement[] = [
-      c.env.DB.prepare(
-        'UPDATE Portfolio_Images SET media_key = ?, section = ?, title = ?, category = ?, alt_text = ?, is_active = ?, is_featured = ?, display_order = ? WHERE id = ?'
-      ).bind(media_key, section, title, category, alt_text, is_active, is_featured, display_order, id)
-    ]
-
-    // If replacing image file with a new key, delete old chunks and variants from Media_Storage atomically
-    if (rawMediaKey && existing.media_key && rawMediaKey !== existing.media_key && !existing.media_key.startsWith('/assets/')) {
-      updateStatements.push(
-        c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key IN (?, ?, ?)').bind(
-          existing.media_key,
-          `${existing.media_key}__w640`,
-          `${existing.media_key}__w1280`
-        )
-      )
-    }
-
-    if (updateStatements.length === 1) {
-      await updateStatements[0].run()
-    } else {
-      await c.env.DB.batch(updateStatements)
-    }
-
-    await bumpPublicContentVersion(c.env.DB)
-
-    return c.json({
-      success: true,
-      status: 'success',
-      data: { id: Number(id), media_key, section, title, category, alt_text, is_active, is_featured, display_order }
-    })
-  } catch (e: any) {
+    return c.json({ success: true, status: 'success', data: result.data })
+  } catch {
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
@@ -2873,71 +2225,23 @@ adminRouter.put('/portfolio/:id', async (c) => {
 // PUT /api/admin/media/* — Direct replacement of image media chunks (Audit 5)
 adminRouter.put('/media/*', async (c) => {
   const url = new URL(c.req.url)
-  const key = decodeURIComponent(url.pathname.replace(/^\/api\/admin\/media\//, '').replace(/^\/admin\/media\//, '')).replace(/^\/+/, '')
-  if (!key || key.includes('..')) {
-    return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid media key', details: [] } }, 400)
-  }
-
-  const rawVariant = url.searchParams.get('variant')
-  const variant = parseMediaVariantWidth(rawVariant)
-  if (rawVariant !== null && rawVariant !== '' && !variant) {
-    return c.json({ error: { code: 'BAD_REQUEST', message: 'Invalid variant width. Must be 640 or 1280.', details: [] } }, 400)
-  }
-  const storageKey = variant ? `${key}__w${variant}` : key
-
-  const contentType = (c.req.header('Content-Type') || 'image/webp').split(';')[0].trim().toLowerCase()
-  const arrayBuffer = await c.req.arrayBuffer()
-  if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-    return c.json({ error: { code: 'VALIDATION_FAILED', message: 'No file data received.', details: [] } }, 400)
-  }
-  if (arrayBuffer.byteLength > 50 * 1024 * 1024) {
-    return c.json({ error: { code: 'FILE_TOO_LARGE', message: 'File size exceeds the 50 MB maximum limit.', details: [] } }, 413)
-  }
-
-  try {
-    await replaceMediaStorageChunks(c.env.DB, storageKey, arrayBuffer, contentType)
-    await bumpPublicContentVersion(c.env.DB)
-    return c.json({ success: true, fileKey: storageKey, key: storageKey, baseKey: key, variant: variant ?? null }, 200)
-  } catch (err: any) {
-    return c.json({
-      error: {
-        code: 'INTERNAL_SERVER_ERROR',
-        message: 'Failed to store image in database storage.',
-        details: []
-      }
-    }, 500)
-  }
+  return handleValidatedMediaPut(
+    c,
+    url.pathname.replace(/^\/api\/admin\/media\//, '').replace(/^\/admin\/media\//, '')
+  )
 })
 
 adminRouter.delete('/portfolio/:id', async (c) => {
   try {
     const id = c.req.param('id')
     if (!id || !isValidId(id)) {
-      return c.json({ error: { code: 'VALIDATION_FAILED', message: 'Invalid resource ID.', details: [] } }, 400)
+      return c.json(INVALID_ID_RESPONSE, 400)
     }
-
-    const existing = await c.env.DB.prepare(
-      'SELECT id, media_key FROM Portfolio_Images WHERE id = ?'
-    ).bind(id).first<{ id: number; media_key: string }>()
-
-    if (!existing) {
-      return c.json({ error: { code: 'NOT_FOUND', message: 'Image record not found.', details: [] } }, 404)
-    }
-
-    await c.env.DB.prepare('DELETE FROM Portfolio_Images WHERE id = ?').bind(id).run()
-
-    if (existing.media_key && !existing.media_key.startsWith('/assets/')) {
-      await c.env.DB.prepare('DELETE FROM Media_Storage WHERE file_key IN (?, ?, ?)').bind(
-        existing.media_key,
-        `${existing.media_key}__w640`,
-        `${existing.media_key}__w1280`
-      ).run().catch(() => {})
-    }
-
-    await bumpPublicContentVersion(c.env.DB)
+    const result = await deletePortfolioRecord(c.env.DB, id)
+    if (!result.ok) return c.json(result.body, result.status)
 
     return c.json({ success: true, status: 'success' })
-  } catch (e: any) {
+  } catch {
     return c.json({
       error: {
         code: 'INTERNAL_SERVER_ERROR',
@@ -2952,50 +2256,9 @@ adminRouter.delete('/portfolio/:id', async (c) => {
 // GET: Studio profile information
 adminRouter.get('/profile', async (c) => {
   try {
-    const row = await c.env.DB.prepare(
-      "SELECT setting_value FROM Admin_Settings WHERE setting_key = 'profile'"
-    ).first<{ setting_value: string }>()
-
-    let parsed: any = null
-    if (row?.setting_value) {
-      try { parsed = JSON.parse(row.setting_value) } catch {}
-    }
-
-    // Stored social array is returned as-is (an empty array stays empty); legacy object form is converted
-    let socialList: { platform: string; url: string }[] = []
-    if (Array.isArray(parsed?.social)) {
-      socialList = parsed.social
-    } else if (parsed?.social && typeof parsed.social === 'object') {
-      socialList = Object.entries(parsed.social)
-        .filter(([_, url]) => Boolean(url))
-        .map(([platform, url]) => ({
-          platform: platform.charAt(0).toUpperCase() + platform.slice(1),
-          url: String(url)
-        }))
-    }
-
-    const text = (value: unknown): string =>
-      value === undefined || value === null ? '' : String(value).trim()
-
-    const bio = text(parsed?.bio) || DEFAULT_PROFILE.bio
-    const email = text(parsed?.email) || DEFAULT_PROFILE.email
-    const phone = text(parsed?.phone) || DEFAULT_PROFILE.phone
-    const location = text(parsed?.location) || DEFAULT_PROFILE.location
-    const travel = parsed?.travel !== undefined && parsed?.travel !== null && String(parsed.travel).trim()
-      ? (typeof parsed.travel === 'string' ? parsed.travel : (parsed.travel ? 'Studio & On-Location (Worldwide)' : 'Studio only'))
-      : DEFAULT_PROFILE.travel
-    const social = socialList.length > 0 ? socialList : DEFAULT_PROFILE.social
-
-    const profile = {
-      bio,
-      email,
-      phone,
-      location,
-      travel,
-      social
-    }
+    const profile = await getStudioProfile(c.env.DB)
     return c.json({ ...profile, status: 'success', data: profile })
-  } catch (e: any) {
+  } catch {
     return c.json({ error: { code: 'INTERNAL_SERVER_ERROR', message: 'Could not fetch profile.', details: [] } }, 500)
   }
 })
@@ -3003,7 +2266,9 @@ adminRouter.get('/profile', async (c) => {
 // PUT: Save studio profile information
 adminRouter.put('/profile', async (c) => {
   try {
-    const body = await c.req.json()
+    const parsedBody = await parseJsonObject(c)
+    if (!parsedBody.ok) return parsedBody.response
+    const body: Record<string, any> = parsedBody.data
     const cleanProfile = {
       bio: String(body.bio || '').slice(0, 2000),
       email: String(body.email || '').slice(0, 100),
@@ -3011,10 +2276,12 @@ adminRouter.put('/profile', async (c) => {
       location: String(body.location || '').slice(0, 100),
       travel: String(body.travel || '').slice(0, 200),
       social: Array.isArray(body.social)
-        ? body.social.map((s: any) => ({
-            platform: String(s.platform || '').slice(0, 50),
-            url: /^https?:\/\//i.test(String(s.url || '')) ? String(s.url).slice(0, 300) : ''
-          }))
+        ? body.social
+            .filter((s: unknown): s is Record<string, unknown> => Boolean(s && typeof s === 'object' && !Array.isArray(s)))
+            .map((s) => ({
+              platform: String(s.platform || '').slice(0, 50),
+              url: /^https?:\/\//i.test(String(s.url || '')) ? String(s.url).slice(0, 300) : ''
+            }))
         : []
     }
     const val = JSON.stringify(cleanProfile)

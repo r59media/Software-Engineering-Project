@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { Bindings } from '../index'
+import type { Bindings } from '../index'
 import { adminAuth } from '../middleware/auth'
 
 const ALLOWED_CONTENT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic']
