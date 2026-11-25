@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
+import { AnimatePresence, motion, useReducedMotion, useScroll, useSpring, useTransform, type MotionValue } from 'motion/react'
 import type { FormEvent } from 'react'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import { contactPhotos } from '../../config/contact'
@@ -45,8 +45,77 @@ function validate(draft: ContactInquiry): Partial<Record<Field, string>> {
   return errors
 }
 
+interface ContactPhotoProps {
+  id: string
+  index: number
+  imageUrl: string
+  objectPosition?: string
+  progress: MotionValue<number>
+  reducedMotion: boolean
+}
+
+const PHOTO_SCROLL_MOTION = [
+  { range: [0.64, 0.78] as [number, number], fromTranslate: '-150px 70px' },
+  { range: [0.74, 0.88] as [number, number], fromTranslate: '-160px 30px' },
+  { range: [0.84, 0.98] as [number, number], fromTranslate: '-180px -20px' },
+] as const
+
+function ContactCollagePhoto({
+  index,
+  imageUrl,
+  objectPosition,
+  progress,
+  reducedMotion,
+}: ContactPhotoProps) {
+  const config = PHOTO_SCROLL_MOTION[index] ?? PHOTO_SCROLL_MOTION[2]
+  const [start, end] = config.range
+  const translate = useTransform(progress, [start, end], [config.fromTranslate, '0px 0px'], { clamp: true })
+  const opacity = useTransform(progress, [start, start + 0.06], [0, 1], { clamp: true })
+
+  return (
+    <motion.div
+      className={`contact-section__photo contact-section__photo--${index + 1}`}
+      style={reducedMotion ? undefined : { opacity, translate }}
+    >
+      <ProtectedCanvasImage
+        src={imageUrl}
+        alt=""
+        className="contact-section__photo-image"
+        containerClassName="contact-section__photo-container"
+        width={300}
+        height={400}
+        minDpr={2}
+        eager
+        objectPosition={objectPosition}
+      />
+    </motion.div>
+  )
+}
+
 export function ContactSection({ photos = contactPhotos, onSendInquiry }: ContactSectionProps) {
+  const sectionRef = useRef<HTMLElement>(null)
   const reduced = useReducedMotion()
+  const { scrollYProgress } = useScroll({
+    target: sectionRef,
+    offset: ['start 0.88', 'end 1.06'],
+  })
+  const smoothProgress = useSpring(scrollYProgress, {
+    stiffness: 180,
+    damping: 26,
+    mass: 0.34,
+  })
+
+  // Phase 1: Upper elements enter first; camera waits until its lower offset enters view,
+  // then the 3 Polaroids fan out sequentially once the camera is settled (0.62+).
+  const headerTranslate = useTransform(smoothProgress, [0.04, 0.42], ['-280px 0px', '0px 0px'], { clamp: true })
+  const lensX = useTransform(smoothProgress, [0.06, 0.44], [340, 0], { clamp: true })
+  const lensY = useTransform(smoothProgress, [0.06, 0.44], [-24, 0], { clamp: true })
+  const lensRotate = useTransform(smoothProgress, [0.06, 0.44], [14, 0], { clamp: true })
+  const flowTranslate = useTransform(smoothProgress, [0.12, 0.5], ['320px 0px', '0px 0px'], { clamp: true })
+
+  const cameraX = useTransform(smoothProgress, [0.3, 0.62], [-340, 0], { clamp: true })
+  const cameraY = useTransform(smoothProgress, [0.3, 0.62], [110, 0], { clamp: true })
+  const cameraRotate = useTransform(smoothProgress, [0.3, 0.62], [-14, 0], { clamp: true })
   const [step, setStep] = useState<'idea' | 'details' | 'success'>('idea')
   const [draft, setDraft] = useState<ContactInquiry>({ name: '', email: '', phone: '', inquiryType: 'portrait', message: '', eventDate: '', eventDateUndecided: false, location: '' })
   const [touched, setTouched] = useState<Partial<Record<Field, boolean>>>({})
@@ -121,13 +190,23 @@ export function ContactSection({ photos = contactPhotos, onSendInquiry }: Contac
         },
       }
 
-  return <section id="contact" className="contact-section" data-step={step} aria-labelledby="contact-title">
+  return <section ref={sectionRef} id="contact" className="contact-section" data-step={step} aria-labelledby="contact-title">
     <div className="contact-section__art" aria-hidden="true">
       <div className="contact-section__camera">
-        <ProtectedCanvasImage src={camera} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={1100} height={1247} />
+        <motion.div
+          className="contact-section__art-motion"
+          style={reduced ? undefined : { x: cameraX, y: cameraY, rotate: cameraRotate }}
+        >
+          <ProtectedCanvasImage src={camera} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={1100} height={1247} />
+        </motion.div>
       </div>
       <div className="contact-section__lens">
-        <ProtectedCanvasImage src={lens} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={640} height={1038} />
+        <motion.div
+          className="contact-section__art-motion"
+          style={reduced ? undefined : { x: lensX, y: lensY, rotate: lensRotate }}
+        >
+          <ProtectedCanvasImage src={lens} alt="" className="contact-section__art-image" containerClassName="contact-section__art-container" width={640} height={1038} />
+        </motion.div>
       </div>
     </div>
     <AnimatePresence>
@@ -144,12 +223,31 @@ export function ContactSection({ photos = contactPhotos, onSendInquiry }: Contac
       )}
     </AnimatePresence>
     <div className="contact-section__inner">
-      <header className="contact-section__header"><p className="contact-section__eyebrow"><span />Get in touch</p><h2 id="contact-title">READY TO CREATE<br />SOMETHING?</h2></header>
+      <motion.header
+        className="contact-section__header"
+        style={reduced ? undefined : { translate: headerTranslate }}
+      >
+        <p className="contact-section__eyebrow"><span />Get in touch</p>
+        <h2 id="contact-title">READY TO CREATE<br />SOMETHING?</h2>
+      </motion.header>
       <div className="contact-section__body">
         <div className="contact-section__collage" aria-hidden="true">
-          {photos.slice(0, 3).map((photo, index) => <div className={`contact-section__photo contact-section__photo--${index + 1}`} key={photo.id}><ProtectedCanvasImage src={photo.imageUrl} alt="" className="contact-section__photo-image" containerClassName="contact-section__photo-container" width={300} height={400} minDpr={2} eager objectPosition={photo.objectPosition} /></div>)}
+          {photos.slice(0, 3).map((photo, index) => (
+            <ContactCollagePhoto
+              key={photo.id}
+              id={photo.id}
+              index={index}
+              imageUrl={photo.imageUrl}
+              objectPosition={photo.objectPosition}
+              progress={smoothProgress}
+              reducedMotion={Boolean(reduced)}
+            />
+          ))}
         </div>
-        <div className="contact-section__flow">
+        <motion.div
+          className="contact-section__flow"
+          style={reduced ? undefined : { translate: flowTranslate }}
+        >
           <AnimatePresence initial={false}>
             {step === 'idea' ? <motion.div key="idea" {...choicesMotion} onAnimationComplete={() => { if (!returnFocus.current) return; returnFocus.current = false; choices.current?.querySelector<HTMLButtonElement>(`[data-type="${draft.inquiryType}"]`)?.focus({ preventScroll: true }) }} className="contact-section__choices" ref={choices}>
               <p className="contact-section__description">Have a project in mind or a question about a session? Let’s talk about it.</p>
@@ -201,7 +299,7 @@ export function ContactSection({ photos = contactPhotos, onSendInquiry }: Contac
               </form>
             </motion.div> : <motion.div key="success" {...formPanelMotion} onAnimationComplete={() => formHeading.current?.focus({ preventScroll: true })} className="contact-section__form-panel contact-section__success"><p className="contact-section__step">Message sent</p><h3 ref={formHeading} tabIndex={-1}>Thanks! Your inquiry has been sent.</h3><p>I’ll reply to the email address you provided.</p><a href="#portfolio">Explore the portfolio →</a></motion.div>}
           </AnimatePresence>
-        </div>
+        </motion.div>
       </div>
     </div>
   </section>
