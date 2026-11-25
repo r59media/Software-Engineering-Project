@@ -78,8 +78,16 @@
 .faq-page__list {
   display: flex;
   flex-direction: column;
-  border-top: 1px solid rgba(255, 255, 255, 0.16);
   margin-top: clamp(2.5rem, 5vw, 4rem);
+}
+
+.faq-page__slot {
+  width: 100%;
+}
+
+.faq-page__slot:first-child .faq-page__item,
+.faq-page__list > .faq-page__item:first-child {
+  border-top: 1px solid rgba(255, 255, 255, 0.16);
 }
 
 .faq-page__item {

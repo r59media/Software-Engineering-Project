@@ -1,20 +1,132 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { motion, useReducedMotion, useScroll, useSpring, useTransform } from 'motion/react'
 import { ActionLink } from '../../components/ActionLink'
 import arrowLeft from '../../assets/legal/arrow-left.svg'
-import { faqItems } from '../../config/faq'
+import { faqItems, type FaqItem } from '../../config/faq'
 import { footerContent } from '../../config/footer'
 import { usePublicProfile } from '../../hooks/usePublicProfile'
 import './FaqPage.css'
+
+interface FaqAccordionItemProps {
+  item: FaqItem
+  isOpen: boolean
+  questionHeading: 'h2' | 'h3'
+  scrollReveal: boolean
+  onToggle: (id: string) => void
+}
+
+function FaqAccordionItem({
+  item,
+  isOpen,
+  questionHeading,
+  scrollReveal,
+  onToggle,
+}: FaqAccordionItemProps) {
+  const slotRef = useRef<HTMLDivElement>(null)
+  const prefersReducedMotion = useReducedMotion()
+  const { scrollYProgress } = useScroll({
+    target: slotRef,
+    offset: ['start 0.9', 'start 0.62'],
+  })
+  const smoothProgress = useSpring(scrollYProgress, {
+    stiffness: 200,
+    damping: 28,
+    mass: 0.32,
+  })
+  const opacity = useTransform(smoothProgress, [0, 1], [0, 1], { clamp: true })
+  const y = useTransform(smoothProgress, [0, 1], [38, 0], { clamp: true })
+
+  const QuestionHeading = questionHeading
+  const questionId = `faq-q-${item.id}`
+  const answerId = `faq-a-${item.id}`
+  const animateRow = scrollReveal && !prefersReducedMotion
+
+  return (
+    <div ref={slotRef} className="faq-page__slot">
+      <motion.div
+        className={`faq-page__item ${isOpen ? 'faq-page__item--open' : ''}`}
+        style={animateRow ? { opacity, y } : undefined}
+      >
+        <QuestionHeading className="faq-page__question-heading">
+          <button
+            type="button"
+            id={questionId}
+            className={`faq-page__question-button ${
+              isOpen ? 'faq-page__question-button--open' : ''
+            }`}
+            aria-expanded={isOpen}
+            aria-controls={answerId}
+            onClick={() => onToggle(item.id)}
+          >
+            <span className="faq-page__question-text">{item.question}</span>
+            <span className="faq-page__indicator" aria-hidden="true">
+              <svg
+                className={`faq-page__chevron ${
+                  isOpen ? 'faq-page__chevron--open' : ''
+                }`}
+                width="20"
+                height="20"
+                viewBox="0 0 20 20"
+                fill="none"
+                focusable="false"
+              >
+                <path
+                  d="M5 7.5L10 12.5L15 7.5"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+          </button>
+        </QuestionHeading>
+        <div
+          id={answerId}
+          role="region"
+          aria-labelledby={questionId}
+          className={`faq-page__answer-panel ${
+            isOpen ? 'faq-page__answer-panel--open' : ''
+          }`}
+          aria-hidden={!isOpen}
+        >
+          <div className="faq-page__answer-content">
+            <p className="faq-page__answer-text">{item.answer}</p>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  )
+}
 
 interface FaqAccordionProps {
   contactHref: string
   contactLabel: string
   questionHeading?: 'h2' | 'h3'
+  scrollReveal?: boolean
 }
 
-function FaqAccordion({ contactHref, contactLabel, questionHeading = 'h2' }: FaqAccordionProps) {
+function FaqAccordion({
+  contactHref,
+  contactLabel,
+  questionHeading = 'h2',
+  scrollReveal = false,
+}: FaqAccordionProps) {
   const [openIds, setOpenIds] = useState<Set<string>>(() => new Set<string>())
-  const QuestionHeading = questionHeading
+  const inquiryRef = useRef<HTMLDivElement>(null)
+  const prefersReducedMotion = useReducedMotion()
+  const { scrollYProgress: inquiryProgress } = useScroll({
+    target: inquiryRef,
+    offset: ['start 0.92', 'start 0.68'],
+  })
+  const smoothInquiry = useSpring(inquiryProgress, {
+    stiffness: 200,
+    damping: 28,
+    mass: 0.32,
+  })
+  const inquiryOpacity = useTransform(smoothInquiry, [0, 1], [0, 1], { clamp: true })
+  const inquiryY = useTransform(smoothInquiry, [0, 1], [28, 0], { clamp: true })
+  const animateInquiry = scrollReveal && !prefersReducedMotion
 
   const toggleItem = (id: string) => {
     setOpenIds((prev) => {
@@ -31,69 +143,23 @@ function FaqAccordion({ contactHref, contactLabel, questionHeading = 'h2' }: Faq
   return (
     <>
       <div className="faq-page__list">
-        {faqItems.map((item) => {
-          const isOpen = openIds.has(item.id)
-          const questionId = `faq-q-${item.id}`
-          const answerId = `faq-a-${item.id}`
-
-          return (
-            <div
-              className={`faq-page__item ${isOpen ? 'faq-page__item--open' : ''}`}
-              key={item.id}
-            >
-              <QuestionHeading className="faq-page__question-heading">
-                <button
-                  type="button"
-                  id={questionId}
-                  className={`faq-page__question-button ${
-                    isOpen ? 'faq-page__question-button--open' : ''
-                  }`}
-                  aria-expanded={isOpen}
-                  aria-controls={answerId}
-                  onClick={() => toggleItem(item.id)}
-                >
-                  <span className="faq-page__question-text">{item.question}</span>
-                  <span className="faq-page__indicator" aria-hidden="true">
-                    <svg
-                      className={`faq-page__chevron ${
-                        isOpen ? 'faq-page__chevron--open' : ''
-                      }`}
-                      width="20"
-                      height="20"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      focusable="false"
-                    >
-                      <path
-                        d="M5 7.5L10 12.5L15 7.5"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                  </span>
-                </button>
-              </QuestionHeading>
-              <div
-                id={answerId}
-                role="region"
-                aria-labelledby={questionId}
-                className={`faq-page__answer-panel ${
-                  isOpen ? 'faq-page__answer-panel--open' : ''
-                }`}
-                aria-hidden={!isOpen}
-              >
-                <div className="faq-page__answer-content">
-                  <p className="faq-page__answer-text">{item.answer}</p>
-                </div>
-              </div>
-            </div>
-          )
-        })}
+        {faqItems.map((item) => (
+          <FaqAccordionItem
+            key={item.id}
+            item={item}
+            isOpen={openIds.has(item.id)}
+            questionHeading={questionHeading}
+            scrollReveal={scrollReveal}
+            onToggle={toggleItem}
+          />
+        ))}
       </div>
 
-      <div className="faq-page__inquiry">
+      <motion.div
+        ref={inquiryRef}
+        className="faq-page__inquiry"
+        style={animateInquiry ? { opacity: inquiryOpacity, y: inquiryY } : undefined}
+      >
         <p className="faq-page__inquiry-text">
           Still have questions?{' '}
           <ActionLink
@@ -103,7 +169,7 @@ function FaqAccordion({ contactHref, contactLabel, questionHeading = 'h2' }: Faq
             {contactLabel}
           </ActionLink>
         </p>
-      </div>
+      </motion.div>
     </>
   )
 }
@@ -120,6 +186,7 @@ export function FaqSection() {
           contactHref="#contact"
           contactLabel="Get in touch →"
           questionHeading="h3"
+          scrollReveal
         />
       </div>
     </section>
