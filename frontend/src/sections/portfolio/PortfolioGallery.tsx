@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { motion, useReducedMotion, useScroll, useSpring, useTransform } from 'motion/react'
 import { GalleryEmptyState } from './GalleryEmptyState'
+import type { GalleryPhoto } from '../../api/client'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import { PhotoLightbox } from '../recent/PhotoLightbox'
 import { useGalleryPhotos } from './useGalleryPhotos'
@@ -15,8 +17,92 @@ declare module '../../components/ProtectedCanvasImage' {
 const STANDARD_CATEGORIES = ['Portrait', 'Lifestyle', 'Events', 'Extras']
 const tabId = (category: string) => `portfolio-tab-${category.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
 
+function getGridColumns(): number {
+  if (typeof window === 'undefined') return 4
+  if (window.matchMedia('(max-width: 700px)').matches) return 2
+  if (window.matchMedia('(max-width: 1000px)').matches) return 3
+  return 4
+}
+
+function useGridColumns(): number {
+  const [columns, setColumns] = useState(getGridColumns)
+
+  useEffect(() => {
+    const mobileQuery = window.matchMedia('(max-width: 700px)')
+    const tabletQuery = window.matchMedia('(max-width: 1000px)')
+    const update = () => setColumns(getGridColumns())
+
+    mobileQuery.addEventListener('change', update)
+    tabletQuery.addEventListener('change', update)
+    return () => {
+      mobileQuery.removeEventListener('change', update)
+      tabletQuery.removeEventListener('change', update)
+    }
+  }, [])
+
+  return columns
+}
+
+interface PortfolioCardSlotProps {
+  photo: GalleryPhoto
+  index: number
+  columns: number
+  showBadge: boolean
+  onSelect: () => void
+}
+
+function PortfolioCardSlot({ photo, index, columns, showBadge, onSelect }: PortfolioCardSlotProps) {
+  const slotRef = useRef<HTMLDivElement>(null)
+  const prefersReducedMotion = useReducedMotion()
+  const { scrollYProgress } = useScroll({
+    target: slotRef,
+    offset: ['start 0.98', 'start 0.56'],
+  })
+  const smoothProgress = useSpring(scrollYProgress, {
+    stiffness: 240,
+    damping: 30,
+    mass: 0.28,
+  })
+
+  const col = columns > 0 ? index % columns : 0
+  const span = columns === 2 ? 0.62 : columns === 3 ? 0.52 : 0.48
+  const step = columns > 1 ? (0.9 - span) / (columns - 1) : 0
+  const start = col * step
+  const end = start + span
+
+  const opacity = useTransform(smoothProgress, [start, end], [0, 1], { clamp: true })
+  const y = useTransform(smoothProgress, [start, end], [54, 0], { clamp: true })
+
+  return (
+    <div ref={slotRef} className="portfolio-gallery__slot">
+      <motion.button
+        type="button"
+        className="portfolio-gallery__card"
+        style={prefersReducedMotion ? undefined : { opacity, y }}
+        onClick={onSelect}
+        aria-label={`Open ${photo.title || photo.alt} in full screen view`}
+      >
+        <ProtectedCanvasImage
+          src={photo.src}
+          alt={photo.alt}
+          className="portfolio-gallery__image"
+          loading="lazy"
+          decoding="async"
+          eager={false}
+        />
+        {showBadge && (
+          <div className="portfolio-gallery__meta" aria-hidden="true">
+            <span className="portfolio-gallery__badge">{photo.category}</span>
+          </div>
+        )}
+      </motion.button>
+    </div>
+  )
+}
+
 export function PortfolioGallery() {
   const { photos, loading } = useGalleryPhotos()
+  const columns = useGridColumns()
   const sectionRef = useRef<HTMLElement | null>(null)
   const [inView, setInView] = useState(false)
   const [activeCategory, setActiveCategory] = useState('All')
@@ -132,27 +218,14 @@ export function PortfolioGallery() {
             className="portfolio-gallery__grid"
           >
             {filteredPhotos.map((photo, index) => (
-              <button
-                key={photo.id || index}
-                type="button"
-                className="portfolio-gallery__card"
-                onClick={() => setSelectedIndex(index)}
-                aria-label={`Open ${photo.title || photo.alt} in full screen view`}
-              >
-                <ProtectedCanvasImage
-                  src={photo.src}
-                  alt={photo.alt}
-                  className="portfolio-gallery__image"
-                  loading="lazy"
-                  decoding="async"
-                  eager={false}
-                />
-                {activeCategory.toLowerCase() === 'all' && (
-                  <div className="portfolio-gallery__meta" aria-hidden="true">
-                    <span className="portfolio-gallery__badge">{photo.category}</span>
-                  </div>
-                )}
-              </button>
+              <PortfolioCardSlot
+                key={`${activeCategory}-${photo.id || index}`}
+                photo={photo}
+                index={index}
+                columns={columns}
+                showBadge={activeCategory.toLowerCase() === 'all'}
+                onSelect={() => setSelectedIndex(index)}
+              />
             ))}
           </div>
         ) : null}
