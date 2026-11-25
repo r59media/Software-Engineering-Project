@@ -80,9 +80,14 @@
 }
 
 .booking-datetime__col-date,
-.booking-datetime__col-time,
-.booking-datetime__col-ticket {
+.booking-datetime__col-time {
   height: 460px;
+  display: flex;
+  flex-direction: column;
+}
+
+.booking-datetime__col-ticket {
+  height: auto;
   display: flex;
   flex-direction: column;
 }
