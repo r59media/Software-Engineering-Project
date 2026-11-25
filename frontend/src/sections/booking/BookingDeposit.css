@@ -637,8 +637,9 @@
 
 .booking-deposit__notes-title {
   display: block;
-  font-family: var(--font-title);
-  font-size: 13px;
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 24px;
   font-weight: 700;
   color: var(--color-brand-black);
   margin-bottom: 4px;
@@ -646,9 +647,9 @@
 
 .booking-deposit__notes-body {
   margin: 0;
-  font-size: 13px;
+  font-size: 15px;
   color: var(--color-gray);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 /* Sidebar Ticket (Right) - Identical to Steps 2 & 3 with session-ticket.svg mask */
@@ -871,7 +872,9 @@
 }
 
 .booking-deposit__cta-btn:disabled {
-  opacity: 0.6;
+  background: var(--color-black-10);
+  color: var(--color-gray);
+  box-shadow: none;
   cursor: not-allowed;
 }
 

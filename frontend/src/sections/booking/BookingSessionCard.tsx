@@ -17,7 +17,7 @@ export function BookingSessionCard({
   isContinueDisabled = false,
   hideDateHighlight = false,
 }: BookingSessionCardProps) {
-  const { shared, transition } = useTicketMotion()
+  const { shared, reduced, transition } = useTicketMotion()
   const breakdown = computeSessionPricing(service, people, pricing, previewBookingDepositPercent)
   const totalMinor = breakdown.subtotalMinor
 
@@ -77,7 +77,10 @@ export function BookingSessionCard({
               <span className="booking-session-card__title-session"> SESSION</span>
             </motion.h3>
 
-            <div className="booking-session-card__service-name">{service.name}</div>
+            <div className="booking-session-card__service-name">
+              <span className="booking-session-card__service-mark" aria-hidden="true" />
+              <span>{service.name}</span>
+            </div>
 
             <div className="booking-session-card__specs">
               <div className="booking-session-card__spec-line">
@@ -97,6 +100,19 @@ export function BookingSessionCard({
               <motion.span aria-hidden="true" className="booking-session-card__date-highlight"
                 initial={hideDateHighlight ? { x: '0%' } : false}
                 animate={{ x: hideDateHighlight ? '-105%' : '0%' }} transition={transition} />
+              <motion.span
+                aria-hidden="true"
+                className="booking-session-card__date-bar"
+                initial={hideDateHighlight ? { scaleY: 0, opacity: 0 } : false}
+                animate={{ scaleY: hideDateHighlight ? 1 : 0, opacity: hideDateHighlight ? 1 : 0 }}
+                transition={
+                  reduced
+                    ? { duration: 0 }
+                    : hideDateHighlight
+                      ? { duration: 0.26, delay: 0.36, ease: [0.22, 1, 0.36, 1] }
+                      : { duration: 0.14, delay: 0, ease: [0.22, 1, 0.36, 1] }
+                }
+              />
               {dateTime ? (
                 <>
                   <div className="booking-session-card__date-val">{formatTicketDate(dateTime.date)}</div>

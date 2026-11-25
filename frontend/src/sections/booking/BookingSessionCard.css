@@ -6,7 +6,8 @@
 .booking-session-card__title { margin: 0 0 16px !important; font-family: var(--font-title); font-size: 48px !important; line-height: 40px !important; font-weight: 700; }
 .booking-session-card__title-your, .booking-session-card__title-session { display: block; }
 .booking-session-card__title-session { font-style: italic; }
-.booking-session-card__service-name { font-family: var(--font-title); font-size: 32px; line-height: 40px; font-weight: 700; margin-bottom: 16px; overflow-wrap: anywhere; }
+.booking-session-card__service-name { display: flex; align-items: flex-start; gap: 10px; font-family: var(--font-title); font-size: 32px; line-height: 40px; font-weight: 700; margin-bottom: 16px; overflow-wrap: anywhere; }
+.booking-session-card__service-mark { flex: none; width: 10px; height: 13px; margin-top: 13px; background: var(--color-brand-black); }
 .booking-session-card__specs { border-left: 2px solid var(--color-brand-black); padding-left: 10px; font-size: 16px; line-height: 24px; font-weight: 700; margin-bottom: 16px; }
 .booking-session-card__section-label { font-size: 12px; line-height: 16px; font-weight: 300; margin-bottom: 8px; }
 .booking-session-card__datetime-block { position: relative; margin: 0 58px 12px -24px; padding: 6px 16px 6px 24px; min-height: 60px; border-radius: 0 7px 7px 0; background: var(--color-brand-red); color: var(--color-brand-white); box-shadow: -3px 3px 5px rgb(0 0 0 / 9%); width: calc(100% - 34px); }
@@ -139,9 +140,12 @@
   .booking-session-card__body { min-height: 0; padding: 16px 16px 36px; }
   .booking-session-card__title { font-size: 32px !important; line-height: 40px !important; margin-bottom: 6px !important; }
   .booking-session-card__title-your, .booking-session-card__title-session { display: inline; }
-  .booking-session-card__service-name { font-size: 24px; line-height: 32px; margin-bottom: 6px; }
+  .booking-session-card__service-name { font-size: 24px; line-height: 32px; margin-bottom: 6px; gap: 8px; }
+  .booking-session-card__service-mark { width: 9px; height: 11px; margin-top: 10px; }
   .booking-session-card__specs { border: 0; padding: 0; font-size: 14px; line-height: 20px; margin-bottom: 10px; }
   .booking-session-card__datetime-block { margin-left: -16px; padding-left: 26px; width: calc(100% - 42px); }
+  .booking-session-card__datetime-block[data-highlight="false"] { padding-left: 28px; }
+  .booking-session-card__date-bar { left: 16px; }
   .booking-session-card__price-block { margin-left: -16px; grid-template-columns: 132px minmax(0, 1fr); gap: 12px; }
 }
 
@@ -166,9 +170,10 @@
 .booking-session-card__continue-btn { appearance: none; -webkit-appearance: none; background-image: none; border: 0; box-shadow: none; text-decoration: none; position: relative; isolation: isolate; overflow: hidden; }
 .booking-session-card__continue-btn::before, .booking-session-card__continue-btn::after { content: none; }
 
-.booking-session-card__datetime-block { isolation: isolate; background: transparent; box-shadow: none; overflow: hidden; transition: color .24s ease; }
-.booking-session-card__datetime-block[data-highlight="false"] { color: var(--color-brand-black); }
+.booking-session-card__datetime-block { isolation: isolate; background: transparent; box-shadow: none; overflow: hidden; transition: color .24s ease, padding-left .24s cubic-bezier(0.22, 1, 0.36, 1); }
+.booking-session-card__datetime-block[data-highlight="false"] { color: var(--color-brand-black); padding-left: 36px; transition: color .24s ease, padding-left .28s cubic-bezier(0.22, 1, 0.36, 1) .28s; }
 .booking-session-card__date-highlight { position: absolute; inset: 0; z-index: -1; border-radius: inherit; background: var(--color-brand-red); pointer-events: none; }
+.booking-session-card__date-bar { position: absolute; left: 24px; top: 5px; bottom: 5px; width: 2px; background: var(--color-brand-black); transform-origin: top center; z-index: 0; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .booking-session-card__datetime-block { transition: none; } }
 
 @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {

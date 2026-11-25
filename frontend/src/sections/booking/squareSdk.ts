@@ -14,10 +14,25 @@ export interface TokenizeResult {
   errors?: Array<{ message: string; type?: string; field?: string }>
 }
 
+export interface SquareCardInputEvent {
+  detail?: {
+    field: 'cardNumber' | 'expirationDate' | 'cvv' | 'postalCode' | string
+    eventType: string
+    currentState?: {
+      isCompletelyValid?: boolean
+      isEmpty?: boolean
+      isPotentiallyValid?: boolean
+      hasErrorClass?: boolean
+      hasFocusClass?: boolean
+    }
+  }
+}
+
 export interface SquareCard {
   attach: (selectorOrElement: string | HTMLElement) => Promise<void>
   tokenize: () => Promise<TokenizeResult>
   destroy: () => Promise<boolean>
+  addEventListener?: (eventType: string, callback: (event: SquareCardInputEvent) => void) => void
 }
 
 export interface SquarePayments {

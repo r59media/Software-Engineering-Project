@@ -28,6 +28,7 @@ import {
   loadSquareSdk,
   resolveSquareCredentials,
   type SquareCard,
+  type SquareCardInputEvent,
 } from './squareSdk'
 import './BookingDeposit.css'
 
@@ -173,6 +174,7 @@ export function BookingDeposit({
   const [cardNum, setCardNum] = useState('')
   const [cardExp, setCardExp] = useState('')
   const [cardCvv, setCardCvv] = useState('')
+  const [squareCardValid, setSquareCardValid] = useState(false)
 
   const cardRef = useRef<SquareCard | null>(null)
   const cardContainerRef = useRef<HTMLDivElement | null>(null)
@@ -327,6 +329,7 @@ export function BookingDeposit({
       }
 
       setIsSandboxMode(false)
+      setSquareCardValid(false)
       setCardLoading(true)
       setCardError(null)
 
@@ -371,6 +374,61 @@ export function BookingDeposit({
               return
             }
             cardRef.current = card
+
+            const fieldState: Record<string, { valid: boolean; hasError: boolean }> = {
+              cardNumber: { valid: false, hasError: false },
+              expirationDate: { valid: false, hasError: false },
+              cvv: { valid: false, hasError: false },
+              postalCode: { valid: false, hasError: false },
+            }
+            let cvvOrPostalReached = false
+            let activeField: string | null = null
+
+            const recomputeCardReady = () => {
+              if (!isMounted) return
+              const anyError = Object.values(fieldState).some(state => state.hasError)
+              const numberOk = fieldState.cardNumber.valid
+              const expOk = fieldState.expirationDate.valid
+              const cvvReady =
+                fieldState.cvv.valid ||
+                cvvOrPostalReached ||
+                activeField === 'cvv' ||
+                activeField === 'postalCode'
+              setSquareCardValid(!anyError && numberOk && expOk && cvvReady)
+            }
+
+            const handleCardInput = (event: SquareCardInputEvent) => {
+              const detail = event?.detail
+              if (!detail) return
+              const { field, eventType, currentState } = detail
+              if (eventType === 'focusClassAdded') {
+                activeField = field
+                if (field === 'cvv' || field === 'postalCode') {
+                  cvvOrPostalReached = true
+                }
+              } else if (eventType === 'focusClassRemoved' && activeField === field) {
+                activeField = null
+              }
+              if (field && currentState) {
+                fieldState[field] = {
+                  valid: Boolean(currentState.isCompletelyValid),
+                  hasError: Boolean(currentState.hasErrorClass),
+                }
+              }
+              recomputeCardReady()
+            }
+
+            for (const eventName of [
+              'cardBrandChanged',
+              'postalCodeChanged',
+              'errorClassAdded',
+              'errorClassRemoved',
+              'focusClassAdded',
+              'focusClassRemoved',
+            ]) {
+              card.addEventListener?.(eventName, handleCardInput)
+            }
+
             setCardLoading(false)
           })(),
           timeoutPromise,
@@ -1151,9 +1209,9 @@ export function BookingDeposit({
 
           {/* Text block below left panel */}
           <div className="booking-deposit__notes-block">
-            <span className="booking-deposit__notes-title">TEXT HERE</span>
+            <span className="booking-deposit__notes-title">Next: booking confirmation</span>
             <p className="booking-deposit__notes-body">
-              jola sjmpsiop sast pipum jomas jule, ojan oramn sip
+              Lock in your date instantly—your receipt and reschedule link will be sent to your email.
             </p>
           </div>
         </div>
@@ -1301,7 +1359,20 @@ export function BookingDeposit({
             type="button"
             className="booking-deposit__cta-btn"
             onClick={handlePayDeposit}
-            disabled={busy}
+            disabled={
+              busy ||
+              (requireSignature && !agreementSignatureName.trim()) ||
+              (isOnLocation &&
+                (!street.trim() ||
+                  !city.trim() ||
+                  !stateCode.trim() ||
+                  !/^\d{5}(?:-\d{4})?$/.test(postalCode.trim()))) ||
+              (!isSquareConfigured || isSandboxMode
+                ? cardNum.replace(/\D/g, '').length < 13 ||
+                  !/^\d{2}\/\d{2}$/.test(cardExp) ||
+                  cardCvv.length < 3
+                : cardLoading || Boolean(cardError) || !squareCardValid)
+            }
           >
             {busy
               ? 'Processing Deposit…'
