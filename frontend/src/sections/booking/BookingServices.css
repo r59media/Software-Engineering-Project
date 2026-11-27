@@ -1,4 +1,4 @@
-.booking { background: var(--color-brand-white); color: var(--color-brand-black); padding: clamp(2rem, 4vw, 4rem) var(--page-gutter); scroll-margin-top: 7rem; --booking-placeholder: #e7e7e7; }
+.booking { background: var(--color-brand-white); color: var(--color-brand-black); padding: clamp(2rem, 4vw, 4rem) var(--page-gutter); scroll-margin-top: 7rem; overflow-x: clip; --booking-placeholder: #e7e7e7; }
 .booking__inner { max-width: 1440px; margin-inline: auto; }
 .booking__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 2rem; }
 .booking h2, .booking h3, .booking h4 { font-family: var(--font-title); line-height: 1.15; margin: 0; }

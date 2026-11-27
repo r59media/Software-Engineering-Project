@@ -175,11 +175,30 @@ function FaqAccordion({
 }
 
 export function FaqSection() {
+  const headerRef = useRef<HTMLElement>(null)
+  const prefersReducedMotion = useReducedMotion()
+  const { scrollYProgress } = useScroll({
+    target: headerRef,
+    offset: ['start 0.9', 'start 0.56'],
+  })
+  const smoothHeader = useSpring(scrollYProgress, {
+    stiffness: 190,
+    damping: 28,
+    mass: 0.32,
+  })
+  const titleX = useTransform(smoothHeader, [0, 1], ['-105vw', '0vw'], { clamp: true })
+
   return (
     <section id="faq" className="faq-page faq-page--inline" aria-labelledby="faq-heading">
       <div className="faq-page__inner">
-        <header className="faq-page__header">
-          <h2 id="faq-heading" className="faq-page__title">FAQ</h2>
+        <header ref={headerRef} className="faq-page__header">
+          <motion.h2
+            id="faq-heading"
+            className="faq-page__title"
+            style={prefersReducedMotion ? undefined : { x: titleX }}
+          >
+            FAQ
+          </motion.h2>
         </header>
 
         <FaqAccordion

@@ -209,6 +209,13 @@ export function BookingServices({
   const reducedMotion = useReducedMotion()
   const layoutMode = useBookingLayoutMode()
   const track = useRef<HTMLDivElement>(null)
+  const headerRef = useRef<HTMLElement>(null)
+  const { scrollYProgress: headerProgress } = useScroll({
+    target: headerRef,
+    offset: ['start 0.88', 'start 0.48'],
+  })
+  const titleGroupX = useTransform(headerProgress, [0, 0.9], ['-105vw', '0vw'], { clamp: true })
+  const subtitleX = useTransform(headerProgress, [0.1, 1], ['105vw', '0vw'], { clamp: true })
   const { scrollYProgress } = useScroll({
     target: track,
     offset: layoutMode === 'mobile' ? ['start 0.86', 'start 0.42'] : ['start 0.8', 'start 0.38'],
@@ -289,15 +296,21 @@ export function BookingServices({
   return (
     <section id="booking" className="booking" aria-labelledby="booking-title">
       <div className="booking__inner">
-        <header className="booking__header">
-          <div className="booking__title-group">
+        <header ref={headerRef} className="booking__header">
+          <motion.div
+            className="booking__title-group"
+            style={reducedMotion ? undefined : { x: titleGroupX }}
+          >
             <p className="booking__eyebrow">
               <span aria-hidden="true" />
               Booking
             </p>
             <h2 id="booking-title">BOOK YOUR SESSION</h2>
-          </div>
-          <p className="booking__subtitle">
+          </motion.div>
+          <motion.p
+            className="booking__subtitle"
+            style={reducedMotion ? undefined : { x: subtitleX }}
+          >
             Your next great photo starts here. Choose a session to get started.{' '}
             <a
               href={`${import.meta.env.BASE_URL}reschedule`}
@@ -310,7 +323,7 @@ export function BookingServices({
             >
               Already booked? Reschedule →
             </a>
-          </p>
+          </motion.p>
         </header>
 
         <BookingProgressBar currentStep="services" />
