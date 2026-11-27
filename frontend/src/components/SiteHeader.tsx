@@ -4,6 +4,7 @@ import type { HeroDestinations } from '../types/hero'
 import { footerSocialLinks } from '../config/footer'
 import { usePublicProfile } from '../hooks/usePublicProfile'
 import { ActionLink } from './ActionLink'
+import { R59Logo } from './R59Logo'
 import instagram from '../assets/navigation/instagram.svg'
 import threads from '../assets/navigation/threads.svg'
 import x from '../assets/navigation/x.svg'
@@ -183,11 +184,14 @@ export function SiteHeader({ destinations, homeHref = '#top' }: { destinations: 
   return <>
     <header ref={header} className="site-header" data-hidden={hidden && !open} data-menu-open={open} onFocusCapture={() => setHidden(false)}>
       <div className="site-header__bar">
-        <ActionLink href={homeHref} className="site-header__brand" effect="brand-sweep"><img src={`${import.meta.env.BASE_URL}r59Media_logo.svg`} alt="R59 Media Home" width="81" height="50" /></ActionLink>
+        <ActionLink href={homeHref} className="site-header__brand" effect="brand-sweep">
+          <R59Logo className="site-header__brand-logo" />
+          <span className="site-header__sr-only">R59 Media Home</span>
+        </ActionLink>
         <span className="site-header__divider" aria-hidden="true" />
         <nav className="site-header__desktop" aria-label="Main navigation">
           {desktopLinks.map(([label, href]) => <ActionLink key={label} href={href} className="site-header__link" effect="navigation-text">{label}</ActionLink>)}
-          <ActionLink href={destinations.portfolio} className="action action--light site-header__cta" effect="portfolio-sweep">Go To Portfolio</ActionLink>
+          <ActionLink href={destinations.portfolio} className="action action--dark site-header__cta" effect="portfolio-sweep">Go To Portfolio</ActionLink>
         </nav>
       </div>
       <button ref={trigger} className="site-header__toggle" type="button" aria-label="Open navigation menu" aria-haspopup="dialog" aria-expanded={open} aria-controls="mobile-navigation" onClick={openMenu}>
