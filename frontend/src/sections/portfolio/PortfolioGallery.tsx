@@ -4,6 +4,8 @@ import { GalleryEmptyState } from './GalleryEmptyState'
 import type { GalleryPhoto } from '../../api/client'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
 import { PhotoLightbox } from '../recent/PhotoLightbox'
+import { PortfolioInterlude } from './PortfolioInterlude'
+import { PortfolioParticleTitle } from './PortfolioParticleTitle'
 import { useGalleryPhotos } from './useGalleryPhotos'
 
 declare module '../../components/ProtectedCanvasImage' {
@@ -174,15 +176,18 @@ export function PortfolioGallery() {
   }
 
   return (
-    <section ref={sectionRef} id="portfolio" className="portfolio-gallery" aria-labelledby="portfolio-heading">
+    <>
+      <section ref={sectionRef} id="portfolio" className="portfolio-gallery" aria-labelledby="portfolio-heading">
       <div className="portfolio-gallery__inner">
         <header className="portfolio-gallery__header">
           <p className="portfolio-gallery__eyebrow">
             <span aria-hidden="true" />Portfolio
           </p>
-          <h2 id="portfolio-heading" className="portfolio-gallery__title">
-            Work Speaks for Itself
-          </h2>
+          <PortfolioParticleTitle
+            id="portfolio-heading"
+            text="Work Speaks for Itself"
+            className="portfolio-gallery__title"
+          />
           {(
             <div className="portfolio-gallery__filters" role="tablist" aria-label="Filter gallery by category">
               {categories.map(category => (
@@ -251,5 +256,7 @@ export function PortfolioGallery() {
         )}
       </div>
     </section>
+    <PortfolioInterlude />
+    </>
   )
 }

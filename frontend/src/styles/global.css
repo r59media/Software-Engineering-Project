@@ -24,6 +24,7 @@ button:disabled { cursor: not-allowed; }
 .action { display: inline-flex; align-items: center; justify-content: center; min-height: 3.875rem; padding: 1rem 1.5rem; border: 0; border-radius: var(--radius-control); font-size: var(--text-medium); line-height: 1.5; text-align: center; }
 .action--primary { background: var(--color-brand-yellow); color: var(--color-brand-black); }
 .action--light { background: var(--color-brand-white); color: var(--color-brand-black); }
+.action--dark { background: var(--color-brand-black); color: var(--color-brand-white); }
 .action--text { background: transparent; color: inherit; }
 
 /* Protected Media Shield & Canvas Engine */
@@ -123,6 +124,7 @@ button:disabled { cursor: not-allowed; }
   color: var(--color-brand-white);
   padding: clamp(4rem, 8vw, 7rem) var(--page-gutter);
   min-height: 400px;
+  overflow-x: clip;
 }
 
 .portfolio-gallery__inner {
@@ -136,6 +138,8 @@ button:disabled { cursor: not-allowed; }
 }
 
 .portfolio-gallery__eyebrow {
+  position: relative;
+  z-index: 2;
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
@@ -153,6 +157,25 @@ button:disabled { cursor: not-allowed; }
   flex: none;
 }
 
+.portfolio-gallery__title-stage {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 2rem;
+}
+
+.portfolio-gallery__title-stage .portfolio-gallery__title {
+  margin: 0;
+}
+
+.portfolio-gallery__title-canvas {
+  position: absolute;
+  inset: -44px -48px;
+  width: calc(100% + 96px);
+  height: calc(100% + 88px);
+  pointer-events: none;
+}
+
 .portfolio-gallery__title {
   margin: 0 0 2rem;
   font-family: var(--font-title);
@@ -164,6 +187,8 @@ button:disabled { cursor: not-allowed; }
 }
 
 .portfolio-gallery__filters {
+  position: relative;
+  z-index: 2;
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
