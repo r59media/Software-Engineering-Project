@@ -537,10 +537,7 @@ export function NotFoundScene({
     >
       {!loaded && !failed && (
         <div className="not-found__stage-placeholder" aria-hidden="true">
-          <div className="not-found__stage-spinner">
-            <span className="not-found__spinner-dot" />
-            <span>Powering studio lights…</span>
-          </div>
+          <p className="not-found__stage-loading">Setting up the studio…</p>
         </div>
       )}
       {failed && (

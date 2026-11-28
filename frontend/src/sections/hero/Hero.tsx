@@ -227,10 +227,10 @@ export function Hero({ slides, activeSlideId, destinations }: HeroProps) {
           <div className="hero__title-group">
             <p className="hero__role"><span aria-hidden="true" />Photographer</p>
             <h1 id="hero-title">Kevin D<br />Gonzalez</h1>
+            {location ? (
+              <p className="hero__location">{location}<span aria-hidden="true" /></p>
+            ) : null}
           </div>
-          {location ? (
-            <p className="hero__location">{location}<span aria-hidden="true" /></p>
-          ) : null}
           <p className="hero__description">Photography that feels natural, intentional, and uniquely yours.</p>
           <div className="hero__actions">
             <ActionLink href={destinations.booking} className="action action--primary" effect="light-sweep">Book Your Session</ActionLink>
