@@ -1,8 +1,14 @@
-import type { Object3D, SpotLight, Mesh, Material } from 'three'
+import type { Color, Object3D, SpotLight, Mesh, Material } from 'three'
+
+type DiffuserMaterial = Material & {
+  emissiveIntensity?: number
+  color?: Color
+}
 
 interface DiffuserMaterialEntry {
-  material: Material & { emissiveIntensity?: number }
+  material: DiffuserMaterial
   intensity: number
+  baseColor?: Color
 }
 
 interface Fixture {
@@ -50,8 +56,12 @@ export function createStudioLightControls(model: Object3D): StudioLightControls 
       const original = mesh.material
       const source = Array.isArray(original) ? original : [original]
       const copies = source.map((material) => {
-        const copy = material.clone() as Material & { emissiveIntensity?: number }
-        materials.push({ material: copy, intensity: copy.emissiveIntensity ?? 1 })
+        const copy = material.clone() as DiffuserMaterial
+        materials.push({
+          material: copy,
+          intensity: copy.emissiveIntensity ?? 1,
+          baseColor: copy.color?.clone(),
+        })
         return copy
       })
       originals.push({ node: mesh, material: original })
@@ -86,6 +96,10 @@ export function createStudioLightControls(model: Object3D): StudioLightControls 
     fixture.light.visible = fixture.originalVisibility && strength > 0
     for (const entry of fixture.materials) {
       entry.material.emissiveIntensity = entry.intensity * strength
+      if (entry.material.color && entry.baseColor) {
+        // Dim unlit diffuser cloth so an OFF lamp reads clearly against scene fill lights.
+        entry.material.color.copy(entry.baseColor).multiplyScalar(0.2 + 0.8 * strength)
+      }
     }
   }
 

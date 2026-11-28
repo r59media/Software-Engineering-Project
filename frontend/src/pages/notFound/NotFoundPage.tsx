@@ -1,95 +1,88 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { ActionLink } from '../../components/ActionLink'
+import { R59Logo } from '../../components/R59Logo'
 import { NotFoundScene } from './NotFoundScene'
-import arrowLeft from '../../assets/legal/arrow-left.svg'
 import './NotFoundPage.css'
 
 export function NotFoundPage() {
   const [leftLightOn, setLeftLightOn] = useState(true)
-  const [rightLightOn, setRightLightOn] = useState(true)
+  const [rightLightOn, setRightLightOn] = useState(false)
   const baseUrl = import.meta.env.BASE_URL
 
   useEffect(() => {
-    document.title = '404 - Page Not Found | R59 Media'
+    document.title = '404 - Frame Not Found | R59 Media'
   }, [])
 
-  const toggleLeft = () => setLeftLightOn((prev) => !prev)
-  const toggleRight = () => setRightLightOn((prev) => !prev)
+  const toggleLeft = useCallback(() => setLeftLightOn((prev) => !prev), [])
+  const toggleRight = useCallback(() => setRightLightOn((prev) => !prev), [])
 
   return (
     <main id="not-found-content" className="not-found-page">
-      <div className="not-found-page__inner">
-        {/* Top bar back link */}
-        <header className="not-found-page__header">
-          <a className="not-found-page__back" href={baseUrl}>
-            <img src={arrowLeft} width="16" height="16" alt="" aria-hidden="true" />
-            <span>Back to Home</span>
+      <div className="not-found-page__shell">
+        <header className="not-found-page__topbar">
+          <ActionLink href={baseUrl} className="not-found-page__brand" effect="brand-sweep">
+            <R59Logo className="not-found-page__brand-logo" cutoutClassName="not-found-page__brand-cutout" />
+            <span className="not-found-page__sr-only">R59 Media Home</span>
+          </ActionLink>
+          <a className="not-found-page__portfolio" href={`${baseUrl}#portfolio`}>
+            <span>Portfolio</span>
+            <span aria-hidden="true">↗</span>
           </a>
-          <span className="not-found-page__badge">HTTP 404</span>
         </header>
 
-        {/* 3D Studio Stage */}
-        <div className="not-found-page__canvas-wrap">
-          <NotFoundScene
-            leftOn={leftLightOn}
-            rightOn={rightLightOn}
-          />
-        </div>
-
-        {/* Interactive Studio Light Controls */}
-        <section className="not-found-page__controls" aria-label="Studio light controls">
-          <p className="not-found-page__controls-hint">
-            Interactive Studio · Toggle speedlights:
-          </p>
-          <div className="not-found-page__buttons">
-            <button
-              type="button"
-              className={`not-found-page__switch ${leftLightOn ? 'not-found-page__switch--on' : ''}`}
-              aria-pressed={leftLightOn}
-              onClick={toggleLeft}
-            >
-              <span className="not-found-page__switch-dot" aria-hidden="true" />
-              <span>Left Light</span>
-              <span className="not-found-page__switch-state">
-                {leftLightOn ? 'ON' : 'OFF'}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              className={`not-found-page__switch ${rightLightOn ? 'not-found-page__switch--on' : ''}`}
-              aria-pressed={rightLightOn}
-              onClick={toggleRight}
-            >
-              <span className="not-found-page__switch-dot" aria-hidden="true" />
-              <span>Right Light</span>
-              <span className="not-found-page__switch-state">
-                {rightLightOn ? 'ON' : 'OFF'}
-              </span>
-            </button>
+        <div className="not-found-page__grid">
+          <div className="not-found-page__copy">
+            <h1 className="not-found-page__title">
+              <span>Frame</span>
+              <span>Not</span>
+              <span>Found</span>
+            </h1>
+            <p className="not-found-page__desc">
+              That shot isn’t in this roll. Let’s get you back in focus.
+            </p>
+            <ActionLink href={baseUrl} className="action action--text not-found-page__home-link" effect="red-sweep">
+              <span aria-hidden="true">←</span> Go home
+            </ActionLink>
           </div>
-        </section>
 
-        {/* Informative text & navigation links */}
-        <div className="not-found-page__info">
-          <h1 className="not-found-page__title">Frame Not Found</h1>
-          <p className="not-found-page__desc">
-            The page or session you're searching for is out of frame or has moved.
-            Feel free to adjust the studio lighting above, or jump right back into the main portfolio.
-          </p>
+          <div className="not-found-page__stage-col">
+            <div className="not-found-page__stage-wrap">
+              <div
+                className={`not-found-page__glow not-found-page__glow--left ${leftLightOn ? 'is-on' : ''}`}
+                aria-hidden="true"
+              />
+              <div
+                className={`not-found-page__glow not-found-page__glow--right ${rightLightOn ? 'is-on' : ''}`}
+                aria-hidden="true"
+              />
+              <NotFoundScene
+                leftOn={leftLightOn}
+                rightOn={rightLightOn}
+                onToggleLeft={toggleLeft}
+                onToggleRight={toggleRight}
+              />
+            </div>
 
-          <div className="not-found-page__actions">
-            <a href={baseUrl} className="not-found-page__btn not-found-page__btn--primary">
-              Return to Home
-            </a>
-            <a href={`${baseUrl}#portfolio`} className="not-found-page__btn not-found-page__btn--secondary">
-              View Portfolio
-            </a>
-            <a href={`${baseUrl}#booking`} className="not-found-page__btn not-found-page__btn--secondary">
-              Book a Session
-            </a>
-            <a href={`${baseUrl}faq`} className="not-found-page__btn not-found-page__btn--secondary">
-              FAQ
-            </a>
+            <div className="not-found-page__sr-controls">
+              <button
+                type="button"
+                className="not-found-page__sr-toggle"
+                aria-pressed={leftLightOn}
+                onClick={toggleLeft}
+              >
+                {leftLightOn ? 'Turn off left studio light' : 'Turn on left studio light'}
+              </button>
+              <button
+                type="button"
+                className="not-found-page__sr-toggle"
+                aria-pressed={rightLightOn}
+                onClick={toggleRight}
+              >
+                {rightLightOn ? 'Turn off right studio light' : 'Turn on right studio light'}
+              </button>
+            </div>
+
+            <p className="not-found-page__hint">Tap a cord to toggle its light.</p>
           </div>
         </div>
       </div>

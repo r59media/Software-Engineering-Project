@@ -521,17 +521,10 @@ function App() {
   }
 
   if (isNotFound) {
-    const homeDestinations = Object.fromEntries(
-      Object.entries(heroDestinations).map(([key, href]) => [key, href?.startsWith('#') ? `${baseUrl}${href}` : href])
-    )
     return <div id="top" className="site-shell">
       <a className="skip-link" href="#not-found-content">Skip to content</a>
-      <SiteHeader destinations={homeDestinations} homeHref={baseUrl} />
       <Suspense fallback={null}>
         <NotFoundPage />
-      </Suspense>
-      <Suspense fallback={null}>
-        <SiteFooter destinations={homeDestinations} homeHref={baseUrl} />
       </Suspense>
     </div>
   }
