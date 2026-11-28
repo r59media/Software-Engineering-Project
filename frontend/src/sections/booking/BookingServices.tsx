@@ -73,19 +73,11 @@ function BookingServiceRow({
   const desktopOpacity = useTransform(scrollProgress, [start, end], [0, 1], { clamp: true })
   const desktopY = useTransform(scrollProgress, [start, end], [52, 0], { clamp: true })
 
-  // Mobile cards glide right-to-left matching horizontal swipe exploration,
-  // using standalone CSS `translate` so carousel 3D `transform` stays intact.
-  const mobileStart = index === 0 ? 0.0 : index === 1 ? 0.24 : Math.min(0.48, 0.34 + (index - 2) * 0.06)
-  const mobileEnd = Math.min(0.96, mobileStart + 0.56)
-  const mobileOpacity = useTransform(scrollProgress, [mobileStart, mobileEnd], [0, 1], { clamp: true })
-  const mobileTranslate = useTransform(scrollProgress, [mobileStart, mobileEnd], ['76px 0px', '0px 0px'], {
-    clamp: true,
-  })
-
-  const motionStyle = reducedMotion
-    ? undefined
-    : layoutMode === 'mobile'
-      ? { opacity: mobileOpacity, translate: mobileTranslate }
+  // Keep mobile horizontal scroll-snap carousel static on vertical scroll
+  // so sliding cards never fight scroll-snap or clip at the left edge.
+  const motionStyle =
+    reducedMotion || layoutMode === 'mobile'
+      ? undefined
       : { opacity: desktopOpacity, y: desktopY }
 
   const extra = service.additionalPeople
@@ -218,7 +210,7 @@ export function BookingServices({
   const subtitleX = useTransform(headerProgress, [0.1, 1], ['105vw', '0vw'], { clamp: true })
   const { scrollYProgress } = useScroll({
     target: track,
-    offset: layoutMode === 'mobile' ? ['start 0.86', 'start 0.42'] : ['start 0.8', 'start 0.38'],
+    offset: ['start 0.8', 'start 0.38'],
   })
   const smoothProgress = useSpring(scrollYProgress, {
     stiffness: 150,
