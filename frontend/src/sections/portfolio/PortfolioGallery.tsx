@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { motion, useReducedMotion, useScroll, useSpring, useTransform } from 'motion/react'
+import { motion, useReducedMotion, useScroll, useSpring, useTransform, type MotionValue } from 'motion/react'
 import { GalleryEmptyState } from './GalleryEmptyState'
 import type { GalleryPhoto } from '../../api/client'
 import { ProtectedCanvasImage } from '../../components/ProtectedCanvasImage'
@@ -43,6 +43,55 @@ function useGridColumns(): number {
   }, [])
 
   return columns
+}
+
+interface PortfolioFilterTabProps {
+  category: string
+  index: number
+  total: number
+  active: boolean
+  scrollProgress: MotionValue<number>
+  reducedMotion: boolean
+  onSelect: (category: string) => void
+  onPreload: (category: string) => void
+}
+
+/** Category filter pill with scroll-driven sequential stagger matching card reveals. */
+function PortfolioFilterTab({
+  category,
+  index,
+  total,
+  active,
+  scrollProgress,
+  reducedMotion,
+  onSelect,
+  onPreload,
+}: PortfolioFilterTabProps) {
+  const span = Math.max(0.28, 0.48 - Math.max(0, total - 5) * 0.03)
+  const step = total > 1 ? (0.96 - span) / (total - 1) : 0
+  const start = index * step
+  const end = Math.min(1, start + span)
+
+  const opacity = useTransform(scrollProgress, [start, end], [0, 1], { clamp: true })
+  const y = useTransform(scrollProgress, [start, end], [24, 0], { clamp: true })
+
+  return (
+    <motion.button
+      id={tabId(category)}
+      type="button"
+      role="tab"
+      aria-selected={active}
+      aria-controls="portfolio-tabpanel"
+      data-active={active ? 'true' : 'false'}
+      className="portfolio-gallery__filter-btn"
+      style={reducedMotion ? undefined : { opacity, y }}
+      onClick={() => onSelect(category)}
+      onMouseEnter={() => onPreload(category)}
+      onFocus={() => onPreload(category)}
+    >
+      {category}
+    </motion.button>
+  )
 }
 
 interface PortfolioCardSlotProps {
@@ -106,10 +155,22 @@ export function PortfolioGallery() {
   const { photos, loading } = useGalleryPhotos()
   const columns = useGridColumns()
   const sectionRef = useRef<HTMLElement | null>(null)
+  const filtersRef = useRef<HTMLDivElement>(null)
+  const prefersReducedMotion = useReducedMotion()
   const [inView, setInView] = useState(false)
   const [activeCategory, setActiveCategory] = useState('All')
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null)
   const [hasVisitedEmpty, setHasVisitedEmpty] = useState(false)
+
+  const { scrollYProgress: filtersProgress } = useScroll({
+    target: filtersRef,
+    offset: ['start 0.95', 'start 0.56'],
+  })
+  const smoothFiltersProgress = useSpring(filtersProgress, {
+    stiffness: 220,
+    damping: 28,
+    mass: 0.28,
+  })
 
   useEffect(() => {
     const node = sectionRef.current
@@ -189,23 +250,19 @@ export function PortfolioGallery() {
             className="portfolio-gallery__title"
           />
           {(
-            <div className="portfolio-gallery__filters" role="tablist" aria-label="Filter gallery by category">
-              {categories.map(category => (
-                <button
+            <div ref={filtersRef} className="portfolio-gallery__filters" role="tablist" aria-label="Filter gallery by category">
+              {categories.map((category, index) => (
+                <PortfolioFilterTab
                   key={category}
-                  id={tabId(category)}
-                  type="button"
-                  role="tab"
-                  aria-selected={activeCategory === category}
-                  aria-controls="portfolio-tabpanel"
-                  data-active={activeCategory === category ? 'true' : 'false'}
-                  className="portfolio-gallery__filter-btn"
-                  onClick={() => setActiveCategory(category)}
-                  onMouseEnter={() => preloadMemoryCardIfEmpty(category)}
-                  onFocus={() => preloadMemoryCardIfEmpty(category)}
-                >
-                  {category}
-                </button>
+                  category={category}
+                  index={index}
+                  total={categories.length}
+                  active={activeCategory === category}
+                  scrollProgress={smoothFiltersProgress}
+                  reducedMotion={Boolean(prefersReducedMotion)}
+                  onSelect={setActiveCategory}
+                  onPreload={preloadMemoryCardIfEmpty}
+                />
               ))}
             </div>
           )}
