@@ -147,7 +147,7 @@
 }
 .mobile-navigation__link[href]:is(:active, [data-pressed="true"]) {
   color: var(--color-brand-white);
-  font-weight: 700;
+  font-weight: 500;
 }
 .mobile-navigation__link[href]:is(:active, [data-pressed="true"])::before {
   background: var(--color-brand-black);
