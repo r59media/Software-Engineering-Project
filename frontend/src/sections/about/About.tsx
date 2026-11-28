@@ -35,12 +35,12 @@ export function About({ content = aboutContent }: { content?: AboutContent }) {
 
   const { scrollYProgress } = useScroll({
     target: titleGroupRef,
-    offset: isStacked ? ['start 0.92', 'start 0.56'] : ['start 0.9', 'start 0.48'],
+    offset: isStacked ? ['start 1.04', 'start 0.74'] : ['start 0.96', 'start 0.62'],
   })
   const smoothProgress = useSpring(scrollYProgress, {
-    stiffness: 170,
+    stiffness: 220,
     damping: 26,
-    mass: 0.32,
+    mass: 0.28,
   })
   const titleX = useTransform(
     smoothProgress,
